@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="title desc">
+  <title id="title">Markerup notepad icon with dark gray squircle</title>
+  <desc id="desc">Light blue notepad on a dark gray rounded square background.</desc>
+  <defs>
+    <linearGradient id="header" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8EC5FF"/>
+      <stop offset="100%" stop-color="#70B2F4"/>
+    </linearGradient>
+
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#5E8DB8" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="#3B3F45"/>
+  <!-- Notepad -->
+  <g filter="url(#shadow)">
+    <rect x="222" y="248" width="580" height="590" rx="62" fill="#CFE5FA"/>
+    <rect x="214" y="236" width="596" height="590" rx="62" fill="#E7F2FC"/>
+    <rect x="206" y="220" width="612" height="590" rx="62" fill="#FFFFFF"/>
+
+    <path d="M268 220H756C790.24 220 818 247.76 818 282V346H206V282C206 247.76 233.76 220 268 220Z"
+          fill="url(#header)"/>
+
+    <g fill="#4F92D8">
+      <circle cx="318" cy="272" r="22"/>
+      <circle cx="414" cy="272" r="22"/>
+      <circle cx="512" cy="272" r="22"/>
+      <circle cx="610" cy="272" r="22"/>
+      <circle cx="706" cy="272" r="22"/>
+    </g>
+
+    <g fill="#D8EBFF">
+      <rect x="302" y="166" width="32" height="126" rx="16"/>
+      <rect x="398" y="166" width="32" height="126" rx="16"/>
+      <rect x="496" y="166" width="32" height="126" rx="16"/>
+      <rect x="594" y="166" width="32" height="126" rx="16"/>
+      <rect x="690" y="166" width="32" height="126" rx="16"/>
+    </g>
+
+    <g stroke="#B9D9F7" stroke-width="14" stroke-linecap="round">
+      <line x1="292" y1="452" x2="732" y2="452"/>
+      <line x1="292" y1="542" x2="732" y2="542"/>
+      <line x1="292" y1="632" x2="732" y2="632"/>
+      <line x1="292" y1="722" x2="652" y2="722"/>
+    </g>
+  </g>
+</svg>
