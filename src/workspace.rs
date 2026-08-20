@@ -257,6 +257,7 @@ impl Workspace for LocalWorkspace {
 }
 
 #[derive(Clone, Default)]
+#[allow(dead_code)]
 pub enum WorkspaceSlot {
     #[default]
     Empty,
@@ -266,6 +267,7 @@ pub enum WorkspaceSlot {
 }
 
 impl WorkspaceSlot {
+    #[allow(dead_code)]
     pub fn local(workspace: LocalWorkspace) -> Self { Self::Local(workspace) }
     #[cfg(target_os = "ios")]
     pub fn ios(workspace: IosWorkspace) -> Self { Self::Ios(Arc::new(workspace)) }

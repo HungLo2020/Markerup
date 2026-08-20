@@ -6,6 +6,7 @@ const SESSION_HEADER: &str = "markerup-session-v2";
 
 #[derive(Debug, Clone)]
 pub struct SessionState {
+    #[allow(dead_code)]
     pub pinned_workspace: PathBuf,
     pub current_file: Option<String>,
     #[allow(dead_code)]
