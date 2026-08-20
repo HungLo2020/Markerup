@@ -1,4 +1,4 @@
-import { Button, HorizontalBox, LineEdit, ListView, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
+import { Button, CheckBox, HorizontalBox, LineEdit, ListView, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
 
 export component MainWindow inherits Window {
     title: root.dirty ? "Markerup *" : "Markerup";
@@ -10,13 +10,16 @@ export component MainWindow inherits Window {
 
     in-out property <[string]> tree-labels;
     in-out property <[string]> search-results;
+    in-out property <[styled-text]> preview-block-texts;
+    in-out property <[int]> preview-block-kinds;
+    in-out property <[int]> preview-heading-levels;
+    in-out property <[bool]> preview-task-checked;
     in-out property <[image]> preview-images;
     in-out property <[string]> preview-image-labels;
     in-out property <string> workspace-path: "";
     in-out property <string> selected-path: "";
     in-out property <string> current-path: "No note selected";
     in-out property <string> editor-text: "";
-    in-out property <styled-text> preview;
     in-out property <string> status: "Choose a folder to use as a Markerup workspace";
     in-out property <string> action-name: "";
     in-out property <string> search-query: "";
@@ -112,144 +115,186 @@ export component MainWindow inherits Window {
 
             Rectangle { height: 1px; background: #80808040; }
 
-            empty-pane := Rectangle {
-                visible: !root.workspace-open;
-                vertical-stretch: !root.workspace-open ? 1 : 0;
-                HorizontalBox {
-                    Rectangle { horizontal-stretch: 1; }
-                    VerticalBox {
-                        width: 460px;
-                        Rectangle { vertical-stretch: 1; }
-                        Text {
-                            text: "No workspace selected";
-                            font-size: 28px;
-                            font-weight: 700;
-                            horizontal-alignment: center;
-                        }
-                        Text {
-                            text: "Markerup edits ordinary Markdown files in a folder you choose. Nothing is imported or copied into a database.";
-                            wrap: word-wrap;
-                            horizontal-alignment: center;
-                        }
-                        Button {
-                            text: "Choose Folder";
-                            primary: true;
-                            clicked => { root.choose-workspace-requested(); }
-                        }
-                        Text {
-                            text: "After opening a folder, pin it if you want Markerup to reopen it automatically next time.";
-                            wrap: word-wrap;
-                            horizontal-alignment: center;
-                        }
-                        Rectangle { vertical-stretch: 1; }
-                    }
-                    Rectangle { horizontal-stretch: 1; }
-                }
-            }
+            central-area := Rectangle {
+                vertical-stretch: 1;
 
-            workspace-pane := HorizontalBox {
-                visible: root.workspace-open;
-                vertical-stretch: root.workspace-open ? 1 : 0;
-                spacing: 8px;
-
-                VerticalBox {
-                    width: 300px;
-                    vertical-stretch: 1;
-                    spacing: 5px;
-                    Text { text: "Workspace"; font-weight: 700; }
-                    Text { text: root.selected-path == "" ? "Nothing selected" : root.selected-path; overflow: elide; }
+                empty-pane := Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    visible: !root.workspace-open;
 
                     HorizontalBox {
-                        spacing: 4px;
-                        LineEdit { text <=> root.action-name; }
-                        Button { text: "+ Note"; clicked => { root.new-note-requested(root.action-name); } }
-                        Button { text: "+ Folder"; clicked => { root.new-folder-requested(root.action-name); } }
-                    }
-                    HorizontalBox {
-                        spacing: 4px;
-                        Button { text: "Rename"; enabled: root.selected-path != ""; clicked => { root.rename-requested(root.action-name); } }
-                        Button { text: "Delete"; enabled: root.selected-path != ""; clicked => { root.delete-requested(); } }
-                    }
-
-                    ListView {
-                        vertical-stretch: 1;
-                        for label[index] in root.tree-labels : Button {
-                            text: label;
-                            clicked => { root.tree-selected(index); }
-                        }
-                    }
-
-                    Rectangle { height: 1px; background: #80808040; }
-                    Text { text: "Search all notes"; font-weight: 700; }
-                    LineEdit {
-                        text <=> root.search-query;
-                        edited => { root.search-requested(self.text); }
-                    }
-                    ListView {
-                        height: 150px;
-                        for result[index] in root.search-results : Button {
-                            text: result;
-                            clicked => { root.search-result-selected(index); }
-                        }
-                    }
-                }
-
-                Rectangle { width: 1px; background: #80808040; }
-
-                VerticalBox {
-                    vertical-stretch: 1;
-                    spacing: 5px;
-                    HorizontalBox {
-                        Text { text: (root.dirty ? "● " : "") + root.current-path; font-weight: 700; overflow: elide; }
-                        Button { text: "Source"; clicked => { root.view-mode = 0; } }
-                        Button { text: "Split"; clicked => { root.view-mode = 1; } }
-                        Button { text: "Preview"; clicked => { root.view-mode = 2; } }
-                    }
-
-                    HorizontalBox {
-                        height: 34px;
-                        spacing: 5px;
-                        Text { text: "Find:"; vertical-alignment: center; }
-                        LineEdit { text <=> root.find-query; }
-                        Button { text: "Next"; enabled: root.current-path != "No note selected"; clicked => { root.find-next-requested(root.find-query); } }
-                        Text { text: root.find-status; vertical-alignment: center; }
-                    }
-
-                    HorizontalBox {
-                        vertical-stretch: 1;
-                        spacing: 7px;
-
-                        source-pane := VerticalBox {
-                            visible: root.view-mode != 2;
-                            horizontal-stretch: 1;
-                            vertical-stretch: 1;
-                            Text { text: "Markdown source"; font-weight: 600; }
-                            editor := TextEdit {
-                                vertical-stretch: 1;
-                                text <=> root.editor-text;
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalBox {
+                            width: 460px;
+                            Rectangle { vertical-stretch: 1; }
+                            Text {
+                                text: "No workspace selected";
+                                font-size: 28px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Markerup edits ordinary Markdown files in a folder you choose. Nothing is imported or copied into a database.";
                                 wrap: word-wrap;
-                                font-family: "monospace";
-                                edited => { root.editor-changed(self.text); }
+                                horizontal-alignment: center;
+                            }
+                            Button {
+                                text: "Choose Folder";
+                                primary: true;
+                                clicked => { root.choose-workspace-requested(); }
+                            }
+                            Text {
+                                text: "After opening a folder, pin it if you want Markerup to reopen it automatically next time.";
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+
+                workspace-pane := HorizontalBox {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    visible: root.workspace-open;
+                    spacing: 8px;
+
+                    VerticalBox {
+                        width: 300px;
+                        spacing: 5px;
+                        Text { text: "Workspace"; font-weight: 700; }
+                        Text { text: root.selected-path == "" ? "Nothing selected" : root.selected-path; overflow: elide; }
+
+                        HorizontalBox {
+                            spacing: 4px;
+                            LineEdit { text <=> root.action-name; }
+                            Button { text: "+ Note"; clicked => { root.new-note-requested(root.action-name); } }
+                            Button { text: "+ Folder"; clicked => { root.new-folder-requested(root.action-name); } }
+                        }
+                        HorizontalBox {
+                            spacing: 4px;
+                            Button { text: "Rename"; enabled: root.selected-path != ""; clicked => { root.rename-requested(root.action-name); } }
+                            Button { text: "Delete"; enabled: root.selected-path != ""; clicked => { root.delete-requested(); } }
+                        }
+
+                        ListView {
+                            vertical-stretch: 1;
+                            for label[index] in root.tree-labels : Button {
+                                text: label;
+                                clicked => { root.tree-selected(index); }
                             }
                         }
 
-                        preview-pane := VerticalBox {
-                            visible: root.view-mode != 0;
-                            horizontal-stretch: 1;
+                        Rectangle { height: 1px; background: #80808040; }
+                        Text { text: "Search all notes"; font-weight: 700; }
+                        LineEdit {
+                            text <=> root.search-query;
+                            edited => { root.search-requested(self.text); }
+                        }
+                        ListView {
+                            height: 150px;
+                            for result[index] in root.search-results : Button {
+                                text: result;
+                                clicked => { root.search-result-selected(index); }
+                            }
+                        }
+                    }
+
+                    Rectangle { width: 1px; background: #80808040; }
+
+                    VerticalBox {
+                        spacing: 5px;
+                        HorizontalBox {
+                            Text { text: (root.dirty ? "● " : "") + root.current-path; font-weight: 700; overflow: elide; }
+                            Button { text: "Source"; clicked => { root.view-mode = 0; } }
+                            Button { text: "Split"; clicked => { root.view-mode = 1; } }
+                            Button { text: "Preview"; clicked => { root.view-mode = 2; } }
+                        }
+
+                        HorizontalBox {
+                            height: 34px;
+                            spacing: 5px;
+                            Text { text: "Find:"; vertical-alignment: center; }
+                            LineEdit { text <=> root.find-query; }
+                            Button { text: "Next"; enabled: root.current-path != "No note selected"; clicked => { root.find-next-requested(root.find-query); } }
+                            Text { text: root.find-status; vertical-alignment: center; }
+                        }
+
+                        editor-preview-row := HorizontalBox {
                             vertical-stretch: 1;
-                            Text { text: "Preview"; font-weight: 600; }
-                            ScrollView {
-                                vertical-stretch: 1;
-                                VerticalBox {
-                                    spacing: 8px;
-                                    StyledText {
-                                        width: preview-pane.width - 24px;
-                                        text: root.preview;
-                                        link-clicked(link) => { root.preview-link-clicked(link); }
-                                    }
-                                    for preview-image[index] in root.preview-images : VerticalBox {
-                                        Text { text: root.preview-image-labels[index]; font-weight: 600; }
-                                        Image { source: preview-image; height: 240px; }
+                            spacing: 7px;
+
+                            source-pane := VerticalBox {
+                                visible: root.view-mode != 2;
+                                horizontal-stretch: 1;
+                                Text { text: "Markdown source"; font-weight: 600; }
+                                editor := TextEdit {
+                                    vertical-stretch: 1;
+                                    text <=> root.editor-text;
+                                    wrap: word-wrap;
+                                    font-family: "monospace";
+                                    edited => { root.editor-changed(self.text); }
+                                }
+                            }
+
+                            preview-pane := VerticalBox {
+                                visible: root.view-mode != 0;
+                                horizontal-stretch: 1;
+                                Text { text: "Preview"; font-weight: 600; }
+                                ScrollView {
+                                    vertical-stretch: 1;
+                                    VerticalBox {
+                                        spacing: 9px;
+
+                                        for block[index] in root.preview-block-texts : VerticalBox {
+                                            if root.preview-block-kinds[index] == 1 : StyledText {
+                                                width: preview-pane.width - 30px;
+                                                text: block;
+                                                wrap: word-wrap;
+                                                font-weight: 700;
+                                                font-size: root.preview-heading-levels[index] == 1 ? 30px
+                                                    : root.preview-heading-levels[index] == 2 ? 26px
+                                                    : root.preview-heading-levels[index] == 3 ? 22px
+                                                    : root.preview-heading-levels[index] == 4 ? 19px
+                                                    : root.preview-heading-levels[index] == 5 ? 17px
+                                                    : 15px;
+                                                link-clicked(link) => { root.preview-link-clicked(link); }
+                                            }
+
+                                            if root.preview-block-kinds[index] == 2 : HorizontalBox {
+                                                width: preview-pane.width - 30px;
+                                                spacing: 6px;
+                                                CheckBox {
+                                                    width: 24px;
+                                                    checked: root.preview-task-checked[index];
+                                                    enabled: false;
+                                                }
+                                                StyledText {
+                                                    horizontal-stretch: 1;
+                                                    text: block;
+                                                    wrap: word-wrap;
+                                                    link-clicked(link) => { root.preview-link-clicked(link); }
+                                                }
+                                            }
+
+                                            if root.preview-block-kinds[index] == 0 : StyledText {
+                                                width: preview-pane.width - 30px;
+                                                text: block;
+                                                wrap: word-wrap;
+                                                link-clicked(link) => { root.preview-link-clicked(link); }
+                                            }
+                                        }
+
+                                        for preview-image[index] in root.preview-images : VerticalBox {
+                                            Text { text: root.preview-image-labels[index]; font-weight: 600; }
+                                            Image { source: preview-image; height: 240px; }
+                                        }
                                     }
                                 }
                             }
