@@ -52,6 +52,7 @@ pub type WorkspaceRef = Arc<dyn Workspace>;
 pub struct LocalWorkspace { root: PathBuf }
 
 impl LocalWorkspace {
+    #[cfg(not(target_os = "ios"))]
     pub fn open(root: impl AsRef<Path>) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         if !root.is_dir() {
