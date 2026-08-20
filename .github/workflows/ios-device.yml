@@ -103,6 +103,16 @@ jobs:
           payload_path="$RUNNER_TEMP/Markerup-Payload"
           ipa_path="$RUNNER_TEMP/Markerup.ipa"
           test -d "$app_path"
+          profile_path="$RUNNER_TEMP/markerup.mobileprovision"
+          test -f "$profile_path"
+          cp "$profile_path" "$app_path/embedded.mobileprovision"
+          codesign \
+            --force \
+            --sign "Apple Distribution" \
+            --keychain "$RUNNER_TEMP/markerup-signing.keychain-db" \
+            --timestamp=none \
+            --preserve-metadata=entitlements,requirements,flags \
+            "$app_path"
           codesign --verify --deep --strict "$app_path"
           rm -rf "$payload_path"
           mkdir -p "$payload_path"
