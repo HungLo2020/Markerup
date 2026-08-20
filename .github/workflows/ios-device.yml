@@ -87,6 +87,8 @@ jobs:
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-60@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-76@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+          grep -q 'Assets.xcassets' ios/Markerup.xcodeproj/project.pbxproj
+          grep -q 'LaunchScreen.storyboard' ios/Markerup.xcodeproj/project.pbxproj
           grep -q 'CFBundleIconName' ios/Info.plist
           grep -q 'UILaunchStoryboardName' ios/Info.plist
           grep -q 'UISupportedInterfaceOrientations' ios/Info.plist

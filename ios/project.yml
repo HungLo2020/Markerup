@@ -30,8 +30,7 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-    sources: []
-    resources:
+    sources:
       - Assets.xcassets
       - LaunchScreen.storyboard
     settings:
