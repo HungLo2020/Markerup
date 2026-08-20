@@ -1,4 +1,4 @@
-use crate::markdown::{image_references, preview_markdown};
+use crate::markdown::{image_references, preview_blocks, preview_markdown, PreviewBlockKind};
 use crate::persistence::{clear_session, save_session};
 use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use crate::MainWindow;
@@ -86,6 +86,9 @@ pub fn string_model(values: impl IntoIterator<Item = String>) -> ModelRc<SharedS
 }
 
 fn image_model(values: Vec<Image>) -> ModelRc<Image> { ModelRc::new(VecModel::from(values)) }
+fn styled_model(values: Vec<StyledText>) -> ModelRc<StyledText> { ModelRc::new(VecModel::from(values)) }
+fn int_model(values: Vec<i32>) -> ModelRc<i32> { ModelRc::new(VecModel::from(values)) }
+fn bool_model(values: Vec<bool>) -> ModelRc<bool> { ModelRc::new(VecModel::from(values)) }
 
 pub fn parent_id(id: &str) -> EntryId {
     id.rsplit_once('/').map(|(parent, _)| parent.to_string()).unwrap_or_default()
@@ -140,11 +143,43 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
     ui.set_selected_path(state.selected.clone().unwrap_or_default().into());
 }
 
+fn styled_from_markdown(markdown: &str) -> StyledText {
+    StyledText::from_markdown(markdown)
+        .or_else(|_| StyledText::from_markdown(&preview_markdown(markdown)))
+        .unwrap_or_else(|_| StyledText::from_plain_text(markdown))
+}
+
 pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
-    let compatible = preview_markdown(source);
-    let styled = StyledText::from_markdown(&compatible)
-        .unwrap_or_else(|_| StyledText::from_plain_text(source));
-    ui.set_preview(styled);
+    let mut texts = Vec::new();
+    let mut kinds = Vec::new();
+    let mut heading_levels = Vec::new();
+    let mut task_checked = Vec::new();
+
+    for block in preview_blocks(source) {
+        texts.push(styled_from_markdown(&block.markdown));
+        match block.kind {
+            PreviewBlockKind::Body => {
+                kinds.push(0);
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Heading(level) => {
+                kinds.push(1);
+                heading_levels.push(level as i32);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Task(checked) => {
+                kinds.push(2);
+                heading_levels.push(0);
+                task_checked.push(checked);
+            }
+        }
+    }
+
+    ui.set_preview_block_texts(styled_model(texts));
+    ui.set_preview_block_kinds(int_model(kinds));
+    ui.set_preview_heading_levels(int_model(heading_levels));
+    ui.set_preview_task_checked(bool_model(task_checked));
 
     let mut images = Vec::new();
     let mut labels = Vec::new();
@@ -160,6 +195,15 @@ pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
     }
     ui.set_preview_images(image_model(images));
     ui.set_preview_image_labels(string_model(labels));
+}
+
+fn clear_preview(ui: &MainWindow) {
+    ui.set_preview_block_texts(styled_model(Vec::new()));
+    ui.set_preview_block_kinds(int_model(Vec::new()));
+    ui.set_preview_heading_levels(int_model(Vec::new()));
+    ui.set_preview_task_checked(bool_model(Vec::new()));
+    ui.set_preview_images(image_model(Vec::new()));
+    ui.set_preview_image_labels(string_model(Vec::new()));
 }
 
 pub fn save_session_for(state: &AppState) {
@@ -179,9 +223,7 @@ pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
     state.external_conflict = false;
     ui.set_current_path("No note selected".into());
     ui.set_editor_text("".into());
-    ui.set_preview(StyledText::from_plain_text(""));
-    ui.set_preview_images(image_model(Vec::new()));
-    ui.set_preview_image_labels(string_model(Vec::new()));
+    clear_preview(ui);
     sync_flags(ui, state);
     save_session_for(state);
 }
