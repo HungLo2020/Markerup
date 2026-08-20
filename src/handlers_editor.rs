@@ -154,7 +154,8 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
             }
             let target = state.borrow_mut().back.pop();
             if let Some(target) = target {
-                if let Some(current) = state.borrow().current_file.clone() {
+                let current = state.borrow().current_file.clone();
+                if let Some(current) = current {
                     state.borrow_mut().forward.push(current);
                 }
                 open_file(&ui, &mut state.borrow_mut(), target, false);
@@ -173,7 +174,8 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
             }
             let target = state.borrow_mut().forward.pop();
             if let Some(target) = target {
-                if let Some(current) = state.borrow().current_file.clone() {
+                let current = state.borrow().current_file.clone();
+                if let Some(current) = current {
                     state.borrow_mut().back.push(current);
                 }
                 open_file(&ui, &mut state.borrow_mut(), target, false);
