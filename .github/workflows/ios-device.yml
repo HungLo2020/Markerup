@@ -100,7 +100,7 @@ jobs:
         id: ipa
         run: |
           app_path="$RUNNER_TEMP/Markerup.xcarchive/Products/Applications/Markerup.app"
-          payload_path="$RUNNER_TEMP/Markerup-Payload"
+          payload_path="$RUNNER_TEMP/Payload"
           ipa_path="$RUNNER_TEMP/Markerup.ipa"
           test -d "$app_path"
           profile_path="$RUNNER_TEMP/markerup.mobileprovision"
