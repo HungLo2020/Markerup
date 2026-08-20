@@ -32,11 +32,11 @@ impl IosWorkspace {
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
                 .into_owned();
             let path = Path::new(&id);
-            let Some(name) = path.file_name() else { continue };
+            let Some(name) = path.file_name().map(|name| name.to_string_lossy().into_owned()) else { continue };
             let depth = path.components().count().saturating_sub(1);
             entries.push(WorkspaceEntry {
                 id,
-                name: name.to_string_lossy().into_owned(),
+                name,
                 kind: if kind == "D" { crate::workspace::EntryKind::Directory } else { crate::workspace::EntryKind::File },
                 depth,
             });
