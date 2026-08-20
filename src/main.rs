@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let (worker_tx, worker_rx) = workers::spawn_worker();
+    let (workers, worker_rx) = workers::spawn_workers();
     let timer = Timer::default();
     {
         let ui_weak = ui.as_weak();
@@ -175,7 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let ready = state.pending_preview.as_ref().is_some_and(|pending| pending.due <= now);
                     if ready {
                         if let Some(pending) = state.pending_preview.take() {
-                            if worker_tx.send(WorkerRequest::Preview {
+                            if workers.preview.send(WorkerRequest::Preview {
                                 generation: pending.generation,
                                 source: pending.source,
                             }).is_err() {
@@ -189,7 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if search_ready {
                     if let Some(pending) = state.pending_search.take() {
                         if let Some(workspace) = state.workspace.local_clone() {
-                            if worker_tx.send(WorkerRequest::Search {
+                            if workers.io.send(WorkerRequest::Search {
                                 generation: pending.generation,
                                 workspace,
                                 query: pending.query,
@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if scan_ready {
                     if let Some(pending) = state.pending_scan.take() {
                         if let Some(workspace) = state.workspace.local_clone() {
-                            if worker_tx.send(WorkerRequest::Scan {
+                            if workers.io.send(WorkerRequest::Scan {
                                 generation: pending.generation,
                                 workspace,
                                 current_file: state.current_file.clone(),
