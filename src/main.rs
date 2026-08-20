@@ -102,9 +102,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let new_root = workspace.root_path().to_path_buf();
             let watch_error = watcher.borrow_mut().watch(&new_root, RecursiveMode::Recursive).err();
 
+            let generations = {
+                let state = state.borrow();
+                (state.preview_generation, state.search_generation, state.scan_generation)
+            };
             {
                 let mut state = state.borrow_mut();
                 state.replace_workspace(WorkspaceSlot::local(workspace), false);
+                state.preview_generation = generations.0.wrapping_add(1);
+                state.search_generation = generations.1.wrapping_add(1);
+                state.scan_generation = generations.2.wrapping_add(1);
                 reset_workspace_ui(&ui, &mut state);
                 state.schedule_scan(Duration::ZERO);
                 sync_flags(&ui, &state);
