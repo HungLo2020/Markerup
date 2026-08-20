@@ -26,7 +26,9 @@ static NSMutableDictionary<NSString *, NSURL *> *MarkerupAccessMap(void) {
         return;
     }
     NSError *error = nil;
-    NSData *bookmark = [url bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope
+    // On iOS, a document-picker URL already carries its security scope. The
+    // WithSecurityScope bookmark flags are macOS-only in the iPhone SDK.
+    NSData *bookmark = [url bookmarkDataWithOptions:0
                      includingResourceValuesForKeys:nil relativeToURL:nil error:&error];
     if (error || !bookmark) {
         [url stopAccessingSecurityScopedResource];
@@ -48,7 +50,7 @@ static UIViewController *MarkerupRootViewController(void) {
             if (window.isKeyWindow && window.rootViewController) return window.rootViewController;
         }
     }
-    return UIApplication.sharedApplication.keyWindow.rootViewController;
+    return nil;
 }
 
 void markerup_ios_present_directory_picker(MarkerupPickerCallback callback, void *context) {
@@ -71,7 +73,7 @@ bool markerup_ios_resolve_bookmark(const unsigned char *bytes, size_t length, ch
     BOOL stale = NO;
     NSError *error = nil;
     NSURL *url = [NSURL URLByResolvingBookmarkData:data
-                                           options:NSURLBookmarkResolutionWithSecurityScope
+                                           options:0
                                      relativeToURL:nil
                                bookmarkDataIsStale:&stale
                                              error:&error];
@@ -161,8 +163,9 @@ bool markerup_ios_mutate(const char *path, const char *destination, unsigned cha
 void markerup_ios_install_lifecycle_observers(void) {
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
                                                      object:nil
-                                                      queue:NSOperationQueue.mainQueue
+                                                 queue:NSOperationQueue.mainQueue
                                                  usingBlock:^(NSNotification *note) {
+        (void)note;
         markerup_ios_resume_request();
     }];
 }
