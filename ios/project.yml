@@ -2,17 +2,22 @@ name: Markerup
 options:
   bundleIdPrefix: com.example
   deploymentTarget:
-    iOS: "13.0"
+    iOS: "15.0"
 settings:
   ENABLE_USER_SCRIPT_SANDBOXING: NO
 targets:
   Markerup:
     type: application
     platform: iOS
-    deploymentTarget: "13.0"
+    deploymentTarget: "15.0"
     info:
       path: Info.plist
     sources: []
+    resources:
+      - Assets.xcassets
+      - LaunchScreen.storyboard
+    settings:
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     postCompileScripts:
       - name: Build Rust executable
         script: ./build_for_ios_with_cargo.sh markerup
