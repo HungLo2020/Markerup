@@ -1,10 +1,42 @@
-use crate::markdown::{image_references, preview_blocks, preview_markdown, PreviewBlockKind};
+use crate::markdown::{preview_markdown, PreviewBlockKind};
 use crate::persistence::{clear_session, save_session};
+use crate::workers::{hash_text, PreviewResult, ScanResult, SearchResult};
 use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use crate::MainWindow;
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
-use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::time::{Duration, Instant, SystemTime};
+
+pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(200);
+pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+
+#[derive(Debug)]
+pub struct PendingPreview {
+    pub generation: u64,
+    pub due: Instant,
+    pub source: String,
+}
+
+#[derive(Debug)]
+pub struct PendingSearch {
+    pub generation: u64,
+    pub due: Instant,
+    pub query: String,
+}
+
+#[derive(Debug)]
+pub struct PendingScan {
+    pub generation: u64,
+    pub due: Instant,
+}
+
+#[derive(Clone)]
+struct CachedImage {
+    modified: Option<SystemTime>,
+    len: u64,
+    image: Image,
+}
 
 pub struct AppState {
     pub workspace: WorkspaceSlot,
@@ -16,6 +48,7 @@ pub struct AppState {
     pub selected: Option<EntryId>,
     pub current_file: Option<EntryId>,
     pub disk_text: String,
+    pub saved_hash: u64,
     pub dirty: bool,
     pub external_conflict: bool,
     pub back: Vec<EntryId>,
@@ -25,6 +58,13 @@ pub struct AppState {
     pub find_matches: Vec<(usize, usize)>,
     pub find_index: usize,
     pub delete_armed: Option<(EntryId, Instant)>,
+    pub preview_generation: u64,
+    pub search_generation: u64,
+    pub scan_generation: u64,
+    pub pending_preview: Option<PendingPreview>,
+    pub pending_search: Option<PendingSearch>,
+    pub pending_scan: Option<PendingScan>,
+    image_cache: HashMap<EntryId, CachedImage>,
 }
 
 impl AppState {
@@ -34,10 +74,12 @@ impl AppState {
             pinned,
             entries: Vec::new(), tree_ids: Vec::new(), expanded: HashSet::new(),
             expansion_initialized: false, selected: None, current_file: None,
-            disk_text: String::new(), dirty: false, external_conflict: false,
-            back: Vec::new(), forward: Vec::new(), search_results: Vec::new(),
-            find_query: String::new(), find_matches: Vec::new(), find_index: 0,
-            delete_armed: None,
+            disk_text: String::new(), saved_hash: hash_text(""), dirty: false,
+            external_conflict: false, back: Vec::new(), forward: Vec::new(),
+            search_results: Vec::new(), find_query: String::new(), find_matches: Vec::new(),
+            find_index: 0, delete_armed: None, preview_generation: 0, search_generation: 0,
+            scan_generation: 0, pending_preview: None, pending_search: None, pending_scan: None,
+            image_cache: HashMap::new(),
         }
     }
 
@@ -46,14 +88,51 @@ impl AppState {
     }
 
     pub fn refresh_entries(&mut self) -> std::io::Result<()> {
-        self.entries = self.workspace.entries()?;
+        let entries = self.workspace.entries()?;
+        self.apply_entries(entries);
+        Ok(())
+    }
+
+    pub fn apply_entries(&mut self, entries: Vec<WorkspaceEntry>) {
+        self.entries = entries;
         if !self.expansion_initialized {
             self.expanded.extend(self.entries.iter()
                 .filter(|entry| entry.kind == EntryKind::Directory)
                 .map(|entry| entry.id.clone()));
             self.expansion_initialized = true;
         }
-        Ok(())
+    }
+
+    pub fn schedule_preview(&mut self, source: String, delay: Duration) {
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        self.pending_preview = Some(PendingPreview {
+            generation: self.preview_generation,
+            due: Instant::now() + delay,
+            source,
+        });
+    }
+
+    pub fn schedule_search(&mut self, query: String) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        if query.trim().is_empty() {
+            self.pending_search = None;
+            self.search_results.clear();
+            return;
+        }
+        self.pending_search = Some(PendingSearch {
+            generation: self.search_generation,
+            due: Instant::now() + SEARCH_DEBOUNCE,
+            query,
+        });
+    }
+
+    pub fn schedule_scan(&mut self, delay: Duration) {
+        if !self.workspace.is_open() { return; }
+        self.scan_generation = self.scan_generation.wrapping_add(1);
+        self.pending_scan = Some(PendingScan {
+            generation: self.scan_generation,
+            due: Instant::now() + delay,
+        });
     }
 
     pub fn entry(&self, id: &str) -> Option<&WorkspaceEntry> {
@@ -149,32 +228,23 @@ fn styled_from_markdown(markdown: &str) -> StyledText {
         .unwrap_or_else(|_| StyledText::from_plain_text(markdown))
 }
 
-pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
+pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: PreviewResult) {
+    if result.generation != state.preview_generation { return; }
+
+    let apply_started = Instant::now();
     let mut texts = Vec::new();
     let mut plain_texts = Vec::new();
     let mut kinds = Vec::new();
     let mut heading_levels = Vec::new();
     let mut task_checked = Vec::new();
 
-    for block in preview_blocks(source) {
+    for block in result.blocks {
         plain_texts.push(block.markdown.clone());
         texts.push(styled_from_markdown(&block.markdown));
         match block.kind {
-            PreviewBlockKind::Body => {
-                kinds.push(0);
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Heading(level) => {
-                kinds.push(1);
-                heading_levels.push(level as i32);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Task(checked) => {
-                kinds.push(2);
-                heading_levels.push(0);
-                task_checked.push(checked);
-            }
+            PreviewBlockKind::Body => { kinds.push(0); heading_levels.push(0); task_checked.push(false); }
+            PreviewBlockKind::Heading(level) => { kinds.push(1); heading_levels.push(level as i32); task_checked.push(false); }
+            PreviewBlockKind::Task(checked) => { kinds.push(2); heading_levels.push(0); task_checked.push(checked); }
         }
     }
 
@@ -187,10 +257,22 @@ pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
     let mut images = Vec::new();
     let mut labels = Vec::new();
     if let Some(current) = state.current_file.as_deref() {
-        for reference in image_references(source) {
+        for reference in result.images {
             let Some(asset_id) = state.workspace.resolve_asset_link(current, &reference.destination) else { continue };
             let Ok(path) = state.workspace.absolute_asset_path(&asset_id) else { continue };
-            if let Ok(image) = Image::load_from_path(&path) {
+            let metadata = fs::metadata(&path).ok();
+            let modified = metadata.as_ref().and_then(|value| value.modified().ok());
+            let len = metadata.as_ref().map_or(0, |value| value.len());
+
+            let image = state.image_cache.get(&asset_id)
+                .filter(|cached| cached.modified == modified && cached.len == len)
+                .map(|cached| cached.image.clone())
+                .or_else(|| Image::load_from_path(&path).ok().map(|image| {
+                    state.image_cache.insert(asset_id.clone(), CachedImage { modified, len, image: image.clone() });
+                    image
+                }));
+
+            if let Some(image) = image {
                 labels.push(if reference.alt.is_empty() { asset_id } else { reference.alt });
                 images.push(image);
             }
@@ -198,6 +280,73 @@ pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
     }
     ui.set_preview_images(image_model(images));
     ui.set_preview_image_labels(string_model(labels));
+
+    state.dirty = result.source_hash != state.saved_hash;
+    sync_flags(ui, state);
+
+    if perf_enabled() {
+        eprintln!("markerup perf: preview worker={:?} apply={:?}", result.elapsed, apply_started.elapsed());
+    }
+}
+
+pub fn apply_search_result(ui: &MainWindow, state: &mut AppState, result: SearchResult) {
+    if result.generation != state.search_generation { return; }
+    match result.results {
+        Ok(results) => {
+            state.search_results = results.clone();
+            ui.set_search_results(string_model(results));
+        }
+        Err(error) => set_status(ui, format!("Search failed: {error}")),
+    }
+    if perf_enabled() { eprintln!("markerup perf: search worker={:?}", result.elapsed); }
+}
+
+pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResult) {
+    if result.generation != state.scan_generation { return; }
+    let apply_started = Instant::now();
+
+    let entries = match result.entries {
+        Ok(entries) => entries,
+        Err(error) => { set_status(ui, format!("Workspace refresh failed: {error}")); return; }
+    };
+    state.apply_entries(entries);
+    render_tree(ui, state);
+
+    if let Some(current) = state.current_file.clone() {
+        let still_exists = state.entries.iter().any(|entry| entry.kind == EntryKind::File && entry.id == current);
+        if !still_exists {
+            if state.dirty {
+                state.external_conflict = true;
+                sync_flags(ui, state);
+                set_status(ui, "CONFLICT: current note was deleted or moved externally");
+            } else {
+                clear_current(ui, state);
+                set_status(ui, "Current note was removed externally");
+            }
+        } else if result.current_file.as_deref() == Some(current.as_str()) {
+            match result.current_text {
+                Some(Ok(disk)) if disk != state.disk_text => {
+                    if state.dirty {
+                        state.external_conflict = true;
+                        sync_flags(ui, state);
+                        set_status(ui, "CONFLICT: this note changed externally while you have unsaved edits");
+                    } else {
+                        state.disk_text = disk.clone();
+                        state.saved_hash = hash_text(&disk);
+                        ui.set_editor_text(disk.clone().into());
+                        state.schedule_preview(disk, Duration::ZERO);
+                        set_status(ui, "Reloaded external change");
+                    }
+                }
+                Some(Err(error)) => set_status(ui, format!("External refresh failed: {error}")),
+                _ => {}
+            }
+        }
+    }
+
+    if perf_enabled() {
+        eprintln!("markerup perf: workspace scan worker={:?} apply={:?}", result.elapsed, apply_started.elapsed());
+    }
 }
 
 fn clear_preview(ui: &MainWindow) {
@@ -223,8 +372,11 @@ pub fn save_session_for(state: &AppState) {
 pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
     state.current_file = None;
     state.disk_text.clear();
+    state.saved_hash = hash_text("");
     state.dirty = false;
     state.external_conflict = false;
+    state.preview_generation = state.preview_generation.wrapping_add(1);
+    state.pending_preview = None;
     ui.set_current_path("No note selected".into());
     ui.set_editor_text("".into());
     clear_preview(ui);
@@ -262,13 +414,15 @@ pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bo
     state.current_file = Some(id.clone());
     state.selected = Some(id.clone());
     state.disk_text = contents.clone();
+    state.saved_hash = hash_text(&contents);
     state.dirty = false;
     state.external_conflict = false;
     state.find_query.clear(); state.find_matches.clear(); state.find_index = 0;
     ui.set_current_path(id.into());
     ui.set_editor_text(contents.clone().into());
     ui.set_find_status("".into());
-    set_preview(ui, state, &contents);
+    clear_preview(ui);
+    state.schedule_preview(contents, Duration::ZERO);
     render_tree(ui, state);
     sync_flags(ui, state);
     set_status(ui, "Ready");
@@ -284,8 +438,12 @@ pub fn save_current(ui: &MainWindow, state: &mut AppState, contents: &str, force
     }
     match state.workspace.write(&current, contents) {
         Ok(()) => {
-            state.disk_text = contents.to_string(); state.dirty = false; state.external_conflict = false;
-            sync_flags(ui, state); set_status(ui, format!("Saved {current}"));
+            state.disk_text = contents.to_string();
+            state.saved_hash = hash_text(contents);
+            state.dirty = false;
+            state.external_conflict = false;
+            sync_flags(ui, state);
+            set_status(ui, format!("Saved {current}"));
         }
         Err(error) => set_status(ui, format!("Save failed: {error}")),
     }
@@ -295,9 +453,14 @@ pub fn reload_current(ui: &MainWindow, state: &mut AppState) {
     let Some(current) = state.current_file.clone() else { return; };
     match state.workspace.read(&current) {
         Ok(contents) => {
-            state.disk_text = contents.clone(); state.dirty = false; state.external_conflict = false;
-            ui.set_editor_text(contents.clone().into()); set_preview(ui, state, &contents);
-            sync_flags(ui, state); set_status(ui, "Reloaded from disk");
+            state.disk_text = contents.clone();
+            state.saved_hash = hash_text(&contents);
+            state.dirty = false;
+            state.external_conflict = false;
+            ui.set_editor_text(contents.clone().into());
+            state.schedule_preview(contents, Duration::ZERO);
+            sync_flags(ui, state);
+            set_status(ui, "Reloaded from disk");
         }
         Err(error) => set_status(ui, format!("Reload failed: {error}")),
     }
@@ -305,33 +468,15 @@ pub fn reload_current(ui: &MainWindow, state: &mut AppState) {
 
 pub fn refresh_workspace(ui: &MainWindow, state: &mut AppState) {
     if !state.workspace.is_open() { return; }
-    if let Err(error) = state.refresh_entries() { set_status(ui, format!("Refresh failed: {error}")); return; }
-    render_tree(ui, state);
-    let Some(current) = state.current_file.clone() else { return; };
-    match state.workspace.read(&current) {
-        Ok(disk) if disk != state.disk_text => {
-            if state.dirty {
-                state.external_conflict = true; sync_flags(ui, state);
-                set_status(ui, "CONFLICT: this note changed externally while you have unsaved edits");
-            } else {
-                state.disk_text = disk.clone(); ui.set_editor_text(disk.clone().into());
-                set_preview(ui, state, &disk); set_status(ui, "Reloaded external change");
-            }
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if state.dirty {
-                state.external_conflict = true; sync_flags(ui, state);
-                set_status(ui, "CONFLICT: current note was deleted or moved externally");
-            } else { clear_current(ui, state); set_status(ui, "Current note was removed externally"); }
-        }
-        Err(error) => set_status(ui, format!("External refresh failed: {error}")),
-    }
+    state.schedule_scan(Duration::ZERO);
+    set_status(ui, "Refreshing workspace…");
 }
 
 pub fn mutate_refresh(ui: &MainWindow, state: &mut AppState) {
-    match state.refresh_entries() {
-        Ok(()) => render_tree(ui, state),
-        Err(error) => set_status(ui, format!("Refresh failed: {error}")),
-    }
+    state.schedule_scan(Duration::ZERO);
+    render_tree(ui, state);
+}
+
+fn perf_enabled() -> bool {
+    std::env::var_os("MARKERUP_PERF").is_some()
 }
