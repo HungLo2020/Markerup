@@ -11,6 +11,7 @@ export component MainWindow inherits Window {
     in-out property <[string]> tree-labels;
     in-out property <[string]> search-results;
     in-out property <[styled-text]> preview-block-texts;
+    in-out property <[string]> preview-block-plain-texts;
     in-out property <[int]> preview-block-kinds;
     in-out property <[int]> preview-heading-levels;
     in-out property <[bool]> preview-task-checked;
@@ -253,9 +254,9 @@ export component MainWindow inherits Window {
                                         spacing: 9px;
 
                                         for block[index] in root.preview-block-texts : VerticalBox {
-                                            if root.preview-block-kinds[index] == 1 : StyledText {
+                                            if root.preview-block-kinds[index] == 1 : Text {
                                                 width: preview-pane.width - 30px;
-                                                text: block;
+                                                text: root.preview-block-plain-texts[index];
                                                 wrap: word-wrap;
                                                 font-weight: 700;
                                                 font-size: root.preview-heading-levels[index] == 1 ? 30px
@@ -264,7 +265,6 @@ export component MainWindow inherits Window {
                                                     : root.preview-heading-levels[index] == 4 ? 19px
                                                     : root.preview-heading-levels[index] == 5 ? 17px
                                                     : 15px;
-                                                link-clicked(link) => { root.preview-link-clicked(link); }
                                             }
 
                                             if root.preview-block-kinds[index] == 2 : HorizontalBox {
@@ -278,7 +278,6 @@ export component MainWindow inherits Window {
                                                 StyledText {
                                                     horizontal-stretch: 1;
                                                     text: block;
-                                                    wrap: word-wrap;
                                                     link-clicked(link) => { root.preview-link-clicked(link); }
                                                 }
                                             }
@@ -286,7 +285,6 @@ export component MainWindow inherits Window {
                                             if root.preview-block-kinds[index] == 0 : StyledText {
                                                 width: preview-pane.width - 30px;
                                                 text: block;
-                                                wrap: word-wrap;
                                                 link-clicked(link) => { root.preview-link-clicked(link); }
                                             }
                                         }
