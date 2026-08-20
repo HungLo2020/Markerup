@@ -16,6 +16,7 @@ targets:
         CFBundleDisplayName: Markerup
         CFBundleName: Markerup
         CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleIconName: AppIcon
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
