@@ -27,6 +27,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+#[cfg(target_os = "ios")]
+use std::path::Path;
 
 slint::include_modules!();
 
@@ -41,6 +43,31 @@ const ACTIVE_POLL_WINDOW: Duration = Duration::from_secs(1);
 const FULL_RECONCILE_INTERVAL_TICKS: u16 = 600; // 30 seconds at 50 ms/tick.
 
 type PollCallback = Rc<RefCell<Option<Box<dyn FnMut()>>>>;
+
+#[cfg(target_os = "ios")]
+struct NoopWatcher;
+
+#[cfg(target_os = "ios")]
+impl Watcher for NoopWatcher {
+    fn new<F: notify::EventHandler>(
+        _event_handler: F,
+        _config: notify::Config,
+    ) -> notify::Result<Self> {
+        Ok(Self)
+    }
+
+    fn watch(&mut self, _path: &Path, _recursive_mode: RecursiveMode) -> notify::Result<()> {
+        Ok(())
+    }
+
+    fn unwatch(&mut self, _path: &Path) -> notify::Result<()> {
+        Ok(())
+    }
+
+    fn kind() -> notify::WatcherKind {
+        notify::WatcherKind::NullWatcher
+    }
+}
 
 fn arm_poll_timer(timer: Rc<Timer>, callback: PollCallback, interval: Duration) {
     let callback_for_timer = callback.clone();
@@ -136,10 +163,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     let (watch_tx, watch_rx) = mpsc::channel();
+    #[cfg(target_os = "ios")]
+    let (_watch_tx, watch_rx) = mpsc::channel::<notify::Result<notify::Event>>();
+    #[cfg(not(target_os = "ios"))]
     let watcher = Rc::new(RefCell::new(notify::recommended_watcher(move |result| {
         let _ = watch_tx.send(result);
     })?));
+    #[cfg(target_os = "ios")]
+    let watcher = Rc::new(RefCell::new(NoopWatcher));
 
     if let Some(root) = state.borrow().workspace.root_path() {
         if let Err(error) = watcher.borrow_mut().watch(root, RecursiveMode::Recursive) {
