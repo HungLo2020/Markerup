@@ -118,7 +118,7 @@ jobs:
           api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
           uses-non-exempt-encryption: 'false'
-          wait-for-processing: 'true'
+          wait-for-processing: 'false'
 
       - name: Upload signed IPA and archive
         uses: actions/upload-artifact@v4
