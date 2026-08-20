@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+pub const SCAN_DEBOUNCE: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub struct PendingPreview {
@@ -29,6 +30,7 @@ pub struct PendingSearch {
 pub struct PendingScan {
     pub generation: u64,
     pub due: Instant,
+    pub full_tree: bool,
 }
 
 #[derive(Clone)]
@@ -87,12 +89,6 @@ impl AppState {
         *self = Self::new(workspace, pinned);
     }
 
-    pub fn refresh_entries(&mut self) -> std::io::Result<()> {
-        let entries = self.workspace.entries()?;
-        self.apply_entries(entries);
-        Ok(())
-    }
-
     pub fn apply_entries(&mut self, entries: Vec<WorkspaceEntry>) {
         self.entries = entries;
         if !self.expansion_initialized {
@@ -127,11 +123,28 @@ impl AppState {
     }
 
     pub fn schedule_scan(&mut self, delay: Duration) {
+        self.schedule_scan_mode(delay, true);
+    }
+
+    pub fn schedule_current_file_check(&mut self, delay: Duration) {
+        self.schedule_scan_mode(delay, false);
+    }
+
+    fn schedule_scan_mode(&mut self, delay: Duration, full_tree: bool) {
         if !self.workspace.is_open() { return; }
         self.scan_generation = self.scan_generation.wrapping_add(1);
-        self.pending_scan = Some(PendingScan {
-            generation: self.scan_generation,
-            due: Instant::now() + delay,
+        let due = Instant::now() + delay;
+        self.pending_scan = Some(match self.pending_scan.take() {
+            Some(pending) => PendingScan {
+                generation: self.scan_generation,
+                due: pending.due.min(due),
+                full_tree: pending.full_tree || full_tree,
+            },
+            None => PendingScan {
+                generation: self.scan_generation,
+                due,
+                full_tree,
+            },
         });
     }
 
@@ -173,16 +186,6 @@ pub fn parent_id(id: &str) -> EntryId {
     id.rsplit_once('/').map(|(parent, _)| parent.to_string()).unwrap_or_default()
 }
 
-fn ancestor_dirs(id: &str) -> Vec<EntryId> {
-    let mut ancestors = Vec::new();
-    let mut current = parent_id(id);
-    while !current.is_empty() {
-        ancestors.push(current.clone());
-        current = parent_id(&current);
-    }
-    ancestors
-}
-
 pub fn rebase_id(id: &str, old: &str, new: &str) -> EntryId {
     if id == old { return new.to_string(); }
     id.strip_prefix(&format!("{old}/"))
@@ -205,17 +208,26 @@ pub fn sync_flags(ui: &MainWindow, state: &AppState) {
 pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
     let mut labels = Vec::new();
     let mut ids = Vec::new();
+    // `entries` is emitted in depth-first order. Keep the currently visited
+    // directory path instead of rebuilding every ancestor path for every row.
+    let mut ancestors: Vec<EntryId> = Vec::new();
     for entry in &state.entries {
-        if ancestor_dirs(&entry.id).iter().any(|a| !state.expanded.contains(a)) { continue; }
-        let indent = "    ".repeat(entry.depth);
-        let marker = if state.selected.as_deref() == Some(entry.id.as_str()) { "• " } else { "  " };
-        let kind = match entry.kind {
-            EntryKind::Directory if state.expanded.contains(&entry.id) => "▾ ",
-            EntryKind::Directory => "▸ ",
-            EntryKind::File => "  ",
-        };
-        labels.push(format!("{marker}{indent}{kind}{}", entry.name));
-        ids.push(entry.id.clone());
+        ancestors.truncate(entry.depth);
+        let visible = ancestors.iter().all(|id| state.expanded.contains(id));
+        if visible {
+            let indent = "    ".repeat(entry.depth);
+            let marker = if state.selected.as_deref() == Some(entry.id.as_str()) { "• " } else { "  " };
+            let kind = match entry.kind {
+                EntryKind::Directory if state.expanded.contains(&entry.id) => "▾ ",
+                EntryKind::Directory => "▸ ",
+                EntryKind::File => "  ",
+            };
+            labels.push(format!("{marker}{indent}{kind}{}", entry.name));
+            ids.push(entry.id.clone());
+        }
+        if entry.kind == EntryKind::Directory {
+            ancestors.push(entry.id.clone());
+        }
     }
     state.tree_ids = ids;
     ui.set_tree_labels(string_model(labels));
@@ -257,8 +269,10 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
     let mut images = Vec::new();
     let mut labels = Vec::new();
     if let Some(current) = state.current_file.as_deref() {
+        let mut seen_assets = HashSet::new();
         for reference in result.images {
             let Some(asset_id) = state.workspace.resolve_asset_link(current, &reference.destination) else { continue };
+            if !seen_assets.insert(asset_id.clone()) { continue; }
             let Ok(path) = state.workspace.absolute_asset_path(&asset_id) else { continue };
             let metadata = fs::metadata(&path).ok();
             let modified = metadata.as_ref().and_then(|value| value.modified().ok());
@@ -305,15 +319,18 @@ pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResu
     if result.generation != state.scan_generation { return; }
     let apply_started = Instant::now();
 
-    let entries = match result.entries {
-        Ok(entries) => entries,
-        Err(error) => { set_status(ui, format!("Workspace refresh failed: {error}")); return; }
-    };
-    state.apply_entries(entries);
-    render_tree(ui, state);
+    let full_tree = result.entries.is_some();
+    if let Some(entries) = result.entries {
+        let entries = match entries {
+            Ok(entries) => entries,
+            Err(error) => { set_status(ui, format!("Workspace refresh failed: {error}")); return; }
+        };
+        state.apply_entries(entries);
+        render_tree(ui, state);
+    }
 
     if let Some(current) = state.current_file.clone() {
-        let still_exists = state.entries.iter().any(|entry| entry.kind == EntryKind::File && entry.id == current);
+        let still_exists = !full_tree || state.entries.iter().any(|entry| entry.kind == EntryKind::File && entry.id == current);
         if !still_exists {
             if state.dirty {
                 state.external_conflict = true;

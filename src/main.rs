@@ -7,11 +7,11 @@ mod workers;
 mod workspace;
 mod workspace_picker;
 
-use crate::app::{apply_preview_result, apply_scan_result, apply_search_result, open_file, render_tree, reset_workspace_ui, save_session_for, set_status, sync_flags, AppState};
+use crate::app::{apply_preview_result, apply_scan_result, apply_search_result, open_file, render_tree, reset_workspace_ui, save_session_for, set_status, sync_flags, AppState, SCAN_DEBOUNCE};
 use crate::persistence::{clear_session, load_session};
 use crate::workers::{WorkerRequest, WorkerResult};
-use crate::workspace::{LocalWorkspace, Workspace, WorkspaceSlot};
-use notify::{RecursiveMode, Watcher};
+use crate::workspace::{LocalWorkspace, WorkspaceSlot};
+use notify::{EventKind, RecursiveMode, Watcher};
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -156,11 +156,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Some(ui) = ui_weak.upgrade() else { return };
             let now = Instant::now();
 
-            let mut watcher_changed = false;
+            let mut watcher_requires_full_scan = false;
+            let mut watcher_current_file_changed = false;
             let mut watcher_error = None;
             while let Ok(result) = watch_rx.try_recv() {
                 match result {
-                    Ok(_) => watcher_changed = true,
+                    Ok(event) => {
+                        let current_file_path = {
+                            let state = state.borrow();
+                            state.workspace.root_path().and_then(|root| {
+                                state.current_file.as_deref().map(|id| root.join(id))
+                            })
+                        };
+                        let is_current_file_modify = matches!(event.kind, EventKind::Modify(_))
+                            && current_file_path.as_ref().is_some_and(|current| {
+                                !event.paths.is_empty() && event.paths.iter().all(|path| path == current)
+                            });
+                        if is_current_file_modify {
+                            watcher_current_file_changed = true;
+                        } else {
+                            watcher_requires_full_scan = true;
+                        }
+                    }
                     Err(error) => watcher_error = Some(error.to_string()),
                 }
             }
@@ -174,8 +191,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             {
                 let mut state = state.borrow_mut();
-                if state.workspace.is_open() && (watcher_changed || periodic_reconcile) {
-                    state.schedule_scan(Duration::ZERO);
+                if state.workspace.is_open() && (watcher_requires_full_scan || periodic_reconcile) {
+                    // Filesystem watchers commonly emit several events for one
+                    // logical save. Coalesce them before walking the workspace.
+                    state.schedule_scan(SCAN_DEBOUNCE);
+                } else if state.workspace.is_open() && watcher_current_file_changed {
+                    state.schedule_current_file_check(SCAN_DEBOUNCE);
                 }
 
                 if ui.get_view_mode() != 0 {
@@ -215,6 +236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 generation: pending.generation,
                                 workspace,
                                 current_file: state.current_file.clone(),
+                                full_tree: pending.full_tree,
                             }).is_err() {
                                 set_status(&ui, "Workspace worker stopped unexpectedly");
                             }
@@ -234,7 +256,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    if let Some(restored) = restore_file.filter(|id| state.borrow().workspace.read(id).is_ok()) {
+    if let Some(restored) = restore_file {
+        // `open_file` performs the authoritative read. Avoid reading the
+        // restored note once just to check whether it exists and then again
+        // to display it.
         open_file(&ui, &mut state.borrow_mut(), restored, false);
     } else if !state.borrow().workspace.is_open() {
         set_status(&ui, "Choose a folder to use as a Markerup workspace");

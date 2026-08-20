@@ -1,7 +1,5 @@
 use crate::markdown::{image_references, preview_blocks, ImageReference, PreviewBlock};
 use crate::workspace::{EntryId, LocalWorkspace, Workspace, WorkspaceEntry};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -22,6 +20,7 @@ pub enum WorkerRequest {
         generation: u64,
         workspace: LocalWorkspace,
         current_file: Option<EntryId>,
+        full_tree: bool,
     },
 }
 
@@ -51,7 +50,7 @@ pub struct SearchResult {
 #[derive(Debug)]
 pub struct ScanResult {
     pub generation: u64,
-    pub entries: Result<Vec<WorkspaceEntry>, String>,
+    pub entries: Option<Result<Vec<WorkspaceEntry>, String>>,
     pub current_file: Option<EntryId>,
     pub current_text: Option<Result<String, String>>,
     pub elapsed: Duration,
@@ -145,10 +144,13 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                             elapsed: started.elapsed(),
                         })
                     }
-                    WorkerRequest::Scan { generation, workspace, current_file } => {
+                    WorkerRequest::Scan { generation, workspace, current_file, full_tree } => {
                         let started = Instant::now();
+                        // A current-file check can still represent an edited
+                        // note, so invalidate cached search contents for both
+                        // scan modes. The next search rebuilds from disk.
                         search_index = None;
-                        let entries = workspace.entries().map_err(|error| error.to_string());
+                        let entries = full_tree.then(|| workspace.entries().map_err(|error| error.to_string()));
                         let current_text = current_file
                             .as_deref()
                             .map(|id| workspace.read(id).map_err(|error| error.to_string()));
@@ -171,7 +173,13 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
 }
 
 pub fn hash_text(text: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
+    // This hash is only used to detect whether two versions of the editor
+    // contents are equal. It is not security-sensitive, so avoid SipHash's
+    // relatively high per-byte cost on every preview/save operation.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
