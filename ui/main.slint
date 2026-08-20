@@ -154,6 +154,7 @@ export component MainWindow inherits Window {
 
                 VerticalBox {
                     width: 300px;
+                    vertical-stretch: 1;
                     spacing: 5px;
                     Text { text: "Workspace"; font-weight: 700; }
                     Text { text: root.selected-path == "" ? "Nothing selected" : root.selected-path; overflow: elide; }
@@ -171,6 +172,7 @@ export component MainWindow inherits Window {
                     }
 
                     ListView {
+                        vertical-stretch: 1;
                         for label[index] in root.tree-labels : Button {
                             text: label;
                             clicked => { root.tree-selected(index); }
@@ -181,13 +183,13 @@ export component MainWindow inherits Window {
                     Text { text: "Search all notes"; font-weight: 700; }
                     LineEdit {
                         text <=> root.search-query;
-                        edited => { root.search-requested(self.text); }
+                        edited => { root.search_requested(self.text); }
                     }
                     ListView {
                         height: 150px;
                         for result[index] in root.search-results : Button {
                             text: result;
-                            clicked => { root.search-result-selected(index); }
+                            clicked => { root.search_result_selected(index); }
                         }
                     }
                 }
@@ -195,6 +197,7 @@ export component MainWindow inherits Window {
                 Rectangle { width: 1px; background: #80808040; }
 
                 VerticalBox {
+                    vertical-stretch: 1;
                     spacing: 5px;
                     HorizontalBox {
                         Text { text: (root.dirty ? "● " : "") + root.current-path; font-weight: 700; overflow: elide; }
@@ -213,13 +216,16 @@ export component MainWindow inherits Window {
                     }
 
                     HorizontalBox {
+                        vertical-stretch: 1;
                         spacing: 7px;
 
                         source-pane := VerticalBox {
                             visible: root.view-mode != 2;
                             horizontal-stretch: 1;
+                            vertical-stretch: 1;
                             Text { text: "Markdown source"; font-weight: 600; }
                             editor := TextEdit {
+                                vertical-stretch: 1;
                                 text <=> root.editor-text;
                                 wrap: word-wrap;
                                 font-family: "monospace";
@@ -230,8 +236,10 @@ export component MainWindow inherits Window {
                         preview-pane := VerticalBox {
                             visible: root.view-mode != 0;
                             horizontal-stretch: 1;
+                            vertical-stretch: 1;
                             Text { text: "Preview"; font-weight: 600; }
                             ScrollView {
+                                vertical-stretch: 1;
                                 VerticalBox {
                                     spacing: 8px;
                                     StyledText {
