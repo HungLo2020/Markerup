@@ -1,98 +1,210 @@
-import { Button, HorizontalBox, ListView, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
+import { Button, HorizontalBox, LineEdit, ListView, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
 
 export component MainWindow inherits Window {
-    title: "Markerup";
-    preferred-width: 1200px;
-    preferred-height: 760px;
-    min-width: 760px;
-    min-height: 480px;
+    title: root.dirty ? "Markerup *" : "Markerup";
+    preferred-width: 1360px;
+    preferred-height: 820px;
+    min-width: 840px;
+    min-height: 520px;
+    forward-focus: keyboard;
 
-    in-out property <[string]> files;
+    in-out property <[string]> tree-labels;
+    in-out property <[string]> search-results;
+    in-out property <[image]> preview-images;
+    in-out property <[string]> preview-image-labels;
     in-out property <string> workspace-path: "";
+    in-out property <string> selected-path: "";
     in-out property <string> current-path: "No note selected";
     in-out property <string> editor-text: "";
     in-out property <styled-text> preview;
     in-out property <string> status: "Ready";
+    in-out property <string> action-name: "";
+    in-out property <string> search-query: "";
+    in-out property <string> find-query: "";
+    in-out property <string> find-status: "";
+    in-out property <bool> dirty: false;
+    in-out property <bool> external-conflict: false;
+    in-out property <bool> can-go-back: false;
+    in-out property <bool> can-go-forward: false;
+    in-out property <int> view-mode: 1;
 
-    callback file-selected(int);
+    callback tree-selected(int);
     callback save-requested(string);
+    callback overwrite-requested(string);
+    callback reload-requested();
     callback editor-changed(string);
     callback preview-link-clicked(string);
     callback refresh-requested();
+    callback new-note-requested(string);
+    callback new-folder-requested(string);
+    callback rename-requested(string);
+    callback delete-requested();
+    callback search-requested(string);
+    callback search-result-selected(int);
+    callback find-next-requested(string);
+    callback back-requested();
+    callback forward-requested();
+    callback select-editor-range(int, int);
 
-    VerticalBox {
-        padding: 10px;
-        spacing: 8px;
+    select-editor-range(start, end) => {
+        editor.set-selection-offsets(start, end);
+        editor.focus();
+    }
 
-        HorizontalBox {
-            height: 36px;
+    keyboard := FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        KeyBinding {
+            keys: @keys(Control + S);
+            activated => { root.save-requested(root.editor-text); }
+        }
+        KeyBinding {
+            keys: @keys(Control + F);
+            activated => { root.find-next-requested(root.find-query); }
+        }
+
+        VerticalBox {
+            padding: 10px;
+            spacing: 7px;
+
+            HorizontalBox {
+                height: 36px;
+                spacing: 6px;
+                Text {
+                    text: "Markerup  •  " + root.workspace-path;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Button { text: "←"; enabled: root.can-go-back; clicked => { root.back-requested(); } }
+                Button { text: "→"; enabled: root.can-go-forward; clicked => { root.forward-requested(); } }
+                Button { text: "Refresh"; clicked => { root.refresh-requested(); } }
+                Button { text: "Reload"; enabled: root.current-path != "No note selected"; clicked => { root.reload-requested(); } }
+                Button {
+                    text: "Save";
+                    enabled: root.current-path != "No note selected" && root.dirty && !root.external-conflict;
+                    clicked => { root.save-requested(root.editor-text); }
+                }
+            }
+
+            if root.external-conflict : Rectangle {
+                height: 42px;
+                background: #7d2b2b;
+                HorizontalBox {
+                    padding: 6px;
+                    spacing: 8px;
+                    Text { text: "External change conflict — choose which version wins."; color: white; vertical-alignment: center; }
+                    Button { text: "Use Disk"; clicked => { root.reload-requested(); } }
+                    Button { text: "Overwrite Disk"; clicked => { root.overwrite-requested(root.editor-text); } }
+                }
+            }
+
+            Rectangle { height: 1px; background: #80808040; }
+
+            HorizontalBox {
+                spacing: 8px;
+
+                VerticalBox {
+                    width: 300px;
+                    spacing: 5px;
+                    Text { text: "Workspace"; font-weight: 700; }
+                    Text { text: root.selected-path == "" ? "Nothing selected" : root.selected-path; overflow: elide; }
+
+                    HorizontalBox {
+                        spacing: 4px;
+                        LineEdit { text <=> root.action-name; }
+                        Button { text: "+ Note"; clicked => { root.new-note-requested(root.action-name); } }
+                        Button { text: "+ Folder"; clicked => { root.new-folder-requested(root.action-name); } }
+                    }
+                    HorizontalBox {
+                        spacing: 4px;
+                        Button { text: "Rename"; enabled: root.selected-path != ""; clicked => { root.rename-requested(root.action-name); } }
+                        Button { text: "Delete"; enabled: root.selected-path != ""; clicked => { root.delete-requested(); } }
+                    }
+
+                    ListView {
+                        for label[index] in root.tree-labels : Button {
+                            text: label;
+                            clicked => { root.tree-selected(index); }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: #80808040; }
+                    Text { text: "Search all notes"; font-weight: 700; }
+                    LineEdit {
+                        text <=> root.search-query;
+                        edited => { root.search-requested(self.text); }
+                    }
+                    ListView {
+                        height: 150px;
+                        for result[index] in root.search-results : Button {
+                            text: result;
+                            clicked => { root.search-result-selected(index); }
+                        }
+                    }
+                }
+
+                Rectangle { width: 1px; background: #80808040; }
+
+                VerticalBox {
+                    spacing: 5px;
+                    HorizontalBox {
+                        Text { text: (root.dirty ? "● " : "") + root.current-path; font-weight: 700; overflow: elide; }
+                        Button { text: "Source"; clicked => { root.view-mode = 0; } }
+                        Button { text: "Split"; clicked => { root.view-mode = 1; } }
+                        Button { text: "Preview"; clicked => { root.view-mode = 2; } }
+                    }
+
+                    HorizontalBox {
+                        height: 34px;
+                        spacing: 5px;
+                        Text { text: "Find:"; vertical-alignment: center; }
+                        LineEdit { text <=> root.find-query; }
+                        Button { text: "Next"; enabled: root.current-path != "No note selected"; clicked => { root.find-next-requested(root.find-query); } }
+                        Text { text: root.find-status; vertical-alignment: center; }
+                    }
+
+                    HorizontalBox {
+                        spacing: 7px;
+                        if root.view-mode != 2 : VerticalBox {
+                            Text { text: "Markdown source"; font-weight: 600; }
+                            editor := TextEdit {
+                                text <=> root.editor-text;
+                                wrap: word-wrap;
+                                font-family: "monospace";
+                                edited => { root.editor-changed(self.text); }
+                            }
+                        }
+
+                        if root.view-mode != 0 : VerticalBox {
+                            Text { text: "Preview"; font-weight: 600; }
+                            ScrollView {
+                                VerticalBox {
+                                    spacing: 8px;
+                                    StyledText {
+                                        width: parent.width - 20px;
+                                        text: root.preview;
+                                        link-clicked(link) => { root.preview-link-clicked(link); }
+                                    }
+                                    for preview-image[index] in root.preview-images : VerticalBox {
+                                        Text { text: root.preview-image-labels[index]; font-weight: 600; }
+                                        Image { source: preview-image; height: 240px; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #80808040; }
             Text {
-                text: "Markerup  •  " + root.workspace-path;
+                height: 24px;
+                text: root.status;
+                color: root.external-conflict ? #ff7070 : root.dirty ? #d89b36 : #808080;
                 vertical-alignment: center;
                 overflow: elide;
             }
-            Button {
-                text: "Refresh";
-                clicked => { root.refresh-requested(); }
-            }
-            Button {
-                text: "Save";
-                enabled: root.current-path != "No note selected";
-                clicked => { root.save-requested(root.editor-text); }
-            }
-        }
-
-        Rectangle { height: 1px; background: #80808040; }
-
-        HorizontalBox {
-            spacing: 8px;
-
-            VerticalBox {
-                width: 250px;
-                Text { text: "Notes"; font-weight: 700; }
-                ListView {
-                    for file[index] in root.files : Button {
-                        text: file;
-                        clicked => { root.file-selected(index); }
-                    }
-                }
-            }
-
-            Rectangle { width: 1px; background: #80808040; }
-
-            VerticalBox {
-                Text {
-                    text: root.current-path;
-                    font-weight: 700;
-                    overflow: elide;
-                }
-                TextEdit {
-                    text <=> root.editor-text;
-                    wrap: word-wrap;
-                    edited => { root.editor-changed(self.text); }
-                }
-            }
-
-            Rectangle { width: 1px; background: #80808040; }
-
-            VerticalBox {
-                Text { text: "Preview"; font-weight: 700; }
-                ScrollView {
-                    StyledText {
-                        width: parent.width - 20px;
-                        text: root.preview;
-                        link-clicked(link) => { root.preview-link-clicked(link); }
-                    }
-                }
-            }
-        }
-
-        Rectangle { height: 1px; background: #80808040; }
-        Text {
-            height: 24px;
-            text: root.status;
-            vertical-alignment: center;
-            overflow: elide;
         }
     }
 }

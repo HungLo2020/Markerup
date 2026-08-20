@@ -1,175 +1,98 @@
+mod app;
+mod handlers_editor;
+mod handlers_workspace;
 mod markdown;
+mod persistence;
 mod workspace;
 
-use crate::markdown::preview_markdown;
-use crate::workspace::{LocalWorkspace, Workspace};
-use slint::{ComponentHandle, ModelRc, SharedString, StyledText, VecModel};
+use crate::app::{open_file, refresh_workspace, render_tree, set_status, sync_flags, AppState};
+use crate::persistence::load_session;
+use crate::workspace::{EntryKind, LocalWorkspace, Workspace};
+use notify::{RecursiveMode, Watcher};
+use slint::{ComponentHandle, Timer, TimerMode};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::time::Duration;
 
 slint::include_modules!();
 
-struct AppState {
-    workspace: LocalWorkspace,
-    files: Vec<PathBuf>,
-    current_file: Option<PathBuf>,
-}
-
-impl AppState {
-    fn new(workspace: LocalWorkspace) -> Self {
-        Self {
-            workspace,
-            files: Vec::new(),
-            current_file: None,
-        }
-    }
-
-    fn refresh_files(&mut self) -> std::io::Result<()> {
-        self.files = self.workspace.markdown_files()?;
-        Ok(())
-    }
-}
-
-fn string_model(values: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
-    ModelRc::new(VecModel::from(
-        values
-            .into_iter()
-            .map(SharedString::from)
-            .collect::<Vec<_>>(),
-    ))
-}
-
-fn set_preview(ui: &MainWindow, source: &str) {
-    let compatible = preview_markdown(source);
-    let styled = StyledText::from_markdown(&compatible)
-        .unwrap_or_else(|_| StyledText::from_plain_text(source));
-    ui.set_preview(styled);
-}
-
-fn show_file(ui: &MainWindow, state: &mut AppState, relative_path: PathBuf) {
-    match state.workspace.read(&relative_path) {
-        Ok(contents) => {
-            state.current_file = Some(relative_path.clone());
-            ui.set_current_path(relative_path.to_string_lossy().into_owned().into());
-            ui.set_editor_text(contents.clone().into());
-            set_preview(ui, &contents);
-            ui.set_status("Ready".into());
-        }
-        Err(error) => ui.set_status(format!("Open failed: {error}").into()),
-    }
-}
-
-fn refresh_file_list(ui: &MainWindow, state: &mut AppState) {
-    match state.refresh_files() {
-        Ok(()) => {
-            ui.set_files(string_model(
-                state
-                    .files
-                    .iter()
-                    .map(|path| path.to_string_lossy().into_owned()),
-            ));
-            ui.set_status(
-                format!(
-                    "{} Markdown file{}",
-                    state.files.len(),
-                    if state.files.len() == 1 { "" } else { "s" }
-                )
-                .into(),
-            );
-        }
-        Err(error) => ui.set_status(format!("Refresh failed: {error}").into()),
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
+    let saved = load_session();
+    let explicit_root = std::env::args_os().nth(1).map(PathBuf::from);
+    let root = explicit_root
+        .clone()
+        .or_else(|| saved.as_ref().map(|session| session.workspace.clone()))
+        .filter(|path| path.is_dir())
         .unwrap_or(std::env::current_dir()?);
+
     let workspace = LocalWorkspace::open(&root)?;
+    let watcher_root = workspace.root_path().to_path_buf();
+    let restore_file = explicit_root
+        .is_none()
+        .then(|| saved.as_ref().and_then(|session| session.current_file.clone()))
+        .flatten();
 
     let ui = MainWindow::new()?;
-    ui.set_workspace_path(workspace.root().to_string_lossy().into_owned().into());
+    ui.set_workspace_path(workspace.root_display().into());
 
     let state = Rc::new(RefCell::new(AppState::new(workspace)));
-    refresh_file_list(&ui, &mut state.borrow_mut());
+    {
+        let mut state = state.borrow_mut();
+        state.refresh_entries()?;
+        render_tree(&ui, &mut state);
+    }
 
+    handlers_workspace::wire(&ui, state.clone());
+    handlers_editor::wire(&ui, state.clone());
+
+    let (watch_tx, watch_rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |result| {
+        let _ = watch_tx.send(result);
+    })?;
+    watcher.watch(&watcher_root, RecursiveMode::Recursive)?;
+
+    let timer = Timer::default();
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
-        ui.on_file_selected(move |index| {
+        timer.start(TimerMode::Repeated, Duration::from_millis(500), move || {
+            let mut changed = false;
+            let mut last_error = None;
+            while let Ok(result) = watch_rx.try_recv() {
+                match result {
+                    Ok(_) => changed = true,
+                    Err(error) => last_error = Some(error.to_string()),
+                }
+            }
             let Some(ui) = ui_weak.upgrade() else { return };
-            let path = state.borrow().files.get(index as usize).cloned();
-            if let Some(path) = path {
-                show_file(&ui, &mut state.borrow_mut(), path);
+            if let Some(error) = last_error {
+                set_status(&ui, format!("File watcher error: {error}"));
+            }
+            if changed {
+                refresh_workspace(&ui, &mut state.borrow_mut());
             }
         });
     }
 
-    {
-        let ui_weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_save_requested(move |contents| {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let current = state.borrow().current_file.clone();
-            let Some(current) = current else {
-                ui.set_status("No note selected".into());
-                return;
-            };
-
-            match state.borrow().workspace.write(&current, &contents) {
-                Ok(()) => ui.set_status(format!("Saved {}", current.display()).into()),
-                Err(error) => ui.set_status(format!("Save failed: {error}").into()),
-            }
-        });
-    }
-
-    {
-        let ui_weak = ui.as_weak();
-        ui.on_editor_changed(move |contents| {
-            if let Some(ui) = ui_weak.upgrade() {
-                set_preview(&ui, &contents);
-                ui.set_status("Modified (not saved)".into());
-            }
-        });
-    }
-
-    {
-        let ui_weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_preview_link_clicked(move |link| {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let current = state.borrow().current_file.clone();
-            let Some(current) = current else { return };
-            let target = state
+    let restored = restore_file
+        .filter(|id| state.borrow().workspace.read(id).is_ok())
+        .or_else(|| {
+            state
                 .borrow()
-                .workspace
-                .resolve_markdown_link(current.as_path(), &link);
-
-            if let Some(target) = target {
-                show_file(&ui, &mut state.borrow_mut(), target);
-            } else {
-                ui.set_status(format!("Not a local Markdown link: {link}").into());
-            }
+                .entries
+                .iter()
+                .find(|entry| entry.kind == EntryKind::File)
+                .map(|entry| entry.id.clone())
         });
+    if let Some(restored) = restored {
+        open_file(&ui, &mut state.borrow_mut(), restored, false);
     }
-
-    {
-        let ui_weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_refresh_requested(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                refresh_file_list(&ui, &mut state.borrow_mut());
-            }
-        });
-    }
-
-    let first = state.borrow().files.first().cloned();
-    if let Some(first) = first {
-        show_file(&ui, &mut state.borrow_mut(), first);
-    }
+    sync_flags(&ui, &state.borrow());
 
     ui.run()?;
+    drop(timer);
+    drop(watcher);
     Ok(())
 }
