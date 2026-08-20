@@ -2,6 +2,7 @@ use crate::markdown::{image_references, preview_blocks, ImageReference, PreviewB
 use crate::workspace::{EntryId, LocalWorkspace, Workspace, WorkspaceEntry};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -56,30 +57,88 @@ pub struct ScanResult {
     pub elapsed: Duration,
 }
 
-pub fn spawn_worker() -> (Sender<WorkerRequest>, Receiver<WorkerResult>) {
-    let (request_tx, request_rx) = mpsc::channel();
+#[derive(Clone)]
+pub struct WorkerSenders {
+    pub preview: Sender<WorkerRequest>,
+    pub io: Sender<WorkerRequest>,
+}
+
+struct SearchIndex {
+    root: PathBuf,
+    notes: Vec<(EntryId, String, String)>,
+}
+
+impl SearchIndex {
+    fn build(workspace: &LocalWorkspace) -> Result<Self, String> {
+        let root = workspace.root_path().to_path_buf();
+        let files = workspace.markdown_files().map_err(|error| error.to_string())?;
+        let mut notes = Vec::with_capacity(files.len());
+        for id in files {
+            let path_lower = id.to_lowercase();
+            let content_lower = workspace.read(&id).map(|text| text.to_lowercase()).unwrap_or_default();
+            notes.push((id, path_lower, content_lower));
+        }
+        Ok(Self { root, notes })
+    }
+
+    fn matches(&self, workspace: &LocalWorkspace, query: &str) -> bool {
+        self.root == workspace.root_path()
+            && !query.trim().is_empty()
+    }
+
+    fn search(&self, query: &str) -> Vec<EntryId> {
+        let query = query.trim().to_lowercase();
+        self.notes.iter()
+            .filter(|(_, path, content)| path.contains(&query) || content.contains(&query))
+            .map(|(id, _, _)| id.clone())
+            .collect()
+    }
+}
+
+pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
+    let (preview_tx, preview_rx) = mpsc::channel();
+    let (io_tx, io_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
 
+    {
+        let result_tx = result_tx.clone();
+        thread::Builder::new()
+            .name("markerup-preview".into())
+            .spawn(move || {
+                while let Ok(request) = preview_rx.recv() {
+                    let WorkerRequest::Preview { generation, source } = request else { continue };
+                    let started = Instant::now();
+                    let blocks = preview_blocks(&source);
+                    let images = image_references(&source);
+                    let result = WorkerResult::Preview(PreviewResult {
+                        generation,
+                        source_hash: hash_text(&source),
+                        blocks,
+                        images,
+                        elapsed: started.elapsed(),
+                    });
+                    if result_tx.send(result).is_err() { break; }
+                }
+            })
+            .expect("failed to start Markerup preview worker");
+    }
+
     thread::Builder::new()
-        .name("markerup-worker".into())
+        .name("markerup-io".into())
         .spawn(move || {
-            while let Ok(request) = request_rx.recv() {
+            let mut search_index: Option<SearchIndex> = None;
+            while let Ok(request) = io_rx.recv() {
                 let result = match request {
-                    WorkerRequest::Preview { generation, source } => {
-                        let started = Instant::now();
-                        let blocks = preview_blocks(&source);
-                        let images = image_references(&source);
-                        WorkerResult::Preview(PreviewResult {
-                            generation,
-                            source_hash: hash_text(&source),
-                            blocks,
-                            images,
-                            elapsed: started.elapsed(),
-                        })
-                    }
                     WorkerRequest::Search { generation, workspace, query } => {
                         let started = Instant::now();
-                        let results = workspace.search_markdown(&query).map_err(|error| error.to_string());
+                        let needs_rebuild = search_index.as_ref().is_none_or(|index| !index.matches(&workspace, &query));
+                        if needs_rebuild {
+                            search_index = SearchIndex::build(&workspace).ok();
+                        }
+                        let results = match search_index.as_ref() {
+                            Some(index) => Ok(index.search(&query)),
+                            None => workspace.search_markdown(&query).map_err(|error| error.to_string()),
+                        };
                         WorkerResult::Search(SearchResult {
                             generation,
                             results,
@@ -88,6 +147,7 @@ pub fn spawn_worker() -> (Sender<WorkerRequest>, Receiver<WorkerResult>) {
                     }
                     WorkerRequest::Scan { generation, workspace, current_file } => {
                         let started = Instant::now();
+                        search_index = None;
                         let entries = workspace.entries().map_err(|error| error.to_string());
                         let current_text = current_file
                             .as_deref()
@@ -100,16 +160,14 @@ pub fn spawn_worker() -> (Sender<WorkerRequest>, Receiver<WorkerResult>) {
                             elapsed: started.elapsed(),
                         })
                     }
+                    WorkerRequest::Preview { .. } => continue,
                 };
-
-                if result_tx.send(result).is_err() {
-                    break;
-                }
+                if result_tx.send(result).is_err() { break; }
             }
         })
-        .expect("failed to start Markerup background worker");
+        .expect("failed to start Markerup I/O worker");
 
-    (request_tx, result_rx)
+    (WorkerSenders { preview: preview_tx, io: io_tx }, result_rx)
 }
 
 pub fn hash_text(text: &str) -> u64 {
