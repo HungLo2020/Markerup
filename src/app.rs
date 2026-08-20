@@ -1,12 +1,13 @@
 use crate::markdown::{preview_markdown, PreviewBlockKind};
 use crate::persistence::{clear_session, save_session};
-use crate::workers::{hash_text, PreviewResult, ScanResult, SearchResult};
+use crate::workers::{hash_text, PreviewResult, ScanResult, SearchResult, LATEST_SEARCH_GENERATION};
 use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use crate::MainWindow;
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::time::{Duration, Instant, SystemTime};
+use std::rc::Rc;
 
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -66,6 +67,7 @@ pub struct AppState {
     pub pending_preview: Option<PendingPreview>,
     pub pending_search: Option<PendingSearch>,
     pub pending_scan: Option<PendingScan>,
+    pub tree_model: Rc<VecModel<SharedString>>,
     image_cache: HashMap<EntryId, CachedImage>,
 }
 
@@ -81,6 +83,7 @@ impl AppState {
             search_results: Vec::new(), find_query: String::new(), find_matches: Vec::new(),
             find_index: 0, delete_armed: None, preview_generation: 0, search_generation: 0,
             scan_generation: 0, pending_preview: None, pending_search: None, pending_scan: None,
+            tree_model: Rc::new(VecModel::from(Vec::<SharedString>::new())),
             image_cache: HashMap::new(),
         }
     }
@@ -110,6 +113,7 @@ impl AppState {
 
     pub fn schedule_search(&mut self, query: String) {
         self.search_generation = self.search_generation.wrapping_add(1);
+        LATEST_SEARCH_GENERATION.store(self.search_generation, std::sync::atomic::Ordering::Relaxed);
         if query.trim().is_empty() {
             self.pending_search = None;
             self.search_results.clear();
@@ -230,7 +234,8 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
         }
     }
     state.tree_ids = ids;
-    ui.set_tree_labels(string_model(labels));
+    state.tree_model.set_vec(labels.into_iter().map(SharedString::from).collect::<Vec<_>>());
+    ui.set_tree_labels(ModelRc::from(state.tree_model.clone()));
     ui.set_selected_path(state.selected.clone().unwrap_or_default().into());
 }
 
@@ -346,6 +351,7 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
 
 pub fn apply_search_result(ui: &MainWindow, state: &mut AppState, result: SearchResult) {
     if result.generation != state.search_generation { return; }
+    if result.cancelled { return; }
     match result.results {
         Ok(results) => {
             state.search_results = results.clone();

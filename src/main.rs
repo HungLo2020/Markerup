@@ -21,7 +21,22 @@ use std::time::{Duration, Instant};
 slint::include_modules!();
 
 const UI_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const ACTIVE_POLL_WINDOW: Duration = Duration::from_secs(1);
 const FULL_RECONCILE_INTERVAL_TICKS: u16 = 600; // 30 seconds at 50 ms/tick.
+
+type PollCallback = Rc<RefCell<Option<Box<dyn FnMut()>>>>;
+
+fn arm_poll_timer(timer: Rc<Timer>, callback: PollCallback, interval: Duration) {
+    let callback_for_timer = callback.clone();
+    timer.start(TimerMode::SingleShot, interval, move || {
+        let callback_to_run = callback_for_timer.borrow_mut().take();
+        if let Some(mut callback) = callback_to_run {
+            callback();
+            callback_for_timer.borrow_mut().replace(callback);
+        }
+    });
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved = load_session();
@@ -50,6 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sync_flags(&ui, &state);
         if state.workspace.is_open() {
             state.schedule_scan(Duration::ZERO);
+        }
+        if let Ok(query) = std::env::var("MARKERUP_PERF_SEARCH_QUERY") {
+            if !query.trim().is_empty() {
+                state.schedule_search(query);
+            }
         }
     }
 
@@ -147,14 +167,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (workers, worker_rx) = workers::spawn_workers();
-    let timer = Timer::default();
+    let timer = Rc::new(Timer::default());
+    let poll_callback: PollCallback = Rc::new(RefCell::new(None));
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
+        let timer_for_poll = timer.clone();
+        let callback_for_poll = poll_callback.clone();
         let reconcile_tick = Cell::new(0u16);
-        timer.start(TimerMode::Repeated, UI_POLL_INTERVAL, move || {
+        let busy_until = Cell::new(Instant::now() + ACTIVE_POLL_WINDOW);
+        let perf_ticks = Cell::new(0u64);
+        let perf_last_tick = Cell::new(None::<Instant>);
+        let perf_tick_started = Cell::new(None::<Instant>);
+        let perf_tick_count = Cell::new(0u64);
+        *poll_callback.borrow_mut() = Some(Box::new(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let now = Instant::now();
+            let tick_started = now;
+            let tick_number = perf_ticks.get().wrapping_add(1);
+            perf_ticks.set(tick_number);
 
             let mut watcher_requires_full_scan = false;
             let mut watcher_current_file_changed = false;
@@ -172,6 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if matches!(event.kind, EventKind::Access(_)) {
                             continue;
                         }
+                        busy_until.set(now + ACTIVE_POLL_WINDOW);
 
                         let current_file_path = {
                             let state = state.borrow();
@@ -219,6 +251,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 source: pending.source,
                             }).is_err() {
                                 set_status(&ui, "Preview worker stopped unexpectedly");
+                            } else {
+                                busy_until.set(now + ACTIVE_POLL_WINDOW);
                             }
                         }
                     }
@@ -234,6 +268,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 query: pending.query,
                             }).is_err() {
                                 set_status(&ui, "Search worker stopped unexpectedly");
+                            } else {
+                                busy_until.set(now + ACTIVE_POLL_WINDOW);
                             }
                         }
                     }
@@ -250,6 +286,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 full_tree: pending.full_tree,
                             }).is_err() {
                                 set_status(&ui, "Workspace worker stopped unexpectedly");
+                            } else {
+                                busy_until.set(now + ACTIVE_POLL_WINDOW);
                             }
                         }
                     }
@@ -257,6 +295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             while let Ok(result) = worker_rx.try_recv() {
+                busy_until.set(now + ACTIVE_POLL_WINDOW);
                 let mut state = state.borrow_mut();
                 match result {
                     WorkerResult::Preview(result) => apply_preview_result(&ui, &mut state, result),
@@ -264,8 +303,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     WorkerResult::Scan(result) => apply_scan_result(&ui, &mut state, result),
                 }
             }
-        });
+
+            let active = busy_until.get() > Instant::now() || {
+                let state = state.borrow();
+                state.pending_preview.is_some()
+                    || state.pending_search.is_some()
+                    || state.pending_scan.is_some()
+            };
+            arm_poll_timer(
+                timer_for_poll.clone(),
+                callback_for_poll.clone(),
+                if active { UI_POLL_INTERVAL } else { IDLE_POLL_INTERVAL },
+            );
+
+            if std::env::var_os("MARKERUP_PERF").is_some() {
+                let interval = perf_last_tick.get().map(|last| tick_started.duration_since(last));
+                perf_last_tick.set(Some(tick_started));
+                let elapsed = perf_tick_started.get().map(|started| tick_started.duration_since(started));
+                if perf_tick_started.get().is_none() { perf_tick_started.set(Some(tick_started)); }
+                let count = perf_tick_count.get().wrapping_add(1);
+                perf_tick_count.set(count);
+                if count % 20 == 0 {
+                    let elapsed = elapsed.unwrap_or_default();
+                    let interval_ms = interval.map_or(0.0, |value| value.as_secs_f64() * 1000.0);
+                    let effective_fps = interval.map_or(0.0, |value| 1.0 / value.as_secs_f64());
+                    eprintln!(
+                        "markerup perf: ui cadence ticks={} interval_ms={interval_ms:.2} effective_fps={effective_fps:.2} callback_window_ms={:.2}",
+                        tick_number,
+                        elapsed.as_secs_f64() * 1000.0,
+                    );
+                    perf_tick_started.set(Some(tick_started));
+                }
+            }
+        }));
     }
+    arm_poll_timer(timer.clone(), poll_callback.clone(), UI_POLL_INTERVAL);
 
     if let Some(restored) = restore_file {
         // `open_file` performs the authoritative read. Avoid reading the

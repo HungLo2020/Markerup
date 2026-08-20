@@ -24,6 +24,7 @@ pub struct LinkTarget {
 
 pub trait Workspace {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>>;
+    #[allow(dead_code)]
     fn markdown_files(&self) -> io::Result<Vec<EntryId>>;
     fn read(&self, id: &str) -> io::Result<String>;
     fn write(&self, id: &str, contents: &str) -> io::Result<()>;
@@ -31,6 +32,7 @@ pub trait Workspace {
     fn create_directory(&self, parent: &str, name: &str) -> io::Result<EntryId>;
     fn rename(&self, id: &str, new_name: &str) -> io::Result<EntryId>;
     fn delete(&self, id: &str) -> io::Result<()>;
+    #[allow(dead_code)]
     fn search_markdown(&self, query: &str) -> io::Result<Vec<EntryId>>;
     fn resolve_markdown_link(&self, current_file: &str, link: &str) -> Option<LinkTarget>;
     fn resolve_asset_link(&self, current_file: &str, link: &str) -> Option<EntryId>;
@@ -91,10 +93,17 @@ impl LocalWorkspace {
         Ok(relative.to_string_lossy().replace('\\', "/"))
     }
 
-    fn scan_dir(&self, directory: &Path, depth: usize, entries: &mut Vec<WorkspaceEntry>) -> io::Result<()> {
+    fn scan_dir(
+        &self,
+        directory: &Path,
+        depth: usize,
+        entries: &mut Vec<WorkspaceEntry>,
+        should_cancel: Option<&dyn Fn() -> bool>,
+    ) -> io::Result<bool> {
         let mut children = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
         children.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
         for child in children {
+            if should_cancel.is_some_and(|cancel| cancel()) { return Ok(false); }
             let name = child.file_name();
             let name_text = name.to_string_lossy();
             if name_text.starts_with('.') { continue; }
@@ -108,7 +117,7 @@ impl LocalWorkspace {
                     kind: EntryKind::Directory,
                     depth,
                 });
-                self.scan_dir(&path, depth + 1, entries)?;
+                if !self.scan_dir(&path, depth + 1, entries, should_cancel)? { return Ok(false); }
             } else if ty.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("md")) {
                 entries.push(WorkspaceEntry {
                     id: self.id_for_path(&path)?,
@@ -118,7 +127,19 @@ impl LocalWorkspace {
                 });
             }
         }
-        Ok(())
+        Ok(true)
+    }
+
+    pub fn entries_with_cancel<F>(&self, should_cancel: F) -> io::Result<Option<Vec<WorkspaceEntry>>>
+    where
+        F: Fn() -> bool,
+    {
+        let mut entries = Vec::new();
+        if self.scan_dir(&self.root, 0, &mut entries, Some(&should_cancel))? {
+            Ok(Some(entries))
+        } else {
+            Ok(None)
+        }
     }
 
     fn resolved_relative_link(&self, current_file: &str, raw: &str) -> Option<PathBuf> {
@@ -135,7 +156,7 @@ impl LocalWorkspace {
 impl Workspace for LocalWorkspace {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
         let mut entries = Vec::new();
-        self.scan_dir(&self.root, 0, &mut entries)?;
+        self.scan_dir(&self.root, 0, &mut entries, None)?;
         Ok(entries)
     }
 
@@ -349,6 +370,14 @@ mod tests {
         let w = LocalWorkspace::open(&root).unwrap();
         assert_eq!(w.search_markdown("special").unwrap(), vec!["Root.md"]);
         assert!(w.search_markdown("other").unwrap().contains(&"nested/Other.md".to_string()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellable_scan_can_stop_before_building_entries() {
+        let root = temp();
+        let w = LocalWorkspace::open(&root).unwrap();
+        assert!(w.entries_with_cancel(|| true).unwrap().is_none());
         fs::remove_dir_all(root).unwrap();
     }
 }

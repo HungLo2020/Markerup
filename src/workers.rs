@@ -1,10 +1,55 @@
 use crate::markdown::{image_references, preview_blocks, ImageReference, PreviewBlock};
 use crate::workspace::{EntryId, LocalWorkspace, Workspace, WorkspaceEntry};
 use merman::render::HeadlessRenderer;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
+
+pub static LATEST_SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn normalize_mermaid_source(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| {
+            let leading = line.chars().take_while(|ch| *ch == ' ' || *ch == '\t').count();
+            let prefix = &line[..line
+                .char_indices()
+                .nth(leading)
+                .map_or(line.len(), |(index, _)| index)];
+            let rest = &line[prefix.len()..];
+            let mut normalized = prefix.replace('\t', "  ");
+            let mut offset = 0;
+            while let Some(relative) = rest[offset..].find('#') {
+                let index = offset + relative;
+                normalized.push_str(&rest[offset..index]);
+                if is_hex_color(rest, index) {
+                    normalized.push('#');
+                } else {
+                    normalized.push_str("Number");
+                }
+                offset = index + 1;
+            }
+            normalized.push_str(&rest[offset..]);
+            normalized
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_hex_color(line: &str, hash_index: usize) -> bool {
+    let hex = line[hash_index + 1..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_hexdigit())
+        .count();
+    matches!(hex, 3 | 4 | 6 | 8)
+        && line[hash_index + 1 + line[hash_index + 1..].chars().take(hex).map(char::len_utf8).sum::<usize>()..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !ch.is_ascii_alphanumeric())
+}
 
 #[derive(Debug)]
 pub enum WorkerRequest {
@@ -46,6 +91,7 @@ pub struct PreviewResult {
 pub struct SearchResult {
     pub generation: u64,
     pub results: Result<Vec<EntryId>, String>,
+    pub cancelled: bool,
     pub elapsed: Duration,
 }
 
@@ -66,20 +112,37 @@ pub struct WorkerSenders {
 
 struct SearchIndex {
     root: PathBuf,
-    notes: Vec<(EntryId, String, String)>,
+    notes: Vec<(EntryId, String)>,
+    content_cache: HashMap<EntryId, String>,
+    cache_order: VecDeque<EntryId>,
+    cache_bytes: usize,
 }
 
+const SEARCH_CACHE_LIMIT: usize = 4 * 1024 * 1024;
+
 impl SearchIndex {
-    fn build(workspace: &LocalWorkspace) -> Result<Self, String> {
+    fn build(workspace: &LocalWorkspace, generation: u64) -> Result<Option<Self>, String> {
         let root = workspace.root_path().to_path_buf();
-        let files = workspace.markdown_files().map_err(|error| error.to_string())?;
-        let mut notes = Vec::with_capacity(files.len());
-        for id in files {
+        let entries = workspace
+            .entries_with_cancel(|| {
+                LATEST_SEARCH_GENERATION.load(Ordering::Relaxed) != generation
+            })
+            .map_err(|error| error.to_string())?;
+        let Some(entries) = entries else { return Ok(None); };
+        let mut notes = Vec::with_capacity(entries.len());
+        for entry in entries.into_iter().filter(|entry| entry.kind == crate::workspace::EntryKind::File) {
+            if LATEST_SEARCH_GENERATION.load(Ordering::Relaxed) != generation { return Ok(None); }
+            let id = entry.id;
             let path_lower = id.to_lowercase();
-            let content_lower = workspace.read(&id).map(|text| text.to_lowercase()).unwrap_or_default();
-            notes.push((id, path_lower, content_lower));
+            notes.push((id, path_lower));
         }
-        Ok(Self { root, notes })
+        Ok(Some(Self {
+            root,
+            notes,
+            content_cache: HashMap::new(),
+            cache_order: VecDeque::new(),
+            cache_bytes: 0,
+        }))
     }
 
     fn matches(&self, workspace: &LocalWorkspace, query: &str) -> bool {
@@ -87,12 +150,41 @@ impl SearchIndex {
             && !query.trim().is_empty()
     }
 
-    fn search(&self, query: &str) -> Vec<EntryId> {
+    fn search(&mut self, workspace: &LocalWorkspace, query: &str, generation: u64) -> Option<Vec<EntryId>> {
         let query = query.trim().to_lowercase();
-        self.notes.iter()
-            .filter(|(_, path, content)| path.contains(&query) || content.contains(&query))
-            .map(|(id, _, _)| id.clone())
-            .collect()
+        let mut results = Vec::new();
+        for index in 0..self.notes.len() {
+            if LATEST_SEARCH_GENERATION.load(Ordering::Relaxed) != generation { return None; }
+            let (id, path) = &self.notes[index];
+            let id = id.clone();
+            let path = path.clone();
+            let path_match = path.contains(&query);
+            let content_match = if path_match {
+                false
+            } else if let Some(content) = self.content_cache.get(&id) {
+                content.contains(&query)
+            } else {
+                let content = workspace.read(&id).map(|text| text.to_lowercase()).unwrap_or_default();
+                let matched = content.contains(&query);
+                self.cache_content(&id, content);
+                matched
+            };
+            if path_match || content_match { results.push(id.clone()); }
+        }
+        Some(results)
+    }
+
+    fn cache_content(&mut self, id: &str, content: String) {
+        if content.len() > SEARCH_CACHE_LIMIT { return; }
+        while self.cache_bytes + content.len() > SEARCH_CACHE_LIMIT {
+            let Some(oldest) = self.cache_order.pop_front() else { break; };
+            if let Some(value) = self.content_cache.remove(&oldest) {
+                self.cache_bytes = self.cache_bytes.saturating_sub(value.len());
+            }
+        }
+        self.cache_bytes += content.len();
+        self.cache_order.push_back(id.to_string());
+        self.content_cache.insert(id.to_string(), content);
     }
 }
 
@@ -106,7 +198,7 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
         thread::Builder::new()
             .name("markerup-preview".into())
             .spawn(move || {
-                let mermaid_renderer = HeadlessRenderer::new();
+                let mut mermaid_renderer: Option<HeadlessRenderer> = None;
                 while let Ok(request) = preview_rx.recv() {
                     let WorkerRequest::Preview { generation, source } = request else { continue };
                     let started = Instant::now();
@@ -119,10 +211,12 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                                 return None;
                             }
                             let diagram_id = format!("markerup-{generation}-{index}");
+                            let renderer = mermaid_renderer.get_or_insert_with(HeadlessRenderer::new);
+                            let normalized_source = normalize_mermaid_source(&block.markdown);
                             Some(
-                                mermaid_renderer
+                                renderer
                                     .render_svg_resvg_safe_sync_with_diagram_id(
-                                        &block.markdown,
+                                        &normalized_source,
                                         &diagram_id,
                                     )
                                     .map_err(|error| error.to_string())
@@ -155,19 +249,27 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                 let result = match request {
                     WorkerRequest::Search { generation, workspace, query } => {
                         let started = Instant::now();
+                        if LATEST_SEARCH_GENERATION.load(Ordering::Relaxed) != generation {
+                            WorkerResult::Search(SearchResult {
+                                generation, results: Ok(Vec::new()), cancelled: true, elapsed: started.elapsed(),
+                            })
+                        } else {
                         let needs_rebuild = search_index.as_ref().is_none_or(|index| !index.matches(&workspace, &query));
                         if needs_rebuild {
-                            search_index = SearchIndex::build(&workspace).ok();
+                            search_index = SearchIndex::build(&workspace, generation).ok().flatten();
                         }
-                        let results = match search_index.as_ref() {
-                            Some(index) => Ok(index.search(&query)),
-                            None => workspace.search_markdown(&query).map_err(|error| error.to_string()),
+                        let (results, cancelled) = match search_index.as_mut() {
+                            Some(index) => match index.search(&workspace, &query, generation) {
+                                Some(results) => (Ok(results), false),
+                                None => (Ok(Vec::new()), true),
+                            },
+                            None => (Err("could not build search index".to_string()), false),
                         };
                         WorkerResult::Search(SearchResult {
-                            generation,
-                            results,
+                            generation, results, cancelled,
                             elapsed: started.elapsed(),
                         })
+                        }
                     }
                     WorkerRequest::Scan { generation, workspace, current_file, full_tree } => {
                         let started = Instant::now();
@@ -211,7 +313,16 @@ pub fn hash_text(text: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::HeadlessRenderer;
+    use super::{normalize_mermaid_source, HeadlessRenderer};
+
+    #[test]
+    fn mermaid_source_normalizes_leading_tabs() {
+        let source = "---\nconfig:\n\tlayout: elk\n---\nflowchart TD\n\tCell#([Cell#])\nstyle Cell# fill:#fff";
+        assert_eq!(
+            normalize_mermaid_source(source),
+            "---\nconfig:\n  layout: elk\n---\nflowchart TD\n  CellNumber([CellNumber])\nstyle CellNumber fill:#fff"
+        );
+    }
 
     #[test]
     fn merman_renders_a_flowchart_to_svg() {
