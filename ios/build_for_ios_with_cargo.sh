@@ -4,7 +4,8 @@ set -euo pipefail
 binary_name="${1:?missing cargo binary name}"
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 target="aarch64-apple-ios"
-if [[ "${PLATFORM_NAME:-}" == *simulator* ]]; then target="aarch64-apple-ios-sim"; fi
+platform="${PLATFORM_NAME:-} ${SDK_NAME:-} ${EFFECTIVE_PLATFORM_NAME:-}"
+if [[ "$platform" == *simulator* ]]; then target="aarch64-apple-ios-sim"; fi
 
 cargo build --manifest-path "$repo_root/Cargo.toml" --target "$target" --bin "$binary_name"
 
