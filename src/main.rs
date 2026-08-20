@@ -10,7 +10,7 @@ use crate::persistence::load_session;
 use crate::workspace::{EntryKind, LocalWorkspace, Workspace};
 use notify::{RecursiveMode, Watcher};
 use slint::{ComponentHandle, Timer, TimerMode};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
+        let polling_tick = Cell::new(0u8);
         timer.start(TimerMode::Repeated, Duration::from_millis(500), move || {
             let mut changed = false;
             let mut last_error = None;
@@ -66,11 +67,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(error) => last_error = Some(error.to_string()),
                 }
             }
+
+            let next_tick = polling_tick.get().wrapping_add(1);
+            polling_tick.set(next_tick);
+            let periodic_reconcile = next_tick % 4 == 0;
+
             let Some(ui) = ui_weak.upgrade() else { return };
             if let Some(error) = last_error {
                 set_status(&ui, format!("File watcher error: {error}"));
             }
-            if changed {
+            if changed || periodic_reconcile {
                 refresh_workspace(&ui, &mut state.borrow_mut());
             }
         });
