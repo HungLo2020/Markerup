@@ -162,6 +162,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             while let Ok(result) = watch_rx.try_recv() {
                 match result {
                     Ok(event) => {
+                        // Do not react to access/read notifications. The
+                        // workspace scanner itself opens directories while
+                        // walking them, and Linux notify backends can report
+                        // those opens as Access events. Treating them as
+                        // mutations creates a scan -> access event -> scan
+                        // loop and invalidates every scan result before it can
+                        // reach the UI.
+                        if matches!(event.kind, EventKind::Access(_)) {
+                            continue;
+                        }
+
                         let current_file_path = {
                             let state = state.borrow();
                             state.workspace.root_path().and_then(|root| {

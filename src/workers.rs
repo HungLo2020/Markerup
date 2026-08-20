@@ -1,5 +1,6 @@
 use crate::markdown::{image_references, preview_blocks, ImageReference, PreviewBlock};
 use crate::workspace::{EntryId, LocalWorkspace, Workspace, WorkspaceEntry};
+use merman::render::HeadlessRenderer;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -36,6 +37,7 @@ pub struct PreviewResult {
     pub generation: u64,
     pub source_hash: u64,
     pub blocks: Vec<PreviewBlock>,
+    pub mermaid_svgs: Vec<Option<Result<String, String>>>,
     pub images: Vec<ImageReference>,
     pub elapsed: Duration,
 }
@@ -104,15 +106,38 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
         thread::Builder::new()
             .name("markerup-preview".into())
             .spawn(move || {
+                let mermaid_renderer = HeadlessRenderer::new();
                 while let Ok(request) = preview_rx.recv() {
                     let WorkerRequest::Preview { generation, source } = request else { continue };
                     let started = Instant::now();
                     let blocks = preview_blocks(&source);
+                    let mermaid_svgs = blocks
+                        .iter()
+                        .enumerate()
+                        .map(|(index, block)| {
+                            if !matches!(block.kind, crate::markdown::PreviewBlockKind::Mermaid) {
+                                return None;
+                            }
+                            let diagram_id = format!("markerup-{generation}-{index}");
+                            Some(
+                                mermaid_renderer
+                                    .render_svg_resvg_safe_sync_with_diagram_id(
+                                        &block.markdown,
+                                        &diagram_id,
+                                    )
+                                    .map_err(|error| error.to_string())
+                                    .and_then(|svg| {
+                                        svg.ok_or_else(|| "no Mermaid diagram found".to_string())
+                                    }),
+                            )
+                        })
+                        .collect();
                     let images = image_references(&source);
                     let result = WorkerResult::Preview(PreviewResult {
                         generation,
                         source_hash: hash_text(&source),
                         blocks,
+                        mermaid_svgs,
                         images,
                         elapsed: started.elapsed(),
                     });
@@ -182,4 +207,24 @@ pub fn hash_text(text: &str) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HeadlessRenderer;
+
+    #[test]
+    fn merman_renders_a_flowchart_to_svg() {
+        let renderer = HeadlessRenderer::new();
+        let svg = renderer
+            .render_svg_resvg_safe_sync_with_diagram_id(
+                "flowchart TD\n    A[Start] --> B[Done]",
+                "markerup-test-flowchart",
+            )
+            .expect("Mermaid flowchart should render")
+            .expect("valid Mermaid should produce SVG");
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("Start"));
+        assert!(svg.contains("Done"));
+    }
 }

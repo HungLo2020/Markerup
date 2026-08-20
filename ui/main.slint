@@ -15,6 +15,8 @@ export component MainWindow inherits Window {
     in-out property <[int]> preview-block-kinds;
     in-out property <[int]> preview-heading-levels;
     in-out property <[bool]> preview-task-checked;
+    in-out property <[image]> preview-block-mermaid-images;
+    in-out property <[string]> preview-block-mermaid-errors;
     in-out property <[image]> preview-images;
     in-out property <[string]> preview-image-labels;
     in-out property <string> workspace-path: "";
@@ -279,6 +281,21 @@ export component MainWindow inherits Window {
                                                     horizontal-stretch: 1;
                                                     text: block;
                                                     link-clicked(link) => { root.preview-link-clicked(link); }
+                                                }
+                                            }
+
+                                            if root.preview-block-kinds[index] == 3 : VerticalBox {
+                                                width: preview-pane.width - 30px;
+                                                if root.preview-block-mermaid-errors[index] != "" : Text {
+                                                    text: root.preview-block-mermaid-errors[index];
+                                                    color: #d06060;
+                                                    wrap: word-wrap;
+                                                }
+                                                if root.preview-block-mermaid-errors[index] == "" : Image {
+                                                    width: preview-pane.width - 30px;
+                                                    height: 360px;
+                                                    image-fit: contain;
+                                                    source: root.preview-block-mermaid-images[index];
                                                 }
                                             }
 

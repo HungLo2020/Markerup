@@ -25,6 +25,7 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 - Workspace-wide filename/content search.
 - Find-next inside the current note.
 - Relative Markdown images are resolved inside the workspace and displayed in preview.
+- Mermaid fenced diagrams are rendered natively to SVG with Rust and displayed in preview.
 - No import/export step and no proprietary metadata required to recover the notes.
 
 ## Run on Linux
@@ -67,5 +68,6 @@ For iOS, the intended implementation follows Apple's supported external-director
 ## Current limitations
 
 - Android and iOS workspace adapters are not implemented yet.
+- Mermaid rendering currently uses the Rust-native Merman `0.7.0-alpha.1` release because Merman `0.8.0-alpha.5` requires a newer Rust toolchain than the project currently uses.
 - Slint's stock `TextEdit` does not expose per-range text styling, so the editable source pane is monospace but does not yet provide true syntax highlighting. The rendered preview is Markdown-aware.
 - Heading-fragment navigation selects the matching heading in the source editor; preview scrolling to an anchor is not yet exposed by Slint's `StyledText`.

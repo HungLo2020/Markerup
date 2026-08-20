@@ -11,6 +11,7 @@ pub enum PreviewBlockKind {
     Body,
     Heading(u8),
     Task(bool),
+    Mermaid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,26 +23,45 @@ pub struct PreviewBlock {
 pub fn preview_blocks(source: &str) -> Vec<PreviewBlock> {
     let mut blocks = Vec::new();
     let mut body = String::new();
-    let mut fence: Option<char> = None;
+    let mut fence: Option<(char, bool)> = None;
 
     for line in source.lines() {
         let trimmed = line.trim_start();
-        let fence_marker = fenced_marker(trimmed);
+        let fence_info = fenced_info(trimmed);
 
-        if let Some(marker) = fence {
-            body.push_str(line);
-            body.push('\n');
-            if fence_marker == Some(marker) {
-                fence = None;
+        if let Some((marker, mermaid)) = fence {
+            if mermaid {
+                if fence_info.is_some_and(|(closing, _)| closing == marker) {
+                    fence = None;
+                    let mermaid_source = body.trim_end().to_string();
+                    body.clear();
+                    if !mermaid_source.is_empty() {
+                        blocks.push(PreviewBlock {
+                            kind: PreviewBlockKind::Mermaid,
+                            markdown: mermaid_source,
+                        });
+                    }
+                } else {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+            } else {
+                body.push_str(line);
+                body.push('\n');
+                if fence_info.is_some_and(|(closing, _)| closing == marker) {
+                    fence = None;
+                }
             }
             continue;
         }
 
-        if let Some(marker) = fence_marker {
+        if let Some((marker, is_mermaid)) = fence_info {
             flush_body(&mut body, &mut blocks);
-            body.push_str(line);
-            body.push('\n');
-            fence = Some(marker);
+            fence = Some((marker, is_mermaid));
+            if !is_mermaid {
+                body.push_str(line);
+                body.push('\n');
+            }
             continue;
         }
 
@@ -73,6 +93,17 @@ pub fn preview_blocks(source: &str) -> Vec<PreviewBlock> {
         }
     }
 
+    if let Some((_, true)) = fence {
+        let mermaid_source = body.trim_end().to_string();
+        body.clear();
+        if !mermaid_source.is_empty() {
+            blocks.push(PreviewBlock {
+                kind: PreviewBlockKind::Mermaid,
+                markdown: mermaid_source,
+            });
+        }
+    }
+
     flush_body(&mut body, &mut blocks);
     blocks
 }
@@ -83,6 +114,20 @@ fn flush_body(body: &mut String, blocks: &mut Vec<PreviewBlock>) {
         blocks.push(PreviewBlock { kind: PreviewBlockKind::Body, markdown });
     }
     body.clear();
+}
+
+fn fenced_info(trimmed: &str) -> Option<(char, bool)> {
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let marker_count = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if marker_count < 3 {
+        return None;
+    }
+    let info = trimmed[marker.len_utf8() * marker_count..].trim();
+    let language = info.split_whitespace().next().unwrap_or_default();
+    Some((marker, language.eq_ignore_ascii_case("mermaid")))
 }
 
 fn parse_atx_heading(line: &str) -> Option<(u8, &str)> {
@@ -118,13 +163,6 @@ fn parse_task_item(line: &str) -> Option<(bool, &str)> {
     None
 }
 
-fn fenced_marker(trimmed: &str) -> Option<char> {
-    let marker = trimmed.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-    (trimmed.chars().take_while(|ch| *ch == marker).count() >= 3).then_some(marker)
-}
 
 pub fn preview_markdown(source: &str) -> String {
     let parser = Parser::new_ext(source, Options::all());
@@ -323,6 +361,22 @@ mod tests {
         let blocks = preview_blocks("```md\n# not a heading\n```");
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].kind, PreviewBlockKind::Body);
+    }
+
+    #[test]
+    fn mermaid_fences_become_diagram_blocks_without_the_fence() {
+        let blocks = preview_blocks("Intro\n\n```mermaid\nflowchart TD\n    A --> B\n```\n\nAfter");
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[1].kind, PreviewBlockKind::Mermaid);
+        assert_eq!(blocks[1].markdown, "flowchart TD\n    A --> B");
+    }
+
+    #[test]
+    fn mermaid_language_name_is_case_insensitive_and_supports_tildes() {
+        let blocks = preview_blocks("~~~MERMAID\ngraph LR\n    A --> B\n~~~");
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].kind, PreviewBlockKind::Mermaid);
+        assert_eq!(blocks[0].markdown, "graph LR\n    A --> B");
     }
 
     #[test]

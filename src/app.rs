@@ -250,13 +250,22 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
     let mut heading_levels = Vec::new();
     let mut task_checked = Vec::new();
 
-    for block in result.blocks {
-        plain_texts.push(block.markdown.clone());
-        texts.push(styled_from_markdown(&block.markdown));
-        match block.kind {
+    for block in &result.blocks {
+        plain_texts.push(if matches!(&block.kind, PreviewBlockKind::Mermaid) {
+            String::new()
+        } else {
+            block.markdown.clone()
+        });
+        texts.push(if matches!(&block.kind, PreviewBlockKind::Mermaid) {
+            StyledText::from_plain_text("")
+        } else {
+            styled_from_markdown(&block.markdown)
+        });
+        match &block.kind {
             PreviewBlockKind::Body => { kinds.push(0); heading_levels.push(0); task_checked.push(false); }
-            PreviewBlockKind::Heading(level) => { kinds.push(1); heading_levels.push(level as i32); task_checked.push(false); }
-            PreviewBlockKind::Task(checked) => { kinds.push(2); heading_levels.push(0); task_checked.push(checked); }
+            PreviewBlockKind::Heading(level) => { kinds.push(1); heading_levels.push(*level as i32); task_checked.push(false); }
+            PreviewBlockKind::Task(checked) => { kinds.push(2); heading_levels.push(0); task_checked.push(*checked); }
+            PreviewBlockKind::Mermaid => { kinds.push(3); heading_levels.push(0); task_checked.push(false); }
         }
     }
 
@@ -265,6 +274,38 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
     ui.set_preview_block_kinds(int_model(kinds));
     ui.set_preview_heading_levels(int_model(heading_levels));
     ui.set_preview_task_checked(bool_model(task_checked));
+
+    let mut mermaid_images = Vec::with_capacity(result.blocks.len());
+    let mut mermaid_errors = Vec::with_capacity(result.blocks.len());
+    for (index, block) in result.blocks.iter().enumerate() {
+        if !matches!(&block.kind, PreviewBlockKind::Mermaid) {
+            mermaid_images.push(Image::default());
+            mermaid_errors.push(String::new());
+            continue;
+        }
+        match result.mermaid_svgs.get(index).and_then(|svg| svg.as_ref()) {
+            Some(Ok(svg)) => match Image::load_from_svg_data(svg.as_bytes()) {
+                Ok(image) => {
+                    mermaid_images.push(image);
+                    mermaid_errors.push(String::new());
+                }
+                Err(_) => {
+                    mermaid_images.push(Image::default());
+                    mermaid_errors.push("Mermaid SVG could not be displayed".to_string());
+                }
+            },
+            Some(Err(error)) => {
+                mermaid_images.push(Image::default());
+                mermaid_errors.push(format!("Mermaid error: {error}"));
+            }
+            None => {
+                mermaid_images.push(Image::default());
+                mermaid_errors.push("Mermaid render result was missing".to_string());
+            }
+        }
+    }
+    ui.set_preview_block_mermaid_images(image_model(mermaid_images));
+    ui.set_preview_block_mermaid_errors(string_model(mermaid_errors));
 
     let mut images = Vec::new();
     let mut labels = Vec::new();
@@ -372,6 +413,8 @@ fn clear_preview(ui: &MainWindow) {
     ui.set_preview_block_kinds(int_model(Vec::new()));
     ui.set_preview_heading_levels(int_model(Vec::new()));
     ui.set_preview_task_checked(bool_model(Vec::new()));
+    ui.set_preview_block_mermaid_images(image_model(Vec::new()));
+    ui.set_preview_block_mermaid_errors(string_model(Vec::new()));
     ui.set_preview_images(image_model(Vec::new()));
     ui.set_preview_image_labels(string_model(Vec::new()));
 }
