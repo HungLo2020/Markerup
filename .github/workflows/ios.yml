@@ -2,7 +2,7 @@ name: iOS build and simulator smoke test
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, feature/ios-testflight-ci]
   pull_request:
   workflow_dispatch:
 
