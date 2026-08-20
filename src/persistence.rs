@@ -8,6 +8,7 @@ const SESSION_HEADER: &str = "markerup-session-v2";
 pub struct SessionState {
     pub pinned_workspace: PathBuf,
     pub current_file: Option<String>,
+    #[allow(dead_code)]
     pub bookmark: Option<Vec<u8>>,
 }
 
