@@ -151,11 +151,13 @@ fn styled_from_markdown(markdown: &str) -> StyledText {
 
 pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
     let mut texts = Vec::new();
+    let mut plain_texts = Vec::new();
     let mut kinds = Vec::new();
     let mut heading_levels = Vec::new();
     let mut task_checked = Vec::new();
 
     for block in preview_blocks(source) {
+        plain_texts.push(block.markdown.clone());
         texts.push(styled_from_markdown(&block.markdown));
         match block.kind {
             PreviewBlockKind::Body => {
@@ -177,6 +179,7 @@ pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
     }
 
     ui.set_preview_block_texts(styled_model(texts));
+    ui.set_preview_block_plain_texts(string_model(plain_texts));
     ui.set_preview_block_kinds(int_model(kinds));
     ui.set_preview_heading_levels(int_model(heading_levels));
     ui.set_preview_task_checked(bool_model(task_checked));
@@ -199,6 +202,7 @@ pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
 
 fn clear_preview(ui: &MainWindow) {
     ui.set_preview_block_texts(styled_model(Vec::new()));
+    ui.set_preview_block_plain_texts(string_model(Vec::new()));
     ui.set_preview_block_kinds(int_model(Vec::new()));
     ui.set_preview_heading_levels(int_model(Vec::new()));
     ui.set_preview_task_checked(bool_model(Vec::new()));
