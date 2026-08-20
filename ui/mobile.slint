@@ -56,7 +56,10 @@ export component MobileWindow inherits Window {
     callback select-editor-range(int, int);
 
     VerticalBox {
+        // Keep controls out of the iOS status-bar and home-indicator regions.
         padding: 12px;
+        padding-top: 52px;
+        padding-bottom: 30px;
         spacing: 8px;
 
         HorizontalBox {

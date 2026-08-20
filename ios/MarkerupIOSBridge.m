@@ -160,6 +160,52 @@ bool markerup_ios_mutate(const char *path, const char *destination, unsigned cha
     return error == nil;
 }
 
+static NSString *MarkerupEscapedRelativePath(NSString *path) {
+    return [path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet alphanumericCharacterSet]];
+}
+
+bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_t *length_out) {
+    if (!path || !data_out || !length_out) return false;
+    NSURL *root = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path] isDirectory:YES];
+    __block NSMutableString *serialized = [NSMutableString string];
+    __block NSError *error = nil;
+    NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+    [coordinator coordinateReadingItemAtURL:root options:0 error:&error byAccessor:^(NSURL *coordinatedURL) {
+        NSDirectoryEnumerator *enumerator = [NSFileManager.defaultManager
+            enumeratorAtURL:coordinatedURL
+            includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsRegularFileKey]
+            options:NSDirectoryEnumerationSkipsHiddenFiles
+            errorHandler:^BOOL(NSURL *url, NSError *enumerationError) {
+                (void)url;
+                error = enumerationError;
+                return NO;
+            }];
+        for (NSURL *item in enumerator) {
+            NSNumber *isDirectory = nil;
+            NSNumber *isRegularFile = nil;
+            NSError *resourceError = nil;
+            if (![item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError] ||
+                ![item getResourceValue:&isRegularFile forKey:NSURLIsRegularFileKey error:&resourceError]) {
+                error = resourceError;
+                break;
+            }
+            NSString *relative = [item.path substringFromIndex:coordinatedURL.path.length + 1];
+            if (isDirectory.boolValue) {
+                [serialized appendFormat:@"D:%@\n", MarkerupEscapedRelativePath(relative)];
+            } else if (isRegularFile.boolValue && [item.pathExtension.lowercaseString isEqualToString:@"md"]) {
+                [serialized appendFormat:@"F:%@\n", MarkerupEscapedRelativePath(relative)];
+            }
+        }
+    }];
+    if (error) return false;
+    NSData *bytes = [serialized dataUsingEncoding:NSUTF8StringEncoding];
+    *length_out = bytes.length;
+    *data_out = malloc(bytes.length == 0 ? 1 : bytes.length);
+    if (!*data_out) return false;
+    if (bytes.length > 0) memcpy(*data_out, bytes.bytes, bytes.length);
+    return true;
+}
+
 void markerup_ios_install_lifecycle_observers(void) {
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
                                                      object:nil
