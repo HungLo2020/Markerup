@@ -23,6 +23,7 @@ unsafe extern "C" {
     fn markerup_ios_write_file(path: *const c_char, data: *const u8, len: usize) -> bool;
     fn markerup_ios_free_data(data: *mut u8, len: usize);
     fn markerup_ios_mutate(path: *const c_char, destination: *const c_char, operation: u8, data: *const u8, len: usize) -> bool;
+    fn markerup_ios_list_entries(path: *const c_char, data: *mut *mut u8, len: *mut usize) -> bool;
     fn markerup_ios_install_lifecycle_observers();
 }
 
@@ -94,4 +95,15 @@ pub fn mutate(path: &std::path::Path, destination: Option<&std::path::Path>, ope
     let destination_ptr = destination.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
     let ok = unsafe { markerup_ios_mutate(path.as_ptr(), destination_ptr, operation, data.as_ptr(), data.len()) };
     ok.then_some(()).ok_or_else(|| "coordinated workspace mutation failed".to_string())
+}
+
+pub fn list_entries(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| "invalid workspace path".to_string())?;
+    let mut data = std::ptr::null_mut();
+    let mut len = 0;
+    let ok = unsafe { markerup_ios_list_entries(path.as_ptr(), &mut data, &mut len) };
+    if !ok || data.is_null() { return Err("coordinated directory enumeration failed".to_string()); }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
+    unsafe { markerup_ios_free_data(data, len) };
+    Ok(bytes)
 }

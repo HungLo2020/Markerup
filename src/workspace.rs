@@ -64,7 +64,7 @@ impl LocalWorkspace {
     pub fn root_display(&self) -> String { self.root.to_string_lossy().into_owned() }
     pub fn absolute_asset_path(&self, id: &str) -> io::Result<PathBuf> { self.absolute_existing(id) }
 
-    fn validate_id(id: &str) -> io::Result<PathBuf> {
+    pub(crate) fn validate_id(id: &str) -> io::Result<PathBuf> {
         let path = Path::new(id);
         if path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_))) {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "entry escapes the workspace"));
@@ -87,6 +87,22 @@ impl LocalWorkspace {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "entry escapes the workspace"));
         }
         Ok(canonical)
+    }
+
+    /// Build a path beneath a security-scoped iOS workspace without asking
+    /// the local filesystem to canonicalize a File Provider/SMB URL.
+    #[cfg(target_os = "ios")]
+    pub(crate) fn scoped_path(&self, id: &str) -> io::Result<PathBuf> {
+        Ok(self.root.join(Self::validate_id(id)?))
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn open_scoped(root: impl AsRef<Path>) -> io::Result<Self> {
+        let root = root.as_ref().to_path_buf();
+        if root.as_os_str().is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "workspace path is empty"));
+        }
+        Ok(Self { root })
     }
 
     pub(crate) fn absolute_parent(&self, parent: &str) -> io::Result<PathBuf> {
