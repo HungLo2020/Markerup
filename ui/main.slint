@@ -183,13 +183,13 @@ export component MainWindow inherits Window {
                     Text { text: "Search all notes"; font-weight: 700; }
                     LineEdit {
                         text <=> root.search-query;
-                        edited => { root.search_requested(self.text); }
+                        edited => { root.search-requested(self.text); }
                     }
                     ListView {
                         height: 150px;
                         for result[index] in root.search-results : Button {
                             text: result;
-                            clicked => { root.search_result_selected(index); }
+                            clicked => { root.search-result-selected(index); }
                         }
                     }
                 }
