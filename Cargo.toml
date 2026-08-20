@@ -1,0 +1,12 @@
+[package]
+name = "markerup"
+version = "0.1.0"
+edition = "2024"
+description = "A filesystem-first Markdown notes editor"
+
+[dependencies]
+pulldown-cmark = "0.13.4"
+slint = "1.17.1"
+
+[build-dependencies]
+slint-build = "1.17.1"

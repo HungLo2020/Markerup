@@ -1,0 +1,98 @@
+import { Button, HorizontalBox, ListView, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    title: "Markerup";
+    preferred-width: 1200px;
+    preferred-height: 760px;
+    min-width: 760px;
+    min-height: 480px;
+
+    in-out property <[string]> files;
+    in-out property <string> workspace-path: "";
+    in-out property <string> current-path: "No note selected";
+    in-out property <string> editor-text: "";
+    in-out property <styled-text> preview;
+    in-out property <string> status: "Ready";
+
+    callback file-selected(int);
+    callback save-requested(string);
+    callback editor-changed(string);
+    callback preview-link-clicked(string);
+    callback refresh-requested();
+
+    VerticalBox {
+        padding: 10px;
+        spacing: 8px;
+
+        HorizontalBox {
+            height: 36px;
+            Text {
+                text: "Markerup  •  " + root.workspace-path;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Button {
+                text: "Refresh";
+                clicked => { root.refresh-requested(); }
+            }
+            Button {
+                text: "Save";
+                enabled: root.current-path != "No note selected";
+                clicked => { root.save-requested(root.editor-text); }
+            }
+        }
+
+        Rectangle { height: 1px; background: #80808040; }
+
+        HorizontalBox {
+            spacing: 8px;
+
+            VerticalBox {
+                width: 250px;
+                Text { text: "Notes"; font-weight: 700; }
+                ListView {
+                    for file[index] in root.files : Button {
+                        text: file;
+                        clicked => { root.file-selected(index); }
+                    }
+                }
+            }
+
+            Rectangle { width: 1px; background: #80808040; }
+
+            VerticalBox {
+                Text {
+                    text: root.current-path;
+                    font-weight: 700;
+                    overflow: elide;
+                }
+                TextEdit {
+                    text <=> root.editor-text;
+                    wrap: word-wrap;
+                    edited => { root.editor-changed(self.text); }
+                }
+            }
+
+            Rectangle { width: 1px; background: #80808040; }
+
+            VerticalBox {
+                Text { text: "Preview"; font-weight: 700; }
+                ScrollView {
+                    StyledText {
+                        width: parent.width - 20px;
+                        text: root.preview;
+                        link-clicked(link) => { root.preview-link-clicked(link); }
+                    }
+                }
+            }
+        }
+
+        Rectangle { height: 1px; background: #80808040; }
+        Text {
+            height: 24px;
+            text: root.status;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
