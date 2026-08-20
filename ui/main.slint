@@ -166,7 +166,10 @@ export component MainWindow inherits Window {
 
                     HorizontalBox {
                         spacing: 7px;
-                        if root.view-mode != 2 : VerticalBox {
+
+                        source-pane := VerticalBox {
+                            visible: root.view-mode != 2;
+                            horizontal-stretch: 1;
                             Text { text: "Markdown source"; font-weight: 600; }
                             editor := TextEdit {
                                 text <=> root.editor-text;
@@ -176,13 +179,15 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        if root.view-mode != 0 : VerticalBox {
+                        preview-pane := VerticalBox {
+                            visible: root.view-mode != 0;
+                            horizontal-stretch: 1;
                             Text { text: "Preview"; font-weight: 600; }
                             ScrollView {
                                 VerticalBox {
                                     spacing: 8px;
                                     StyledText {
-                                        width: parent.width - 20px;
+                                        width: preview-pane.width - 24px;
                                         text: root.preview;
                                         link-clicked(link) => { root.preview-link-clicked(link); }
                                     }
