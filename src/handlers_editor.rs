@@ -1,4 +1,4 @@
-use crate::app::{open_file, refresh_workspace, reload_current, save_current, set_preview, set_status, string_model, sync_flags, AppState};
+use crate::app::{open_file, refresh_workspace, reload_current, save_current, set_status, string_model, sync_flags, AppState, PREVIEW_DEBOUNCE};
 use crate::markdown::{find_heading_range, find_matches};
 use crate::workspace::Workspace;
 use crate::MainWindow;
@@ -44,10 +44,10 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mut state = state.borrow_mut();
             if state.current_file.is_none() { return; }
-            state.dirty = contents.to_string() != state.disk_text;
-            set_preview(&ui, &state, &contents);
+            state.dirty = true;
+            state.schedule_preview(contents.to_string(), PREVIEW_DEBOUNCE);
             sync_flags(&ui, &state);
-            set_status(&ui, if state.dirty { "Modified (not saved)" } else { "Ready" });
+            set_status(&ui, "Modified (not saved)");
         });
     }
 
@@ -66,13 +66,12 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         let state = state.clone();
         ui.on_search_requested(move |query| {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let result = { let s = state.borrow(); s.workspace.search_markdown(&query) };
-            match result {
-                Ok(results) => {
-                    state.borrow_mut().search_results = results.clone();
-                    ui.set_search_results(string_model(results));
-                }
-                Err(error) => set_status(&ui, format!("Search failed: {error}")),
+            let mut state = state.borrow_mut();
+            state.schedule_search(query.to_string());
+            if query.trim().is_empty() {
+                ui.set_search_results(string_model(Vec::new()));
+            } else {
+                set_status(&ui, "Searching…");
             }
         });
     }

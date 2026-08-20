@@ -3,20 +3,25 @@ mod handlers_editor;
 mod handlers_workspace;
 mod markdown;
 mod persistence;
+mod workers;
 mod workspace;
 mod workspace_picker;
 
-use crate::app::{open_file, refresh_workspace, render_tree, reset_workspace_ui, save_session_for, set_status, sync_flags, AppState};
+use crate::app::{apply_preview_result, apply_scan_result, apply_search_result, open_file, render_tree, reset_workspace_ui, save_session_for, set_status, sync_flags, AppState};
 use crate::persistence::{clear_session, load_session};
+use crate::workers::{WorkerRequest, WorkerResult};
 use crate::workspace::{LocalWorkspace, Workspace, WorkspaceSlot};
 use notify::{RecursiveMode, Watcher};
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 slint::include_modules!();
+
+const UI_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const FULL_RECONCILE_INTERVAL_TICKS: u16 = 600; // 30 seconds at 50 ms/tick.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved = load_session();
@@ -41,9 +46,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Rc::new(RefCell::new(AppState::new(workspace, pinned)));
     {
         let mut state = state.borrow_mut();
-        state.refresh_entries()?;
         render_tree(&ui, &mut state);
         sync_flags(&ui, &state);
+        if state.workspace.is_open() {
+            state.schedule_scan(Duration::ZERO);
+        }
     }
 
     let (watch_tx, watch_rx) = mpsc::channel();
@@ -95,21 +102,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let new_root = workspace.root_path().to_path_buf();
             let watch_error = watcher.borrow_mut().watch(&new_root, RecursiveMode::Recursive).err();
 
+            let generations = {
+                let state = state.borrow();
+                (state.preview_generation, state.search_generation, state.scan_generation)
+            };
             {
                 let mut state = state.borrow_mut();
                 state.replace_workspace(WorkspaceSlot::local(workspace), false);
-                if let Err(error) = state.refresh_entries() {
-                    set_status(&ui, format!("Workspace scan failed: {error}"));
-                    return;
-                }
+                state.preview_generation = generations.0.wrapping_add(1);
+                state.search_generation = generations.1.wrapping_add(1);
+                state.scan_generation = generations.2.wrapping_add(1);
                 reset_workspace_ui(&ui, &mut state);
+                state.schedule_scan(Duration::ZERO);
                 sync_flags(&ui, &state);
             }
 
             if let Some(error) = watch_error {
                 set_status(&ui, format!("Workspace selected; automatic file watching unavailable: {error}"));
             } else {
-                set_status(&ui, "Workspace selected. Pin it to reopen automatically next time.");
+                set_status(&ui, "Workspace selected. Loading notes in the background…");
             }
         });
     }
@@ -135,31 +146,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let (workers, worker_rx) = workers::spawn_workers();
     let timer = Timer::default();
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
-        let polling_tick = Cell::new(0u8);
-        timer.start(TimerMode::Repeated, Duration::from_millis(500), move || {
-            let mut changed = false;
-            let mut last_error = None;
+        let reconcile_tick = Cell::new(0u16);
+        timer.start(TimerMode::Repeated, UI_POLL_INTERVAL, move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let now = Instant::now();
+
+            let mut watcher_changed = false;
+            let mut watcher_error = None;
             while let Ok(result) = watch_rx.try_recv() {
                 match result {
-                    Ok(_) => changed = true,
-                    Err(error) => last_error = Some(error.to_string()),
+                    Ok(_) => watcher_changed = true,
+                    Err(error) => watcher_error = Some(error.to_string()),
+                }
+            }
+            if let Some(error) = watcher_error {
+                set_status(&ui, format!("File watcher error: {error}"));
+            }
+
+            let next_tick = reconcile_tick.get().wrapping_add(1);
+            reconcile_tick.set(next_tick);
+            let periodic_reconcile = next_tick % FULL_RECONCILE_INTERVAL_TICKS == 0;
+
+            {
+                let mut state = state.borrow_mut();
+                if state.workspace.is_open() && (watcher_changed || periodic_reconcile) {
+                    state.schedule_scan(Duration::ZERO);
+                }
+
+                if ui.get_view_mode() != 0 {
+                    let ready = state.pending_preview.as_ref().is_some_and(|pending| pending.due <= now);
+                    if ready {
+                        if let Some(pending) = state.pending_preview.take() {
+                            if workers.preview.send(WorkerRequest::Preview {
+                                generation: pending.generation,
+                                source: pending.source,
+                            }).is_err() {
+                                set_status(&ui, "Preview worker stopped unexpectedly");
+                            }
+                        }
+                    }
+                }
+
+                let search_ready = state.pending_search.as_ref().is_some_and(|pending| pending.due <= now);
+                if search_ready {
+                    if let Some(pending) = state.pending_search.take() {
+                        if let Some(workspace) = state.workspace.local_clone() {
+                            if workers.io.send(WorkerRequest::Search {
+                                generation: pending.generation,
+                                workspace,
+                                query: pending.query,
+                            }).is_err() {
+                                set_status(&ui, "Search worker stopped unexpectedly");
+                            }
+                        }
+                    }
+                }
+
+                let scan_ready = state.pending_scan.as_ref().is_some_and(|pending| pending.due <= now);
+                if scan_ready {
+                    if let Some(pending) = state.pending_scan.take() {
+                        if let Some(workspace) = state.workspace.local_clone() {
+                            if workers.io.send(WorkerRequest::Scan {
+                                generation: pending.generation,
+                                workspace,
+                                current_file: state.current_file.clone(),
+                            }).is_err() {
+                                set_status(&ui, "Workspace worker stopped unexpectedly");
+                            }
+                        }
+                    }
                 }
             }
 
-            let next_tick = polling_tick.get().wrapping_add(1);
-            polling_tick.set(next_tick);
-            let periodic_reconcile = next_tick % 4 == 0;
-
-            let Some(ui) = ui_weak.upgrade() else { return };
-            if let Some(error) = last_error {
-                set_status(&ui, format!("File watcher error: {error}"));
-            }
-            if state.borrow().workspace.is_open() && (changed || periodic_reconcile) {
-                refresh_workspace(&ui, &mut state.borrow_mut());
+            while let Ok(result) = worker_rx.try_recv() {
+                let mut state = state.borrow_mut();
+                match result {
+                    WorkerResult::Preview(result) => apply_preview_result(&ui, &mut state, result),
+                    WorkerResult::Search(result) => apply_search_result(&ui, &mut state, result),
+                    WorkerResult::Scan(result) => apply_scan_result(&ui, &mut state, result),
+                }
             }
         });
     }

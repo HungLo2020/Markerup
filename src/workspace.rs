@@ -228,6 +228,9 @@ impl WorkspaceSlot {
     pub fn root_display(&self) -> String {
         match self { Self::Local(workspace) => workspace.root_display(), Self::Empty => String::new() }
     }
+    pub fn local_clone(&self) -> Option<LocalWorkspace> {
+        match self { Self::Local(workspace) => Some(workspace.clone()), Self::Empty => None }
+    }
     pub fn absolute_asset_path(&self, id: &str) -> io::Result<PathBuf> {
         match self {
             Self::Local(workspace) => workspace.absolute_asset_path(id),
