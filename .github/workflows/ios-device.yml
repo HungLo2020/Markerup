@@ -35,8 +35,8 @@ jobs:
         with:
           key: ios-device
 
-      - name: Install XcodeGen and SVG tooling
-        run: brew install xcodegen librsvg
+      - name: Install XcodeGen and icon tooling
+        run: brew install xcodegen librsvg imagemagick
 
       - name: Validate signing configuration
         env:
@@ -87,6 +87,7 @@ jobs:
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-60@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-76@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+          file ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png | grep -q '8-bit/color RGB'
           grep -q 'Assets.xcassets' ios/Markerup.xcodeproj/project.pbxproj
           grep -q 'LaunchScreen.storyboard' ios/Markerup.xcodeproj/project.pbxproj
           grep -q 'CFBundleIconName' ios/Info.plist

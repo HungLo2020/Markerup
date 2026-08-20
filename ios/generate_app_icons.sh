@@ -9,12 +9,17 @@ if ! command -v rsvg-convert >/dev/null 2>&1; then
   echo "rsvg-convert is required; install librsvg (brew install librsvg)" >&2
   exit 1
 fi
+if ! command -v magick >/dev/null 2>&1; then
+  echo "ImageMagick is required; install imagemagick (brew install imagemagick)" >&2
+  exit 1
+fi
 test -f "$source_svg"
 mkdir -p "$asset_dir"
 
 generate() {
   local filename="$1" size="$2"
-  rsvg-convert --width "$size" --height "$size" --output "$asset_dir/$filename" "$source_svg"
+  rsvg-convert --width "$size" --height "$size" "$source_svg" \
+    | magick png:- -background '#EAF4FF' -alpha remove -alpha off "png:$asset_dir/$filename"
 }
 
 generate icon-20@2x.png 40
