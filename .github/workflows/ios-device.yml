@@ -104,9 +104,6 @@ jobs:
           -archivePath "$RUNNER_TEMP/Markerup.xcarchive"
           DEVELOPMENT_TEAM="$IOS_TEAM_ID"
           PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID"
-          # App Store Connect requires every uploaded build to have a higher
-          # CFBundleVersion than the previous upload. Workflow run numbers
-          # can restart across branches, while run IDs are globally unique.
           CURRENT_PROJECT_VERSION="${{ github.run_id }}"
           MARKETING_VERSION="0.2.0"
           CODE_SIGN_STYLE=Manual
