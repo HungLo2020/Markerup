@@ -81,6 +81,16 @@ jobs:
           ./generate_app_icons.sh
           xcodegen generate --spec project.yml
 
+      - name: Validate generated iOS resources
+        run: |
+          test -f ios/Info.plist
+          test -f ios/Assets.xcassets/AppIcon.appiconset/icon-60@2x.png
+          test -f ios/Assets.xcassets/AppIcon.appiconset/icon-76@2x.png
+          test -f ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+          rg -q 'CFBundleIconName' ios/Info.plist
+          rg -q 'UILaunchStoryboardName' ios/Info.plist
+          rg -q 'UISupportedInterfaceOrientations' ios/Info.plist
+
       - name: Archive signed iOS application
         run: >-
           xcodebuild

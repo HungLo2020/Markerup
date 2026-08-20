@@ -12,6 +12,24 @@ targets:
     deploymentTarget: "15.0"
     info:
       path: Info.plist
+      properties:
+        CFBundleDisplayName: Markerup
+        CFBundleName: Markerup
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleIconName: AppIcon
+        LSRequiresIPhoneOS: true
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     sources: []
     resources:
       - Assets.xcassets
