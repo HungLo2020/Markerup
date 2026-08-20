@@ -97,8 +97,9 @@ export component MainWindow inherits Window {
                 }
             }
 
-            if root.external-conflict : Rectangle {
-                height: 42px;
+            conflict-banner := Rectangle {
+                visible: root.external-conflict;
+                height: root.external-conflict ? 42px : 0px;
                 background: #7d2b2b;
                 HorizontalBox {
                     padding: 6px;
@@ -111,14 +112,14 @@ export component MainWindow inherits Window {
 
             Rectangle { height: 1px; background: #80808040; }
 
-            if !root.workspace-open : Rectangle {
-                vertical-stretch: 1;
+            empty-pane := Rectangle {
+                visible: !root.workspace-open;
+                vertical-stretch: !root.workspace-open ? 1 : 0;
                 HorizontalBox {
-                    horizontal-alignment: center;
+                    Rectangle { horizontal-stretch: 1; }
                     VerticalBox {
                         width: 460px;
-                        vertical-alignment: center;
-                        spacing: 12px;
+                        Rectangle { vertical-stretch: 1; }
                         Text {
                             text: "No workspace selected";
                             font-size: 28px;
@@ -140,11 +141,15 @@ export component MainWindow inherits Window {
                             wrap: word-wrap;
                             horizontal-alignment: center;
                         }
+                        Rectangle { vertical-stretch: 1; }
                     }
+                    Rectangle { horizontal-stretch: 1; }
                 }
             }
 
-            if root.workspace-open : HorizontalBox {
+            workspace-pane := HorizontalBox {
+                visible: root.workspace-open;
+                vertical-stretch: root.workspace-open ? 1 : 0;
                 spacing: 8px;
 
                 VerticalBox {
