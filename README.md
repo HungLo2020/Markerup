@@ -6,13 +6,17 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 
 ## Linux workspace features
 
+- Starts with no workspace unless the user explicitly pinned one previously.
+- **Choose Folder** opens a native folder picker; no CLI path is required.
+- **Pin Workspace** makes the selected workspace reopen on the next launch; unpinned workspaces are session-only.
+- Hidden directories such as `.git` are excluded from the notes tree.
 - Recursively browse `.md` notes in a collapsible directory tree.
 - Create, rename, and delete notes and directories directly on disk.
 - Double-confirm destructive deletes.
 - Edit the real Markdown files in place.
 - Source, preview, and split views.
 - `Ctrl+S` save and dirty-state tracking.
-- Automatic recursive filesystem watching.
+- Automatic recursive filesystem watching plus periodic reconciliation for network-backed filesystems.
 - External-change reload when the note is clean.
 - Conflict protection when a note changes externally while Markerup has unsaved edits.
 - Explicit **Use Disk** and **Overwrite Disk** conflict resolution.
@@ -21,22 +25,15 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 - Workspace-wide filename/content search.
 - Find-next inside the current note.
 - Relative Markdown images are resolved inside the workspace and displayed in preview.
-- Remember the last workspace and selected note on Linux.
 - No import/export step and no proprietary metadata required to recover the notes.
 
 ## Run on Linux
 
 ```bash
-cargo run -- /path/to/your/Notes
-```
-
-After the first run, launching without an argument reopens the last valid workspace:
-
-```bash
 cargo run
 ```
 
-If no saved workspace exists, Markerup uses the current directory.
+Choose the notes directory from Markerup itself. If you pin it, Markerup will reopen that workspace next time.
 
 On Ubuntu/Kubuntu you may need:
 
@@ -48,28 +45,27 @@ Then:
 
 ```bash
 cargo test
-cargo run -- /path/to/your/Notes
+cargo run
 ```
 
 ## Storage invariant
 
-Markerup application state is disposable. Notes and organization live only in the selected filesystem tree. The only persisted application state currently stored outside the workspace is the last workspace/current-note pointer under the user's XDG config directory.
+Markerup application state is disposable. Notes and organization live only in the selected filesystem tree. An unpinned workspace is not persisted. Pinning stores only enough application state to reopen the selected workspace and current note.
 
 ## Architecture
 
 The shared core uses opaque entry IDs and supports enumeration, read/write, create/rename/delete, search, and relative Markdown link/asset resolution. `LocalWorkspace` is the Linux implementation; its IDs happen to be slash-separated relative paths.
 
-Future adapters should map native identifiers into the same interface:
+Workspace selection is deliberately platform-specific rather than pretending every OS exposes folders as normal paths:
 
-- **Linux:** normal filesystem paths.
-- **Android:** Storage Access Framework document-tree IDs/URIs.
-- **iOS:** document picker/File Provider security-scoped URLs/bookmarks.
+- **Linux:** native XDG portal folder picker, then normal filesystem access.
+- **Android:** Storage Access Framework document-tree selection and persistable URI permissions.
+- **iOS:** `UIDocumentPickerViewController` directory selection, security-scoped bookmarks, and coordinated file access.
 
-The UI and Markdown logic should not assume that an entry ID is a native filesystem path.
+For iOS, the intended implementation follows Apple's supported external-directory model so a directory exposed by the Files app — including an SMB location — can be selected recursively and bookmarked. See `docs/ios-workspaces.md`.
 
 ## Current limitations
 
 - Android and iOS workspace adapters are not implemented yet.
-- The initial workspace is still chosen by CLI path; after that, Markerup remembers it.
 - Slint's stock `TextEdit` does not expose per-range text styling, so the editable source pane is monospace but does not yet provide true syntax highlighting. The rendered preview is Markdown-aware.
 - Heading-fragment navigation selects the matching heading in the source editor; preview scrolling to an anchor is not yet exposed by Slint's `StyledText`.

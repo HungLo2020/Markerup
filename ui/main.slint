@@ -17,17 +17,21 @@ export component MainWindow inherits Window {
     in-out property <string> current-path: "No note selected";
     in-out property <string> editor-text: "";
     in-out property <styled-text> preview;
-    in-out property <string> status: "Ready";
+    in-out property <string> status: "Choose a folder to use as a Markerup workspace";
     in-out property <string> action-name: "";
     in-out property <string> search-query: "";
     in-out property <string> find-query: "";
     in-out property <string> find-status: "";
+    in-out property <bool> workspace-open: false;
+    in-out property <bool> workspace-pinned: false;
     in-out property <bool> dirty: false;
     in-out property <bool> external-conflict: false;
     in-out property <bool> can-go-back: false;
     in-out property <bool> can-go-forward: false;
     in-out property <int> view-mode: 1;
 
+    callback choose-workspace-requested();
+    callback pin-workspace-requested();
     callback tree-selected(int);
     callback save-requested(string);
     callback overwrite-requested(string);
@@ -72,17 +76,23 @@ export component MainWindow inherits Window {
                 height: 36px;
                 spacing: 6px;
                 Text {
-                    text: "Markerup  •  " + root.workspace-path;
+                    text: root.workspace-open ? "Markerup  •  " + root.workspace-path : "Markerup  •  No workspace selected";
                     vertical-alignment: center;
                     overflow: elide;
                 }
-                Button { text: "←"; enabled: root.can-go-back; clicked => { root.back-requested(); } }
-                Button { text: "→"; enabled: root.can-go-forward; clicked => { root.forward-requested(); } }
-                Button { text: "Refresh"; clicked => { root.refresh-requested(); } }
-                Button { text: "Reload"; enabled: root.current-path != "No note selected"; clicked => { root.reload-requested(); } }
+                Button { text: "Choose Folder"; clicked => { root.choose-workspace-requested(); } }
+                Button {
+                    text: root.workspace-pinned ? "Unpin Workspace" : "Pin Workspace";
+                    enabled: root.workspace-open;
+                    clicked => { root.pin-workspace-requested(); }
+                }
+                Button { text: "←"; enabled: root.workspace-open && root.can-go-back; clicked => { root.back-requested(); } }
+                Button { text: "→"; enabled: root.workspace-open && root.can-go-forward; clicked => { root.forward-requested(); } }
+                Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
+                Button { text: "Reload"; enabled: root.workspace-open && root.current-path != "No note selected"; clicked => { root.reload-requested(); } }
                 Button {
                     text: "Save";
-                    enabled: root.current-path != "No note selected" && root.dirty && !root.external-conflict;
+                    enabled: root.workspace-open && root.current-path != "No note selected" && root.dirty && !root.external-conflict;
                     clicked => { root.save-requested(root.editor-text); }
                 }
             }
@@ -101,7 +111,40 @@ export component MainWindow inherits Window {
 
             Rectangle { height: 1px; background: #80808040; }
 
-            HorizontalBox {
+            if !root.workspace-open : Rectangle {
+                vertical-stretch: 1;
+                HorizontalBox {
+                    horizontal-alignment: center;
+                    VerticalBox {
+                        width: 460px;
+                        vertical-alignment: center;
+                        spacing: 12px;
+                        Text {
+                            text: "No workspace selected";
+                            font-size: 28px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Markerup edits ordinary Markdown files in a folder you choose. Nothing is imported or copied into a database.";
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                        }
+                        Button {
+                            text: "Choose Folder";
+                            primary: true;
+                            clicked => { root.choose-workspace-requested(); }
+                        }
+                        Text {
+                            text: "After opening a folder, pin it if you want Markerup to reopen it automatically next time.";
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            if root.workspace-open : HorizontalBox {
                 spacing: 8px;
 
                 VerticalBox {

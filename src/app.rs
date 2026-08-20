@@ -1,13 +1,14 @@
 use crate::markdown::{image_references, preview_markdown};
-use crate::persistence::save_session;
-use crate::workspace::{EntryId, EntryKind, LocalWorkspace, Workspace, WorkspaceEntry};
+use crate::persistence::{clear_session, save_session};
+use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use crate::MainWindow;
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 pub struct AppState {
-    pub workspace: LocalWorkspace,
+    pub workspace: WorkspaceSlot,
+    pub pinned: bool,
     pub entries: Vec<WorkspaceEntry>,
     pub tree_ids: Vec<EntryId>,
     pub expanded: HashSet<EntryId>,
@@ -27,9 +28,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(workspace: LocalWorkspace) -> Self {
+    pub fn new(workspace: WorkspaceSlot, pinned: bool) -> Self {
         Self {
             workspace,
+            pinned,
             entries: Vec::new(), tree_ids: Vec::new(), expanded: HashSet::new(),
             expansion_initialized: false, selected: None, current_file: None,
             disk_text: String::new(), dirty: false, external_conflict: false,
@@ -37,6 +39,10 @@ impl AppState {
             find_query: String::new(), find_matches: Vec::new(), find_index: 0,
             delete_armed: None,
         }
+    }
+
+    pub fn replace_workspace(&mut self, workspace: WorkspaceSlot, pinned: bool) {
+        *self = Self::new(workspace, pinned);
     }
 
     pub fn refresh_entries(&mut self) -> std::io::Result<()> {
@@ -105,6 +111,9 @@ pub fn rebase_id(id: &str, old: &str, new: &str) -> EntryId {
 pub fn set_status(ui: &MainWindow, text: impl Into<SharedString>) { ui.set_status(text.into()); }
 
 pub fn sync_flags(ui: &MainWindow, state: &AppState) {
+    ui.set_workspace_open(state.workspace.is_open());
+    ui.set_workspace_pinned(state.pinned);
+    ui.set_workspace_path(state.workspace.root_display().into());
     ui.set_dirty(state.dirty);
     ui.set_external_conflict(state.external_conflict);
     ui.set_can_go_back(!state.back.is_empty());
@@ -154,7 +163,13 @@ pub fn set_preview(ui: &MainWindow, state: &AppState, source: &str) {
 }
 
 pub fn save_session_for(state: &AppState) {
-    let _ = save_session(state.workspace.root_path(), state.current_file.as_deref());
+    if state.pinned {
+        if let Some(root) = state.workspace.root_path() {
+            let _ = save_session(root, state.current_file.as_deref());
+            return;
+        }
+    }
+    let _ = clear_session();
 }
 
 pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
@@ -169,6 +184,19 @@ pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
     ui.set_preview_image_labels(string_model(Vec::new()));
     sync_flags(ui, state);
     save_session_for(state);
+}
+
+pub fn reset_workspace_ui(ui: &MainWindow, state: &mut AppState) {
+    ui.set_selected_path("".into());
+    ui.set_tree_labels(string_model(Vec::new()));
+    ui.set_search_results(string_model(Vec::new()));
+    ui.set_action_name("".into());
+    ui.set_search_query("".into());
+    ui.set_find_query("".into());
+    ui.set_find_status("".into());
+    clear_current(ui, state);
+    render_tree(ui, state);
+    sync_flags(ui, state);
 }
 
 pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bool) -> bool {
@@ -230,6 +258,7 @@ pub fn reload_current(ui: &MainWindow, state: &mut AppState) {
 }
 
 pub fn refresh_workspace(ui: &MainWindow, state: &mut AppState) {
+    if !state.workspace.is_open() { return; }
     if let Err(error) = state.refresh_entries() { set_status(ui, format!("Refresh failed: {error}")); return; }
     render_tree(ui, state);
     let Some(current) = state.current_file.clone() else { return; };

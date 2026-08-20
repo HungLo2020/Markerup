@@ -95,12 +95,16 @@ impl LocalWorkspace {
         let mut children = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
         children.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
         for child in children {
+            let name = child.file_name();
+            let name_text = name.to_string_lossy();
+            if name_text.starts_with('.') { continue; }
+
             let path = child.path();
             let ty = child.file_type()?;
             if ty.is_dir() {
                 entries.push(WorkspaceEntry {
                     id: self.id_for_path(&path)?,
-                    name: child.file_name().to_string_lossy().into_owned(),
+                    name: name_text.into_owned(),
                     kind: EntryKind::Directory,
                     depth,
                 });
@@ -108,7 +112,7 @@ impl LocalWorkspace {
             } else if ty.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("md")) {
                 entries.push(WorkspaceEntry {
                     id: self.id_for_path(&path)?,
-                    name: child.file_name().to_string_lossy().into_owned(),
+                    name: name_text.into_owned(),
                     kind: EntryKind::File,
                     depth,
                 });
@@ -208,6 +212,70 @@ impl Workspace for LocalWorkspace {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum WorkspaceSlot {
+    #[default]
+    Empty,
+    Local(LocalWorkspace),
+}
+
+impl WorkspaceSlot {
+    pub fn local(workspace: LocalWorkspace) -> Self { Self::Local(workspace) }
+    pub fn is_open(&self) -> bool { matches!(self, Self::Local(_)) }
+    pub fn root_path(&self) -> Option<&Path> {
+        match self { Self::Local(workspace) => Some(workspace.root_path()), Self::Empty => None }
+    }
+    pub fn root_display(&self) -> String {
+        match self { Self::Local(workspace) => workspace.root_display(), Self::Empty => String::new() }
+    }
+    pub fn absolute_asset_path(&self, id: &str) -> io::Result<PathBuf> {
+        match self {
+            Self::Local(workspace) => workspace.absolute_asset_path(id),
+            Self::Empty => Err(no_workspace()),
+        }
+    }
+}
+
+fn no_workspace() -> io::Error {
+    io::Error::new(io::ErrorKind::NotConnected, "no workspace selected")
+}
+
+impl Workspace for WorkspaceSlot {
+    fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
+        match self { Self::Local(workspace) => workspace.entries(), Self::Empty => Ok(Vec::new()) }
+    }
+    fn markdown_files(&self) -> io::Result<Vec<EntryId>> {
+        match self { Self::Local(workspace) => workspace.markdown_files(), Self::Empty => Ok(Vec::new()) }
+    }
+    fn read(&self, id: &str) -> io::Result<String> {
+        match self { Self::Local(workspace) => workspace.read(id), Self::Empty => Err(no_workspace()) }
+    }
+    fn write(&self, id: &str, contents: &str) -> io::Result<()> {
+        match self { Self::Local(workspace) => workspace.write(id, contents), Self::Empty => Err(no_workspace()) }
+    }
+    fn create_note(&self, parent: &str, name: &str) -> io::Result<EntryId> {
+        match self { Self::Local(workspace) => workspace.create_note(parent, name), Self::Empty => Err(no_workspace()) }
+    }
+    fn create_directory(&self, parent: &str, name: &str) -> io::Result<EntryId> {
+        match self { Self::Local(workspace) => workspace.create_directory(parent, name), Self::Empty => Err(no_workspace()) }
+    }
+    fn rename(&self, id: &str, new_name: &str) -> io::Result<EntryId> {
+        match self { Self::Local(workspace) => workspace.rename(id, new_name), Self::Empty => Err(no_workspace()) }
+    }
+    fn delete(&self, id: &str) -> io::Result<()> {
+        match self { Self::Local(workspace) => workspace.delete(id), Self::Empty => Err(no_workspace()) }
+    }
+    fn search_markdown(&self, query: &str) -> io::Result<Vec<EntryId>> {
+        match self { Self::Local(workspace) => workspace.search_markdown(query), Self::Empty => Ok(Vec::new()) }
+    }
+    fn resolve_markdown_link(&self, current_file: &str, link: &str) -> Option<LinkTarget> {
+        match self { Self::Local(workspace) => workspace.resolve_markdown_link(current_file, link), Self::Empty => None }
+    }
+    fn resolve_asset_link(&self, current_file: &str, link: &str) -> Option<EntryId> {
+        match self { Self::Local(workspace) => workspace.resolve_asset_link(current_file, link), Self::Empty => None }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{EntryKind, LocalWorkspace, Workspace};
@@ -231,6 +299,16 @@ mod tests {
         let entries = w.entries().unwrap();
         assert!(entries.iter().any(|e| e.id == "nested" && e.kind == EntryKind::Directory && e.depth == 0));
         assert!(entries.iter().any(|e| e.id == "nested/Other.md" && e.depth == 1));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ignores_hidden_directories() {
+        let root = temp();
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        fs::write(root.join(".git/Hidden.md"), "# hidden").unwrap();
+        let w = LocalWorkspace::open(&root).unwrap();
+        assert!(w.entries().unwrap().iter().all(|entry| !entry.id.starts_with(".git")));
         fs::remove_dir_all(root).unwrap();
     }
 
