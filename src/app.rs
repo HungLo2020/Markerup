@@ -5,7 +5,6 @@ use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceS
 use crate::MainWindow;
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::time::{Duration, Instant, SystemTime};
 use std::rc::Rc;
 
@@ -202,7 +201,7 @@ pub fn set_status(ui: &MainWindow, text: impl Into<SharedString>) { ui.set_statu
 pub fn sync_flags(ui: &MainWindow, state: &AppState) {
     ui.set_workspace_open(state.workspace.is_open());
     ui.set_workspace_pinned(state.pinned);
-    ui.set_workspace_path(state.workspace.root_display().into());
+    ui.set_workspace_path(state.workspace.display_name().into());
     ui.set_dirty(state.dirty);
     ui.set_external_conflict(state.external_conflict);
     ui.set_can_go_back(!state.back.is_empty());
@@ -319,8 +318,8 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
         for reference in result.images {
             let Some(asset_id) = state.workspace.resolve_asset_link(current, &reference.destination) else { continue };
             if !seen_assets.insert(asset_id.clone()) { continue; }
-            let Ok(path) = state.workspace.absolute_asset_path(&asset_id) else { continue };
-            let metadata = fs::metadata(&path).ok();
+            let Ok(Some(path)) = state.workspace.asset_path(&asset_id) else { continue };
+            let metadata = std::fs::metadata(&path).ok();
             let modified = metadata.as_ref().and_then(|value| value.modified().ok());
             let len = metadata.as_ref().map_or(0, |value| value.len());
 
@@ -428,7 +427,8 @@ fn clear_preview(ui: &MainWindow) {
 pub fn save_session_for(state: &AppState) {
     if state.pinned {
         if let Some(root) = state.workspace.root_path() {
-            let _ = save_session(root, state.current_file.as_deref());
+            let bookmark = state.workspace.bookmark();
+            let _ = save_session(root, state.current_file.as_deref(), bookmark.as_deref());
             return;
         }
     }

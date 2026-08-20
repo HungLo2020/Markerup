@@ -1,8 +1,7 @@
 use crate::markdown::{image_references, preview_blocks, ImageReference, PreviewBlock};
-use crate::workspace::{EntryId, LocalWorkspace, Workspace, WorkspaceEntry};
+use crate::workspace::{EntryId, Workspace, WorkspaceEntry, WorkspaceRef};
 use merman::render::HeadlessRenderer;
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -51,7 +50,6 @@ fn is_hex_color(line: &str, hash_index: usize) -> bool {
             .is_none_or(|ch| !ch.is_ascii_alphanumeric())
 }
 
-#[derive(Debug)]
 pub enum WorkerRequest {
     Preview {
         generation: u64,
@@ -59,12 +57,12 @@ pub enum WorkerRequest {
     },
     Search {
         generation: u64,
-        workspace: LocalWorkspace,
+        workspace: WorkspaceRef,
         query: String,
     },
     Scan {
         generation: u64,
-        workspace: LocalWorkspace,
+        workspace: WorkspaceRef,
         current_file: Option<EntryId>,
         full_tree: bool,
     },
@@ -111,7 +109,7 @@ pub struct WorkerSenders {
 }
 
 struct SearchIndex {
-    root: PathBuf,
+    identity: String,
     notes: Vec<(EntryId, String)>,
     content_cache: HashMap<EntryId, String>,
     cache_order: VecDeque<EntryId>,
@@ -121,10 +119,10 @@ struct SearchIndex {
 const SEARCH_CACHE_LIMIT: usize = 4 * 1024 * 1024;
 
 impl SearchIndex {
-    fn build(workspace: &LocalWorkspace, generation: u64) -> Result<Option<Self>, String> {
-        let root = workspace.root_path().to_path_buf();
+    fn build(workspace: &dyn Workspace, generation: u64) -> Result<Option<Self>, String> {
+        let identity = workspace.identity();
         let entries = workspace
-            .entries_with_cancel(|| {
+            .entries_with_cancel(&|| {
                 LATEST_SEARCH_GENERATION.load(Ordering::Relaxed) != generation
             })
             .map_err(|error| error.to_string())?;
@@ -137,7 +135,7 @@ impl SearchIndex {
             notes.push((id, path_lower));
         }
         Ok(Some(Self {
-            root,
+            identity,
             notes,
             content_cache: HashMap::new(),
             cache_order: VecDeque::new(),
@@ -145,12 +143,12 @@ impl SearchIndex {
         }))
     }
 
-    fn matches(&self, workspace: &LocalWorkspace, query: &str) -> bool {
-        self.root == workspace.root_path()
+    fn matches(&self, workspace: &dyn Workspace, query: &str) -> bool {
+        self.identity == workspace.identity()
             && !query.trim().is_empty()
     }
 
-    fn search(&mut self, workspace: &LocalWorkspace, query: &str, generation: u64) -> Option<Vec<EntryId>> {
+    fn search(&mut self, workspace: &dyn Workspace, query: &str, generation: u64) -> Option<Vec<EntryId>> {
         let query = query.trim().to_lowercase();
         let mut results = Vec::new();
         for index in 0..self.notes.len() {
@@ -254,12 +252,12 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                                 generation, results: Ok(Vec::new()), cancelled: true, elapsed: started.elapsed(),
                             })
                         } else {
-                        let needs_rebuild = search_index.as_ref().is_none_or(|index| !index.matches(&workspace, &query));
+                        let needs_rebuild = search_index.as_ref().is_none_or(|index| !index.matches(workspace.as_ref(), &query));
                         if needs_rebuild {
-                            search_index = SearchIndex::build(&workspace, generation).ok().flatten();
+                            search_index = SearchIndex::build(workspace.as_ref(), generation).ok().flatten();
                         }
                         let (results, cancelled) = match search_index.as_mut() {
-                            Some(index) => match index.search(&workspace, &query, generation) {
+                            Some(index) => match index.search(workspace.as_ref(), &query, generation) {
                                 Some(results) => (Ok(results), false),
                                 None => (Ok(Vec::new()), true),
                             },

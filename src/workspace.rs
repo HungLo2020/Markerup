@@ -2,6 +2,10 @@ use percent_encoding::percent_decode_str;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+
+#[cfg(target_os = "ios")]
+use crate::ios_workspace::IosWorkspace;
 
 pub type EntryId = String;
 
@@ -22,8 +26,9 @@ pub struct LinkTarget {
     pub anchor: Option<String>,
 }
 
-pub trait Workspace {
+pub trait Workspace: Send + Sync {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>>;
+    fn entries_with_cancel(&self, should_cancel: &dyn Fn() -> bool) -> io::Result<Option<Vec<WorkspaceEntry>>>;
     #[allow(dead_code)]
     fn markdown_files(&self) -> io::Result<Vec<EntryId>>;
     fn read(&self, id: &str) -> io::Result<String>;
@@ -36,7 +41,12 @@ pub trait Workspace {
     fn search_markdown(&self, query: &str) -> io::Result<Vec<EntryId>>;
     fn resolve_markdown_link(&self, current_file: &str, link: &str) -> Option<LinkTarget>;
     fn resolve_asset_link(&self, current_file: &str, link: &str) -> Option<EntryId>;
+    fn display_name(&self) -> String;
+    fn identity(&self) -> String;
+    fn asset_path(&self, id: &str) -> io::Result<Option<PathBuf>>;
 }
+
+pub type WorkspaceRef = Arc<dyn Workspace>;
 
 #[derive(Debug, Clone)]
 pub struct LocalWorkspace { root: PathBuf }
@@ -62,7 +72,7 @@ impl LocalWorkspace {
         Ok(path.to_path_buf())
     }
 
-    fn validate_name(name: &str) -> io::Result<&str> {
+    pub(crate) fn validate_name(name: &str) -> io::Result<&str> {
         let name = name.trim();
         if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "name must be a single non-empty path component"));
@@ -70,7 +80,7 @@ impl LocalWorkspace {
         Ok(name)
     }
 
-    fn absolute_existing(&self, id: &str) -> io::Result<PathBuf> {
+    pub(crate) fn absolute_existing(&self, id: &str) -> io::Result<PathBuf> {
         let relative = Self::validate_id(id)?;
         let canonical = fs::canonicalize(self.root.join(relative))?;
         if !canonical.starts_with(&self.root) {
@@ -79,7 +89,7 @@ impl LocalWorkspace {
         Ok(canonical)
     }
 
-    fn absolute_parent(&self, parent: &str) -> io::Result<PathBuf> {
+    pub(crate) fn absolute_parent(&self, parent: &str) -> io::Result<PathBuf> {
         if parent.is_empty() { return Ok(self.root.clone()); }
         let path = self.absolute_existing(parent)?;
         if !path.is_dir() {
@@ -88,7 +98,7 @@ impl LocalWorkspace {
         Ok(path)
     }
 
-    fn id_for_path(&self, path: &Path) -> io::Result<EntryId> {
+    pub(crate) fn id_for_path(&self, path: &Path) -> io::Result<EntryId> {
         let relative = path.strip_prefix(&self.root).map_err(|_| io::Error::new(io::ErrorKind::PermissionDenied, "entry escapes workspace"))?;
         Ok(relative.to_string_lossy().replace('\\', "/"))
     }
@@ -158,6 +168,15 @@ impl Workspace for LocalWorkspace {
         let mut entries = Vec::new();
         self.scan_dir(&self.root, 0, &mut entries, None)?;
         Ok(entries)
+    }
+
+    fn entries_with_cancel(&self, should_cancel: &dyn Fn() -> bool) -> io::Result<Option<Vec<WorkspaceEntry>>> {
+        let mut entries = Vec::new();
+        if self.scan_dir(&self.root, 0, &mut entries, Some(should_cancel))? {
+            Ok(Some(entries))
+        } else {
+            Ok(None)
+        }
     }
 
     fn markdown_files(&self) -> io::Result<Vec<EntryId>> {
@@ -231,33 +250,68 @@ impl Workspace for LocalWorkspace {
         let canonical = self.resolved_relative_link(current_file, path_part)?;
         canonical.is_file().then(|| self.id_for_path(&canonical).ok()).flatten()
     }
+
+    fn display_name(&self) -> String { self.root_display() }
+    fn identity(&self) -> String { self.root_display() }
+    fn asset_path(&self, id: &str) -> io::Result<Option<PathBuf>> { self.absolute_asset_path(id).map(Some) }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub enum WorkspaceSlot {
     #[default]
     Empty,
     Local(LocalWorkspace),
+    #[cfg(target_os = "ios")]
+    Ios(Arc<IosWorkspace>),
 }
 
 impl WorkspaceSlot {
     pub fn local(workspace: LocalWorkspace) -> Self { Self::Local(workspace) }
-    pub fn is_open(&self) -> bool { matches!(self, Self::Local(_)) }
+    #[cfg(target_os = "ios")]
+    pub fn ios(workspace: IosWorkspace) -> Self { Self::Ios(Arc::new(workspace)) }
+    pub fn is_open(&self) -> bool {
+        match self {
+            Self::Local(_) => true,
+            #[cfg(target_os = "ios")]
+            Self::Ios(_) => true,
+            Self::Empty => false,
+        }
+    }
     pub fn root_path(&self) -> Option<&Path> {
-        match self { Self::Local(workspace) => Some(workspace.root_path()), Self::Empty => None }
+        match self {
+            Self::Local(workspace) => Some(workspace.root_path()),
+            #[cfg(target_os = "ios")]
+            Self::Ios(workspace) => Some(workspace.local.root_path()),
+            Self::Empty => None,
+        }
     }
     pub fn root_display(&self) -> String {
-        match self { Self::Local(workspace) => workspace.root_display(), Self::Empty => String::new() }
+        match self {
+            Self::Local(workspace) => workspace.root_display(),
+            #[cfg(target_os = "ios")]
+            Self::Ios(workspace) => workspace.display_name(),
+            Self::Empty => String::new(),
+        }
     }
-    pub fn local_clone(&self) -> Option<LocalWorkspace> {
-        match self { Self::Local(workspace) => Some(workspace.clone()), Self::Empty => None }
+    pub fn shared_clone(&self) -> Option<WorkspaceRef> {
+        match self { Self::Local(workspace) => Some(Arc::new(workspace.clone())), #[cfg(target_os = "ios")] Self::Ios(workspace) => Some(workspace.clone()), Self::Empty => None }
     }
     pub fn absolute_asset_path(&self, id: &str) -> io::Result<PathBuf> {
         match self {
             Self::Local(workspace) => workspace.absolute_asset_path(id),
+            #[cfg(target_os = "ios")]
+            Self::Ios(workspace) => workspace.local.absolute_asset_path(id),
             Self::Empty => Err(no_workspace()),
         }
     }
+
+    #[cfg(target_os = "ios")]
+    pub fn bookmark(&self) -> Option<Vec<u8>> {
+        match self { Self::Ios(workspace) => Some(workspace.selection().bookmark), _ => None }
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    pub fn bookmark(&self) -> Option<Vec<u8>> { None }
 }
 
 fn no_workspace() -> io::Error {
@@ -266,38 +320,44 @@ fn no_workspace() -> io::Error {
 
 impl Workspace for WorkspaceSlot {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
-        match self { Self::Local(workspace) => workspace.entries(), Self::Empty => Ok(Vec::new()) }
+        match self { Self::Local(workspace) => workspace.entries(), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.entries(), Self::Empty => Ok(Vec::new()) }
+    }
+    fn entries_with_cancel(&self, should_cancel: &dyn Fn() -> bool) -> io::Result<Option<Vec<WorkspaceEntry>>> {
+        match self { Self::Local(workspace) => workspace.entries_with_cancel(should_cancel), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.entries_with_cancel(should_cancel), Self::Empty => Ok(Some(Vec::new())) }
     }
     fn markdown_files(&self) -> io::Result<Vec<EntryId>> {
-        match self { Self::Local(workspace) => workspace.markdown_files(), Self::Empty => Ok(Vec::new()) }
+        match self { Self::Local(workspace) => workspace.markdown_files(), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.markdown_files(), Self::Empty => Ok(Vec::new()) }
     }
     fn read(&self, id: &str) -> io::Result<String> {
-        match self { Self::Local(workspace) => workspace.read(id), Self::Empty => Err(no_workspace()) }
+        match self { Self::Local(workspace) => workspace.read(id), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.read(id), Self::Empty => Err(no_workspace()) }
     }
     fn write(&self, id: &str, contents: &str) -> io::Result<()> {
-        match self { Self::Local(workspace) => workspace.write(id, contents), Self::Empty => Err(no_workspace()) }
+        match self { Self::Local(workspace) => workspace.write(id, contents), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.write(id, contents), Self::Empty => Err(no_workspace()) }
     }
     fn create_note(&self, parent: &str, name: &str) -> io::Result<EntryId> {
-        match self { Self::Local(workspace) => workspace.create_note(parent, name), Self::Empty => Err(no_workspace()) }
+        match self { Self::Local(workspace) => workspace.create_note(parent, name), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.create_note(parent, name), Self::Empty => Err(no_workspace()) }
     }
     fn create_directory(&self, parent: &str, name: &str) -> io::Result<EntryId> {
-        match self { Self::Local(workspace) => workspace.create_directory(parent, name), Self::Empty => Err(no_workspace()) }
+        match self { Self::Local(workspace) => workspace.create_directory(parent, name), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.create_directory(parent, name), Self::Empty => Err(no_workspace()) }
     }
     fn rename(&self, id: &str, new_name: &str) -> io::Result<EntryId> {
-        match self { Self::Local(workspace) => workspace.rename(id, new_name), Self::Empty => Err(no_workspace()) }
+        match self { Self::Local(workspace) => workspace.rename(id, new_name), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.rename(id, new_name), Self::Empty => Err(no_workspace()) }
     }
     fn delete(&self, id: &str) -> io::Result<()> {
-        match self { Self::Local(workspace) => workspace.delete(id), Self::Empty => Err(no_workspace()) }
+        match self { Self::Local(workspace) => workspace.delete(id), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.delete(id), Self::Empty => Err(no_workspace()) }
     }
     fn search_markdown(&self, query: &str) -> io::Result<Vec<EntryId>> {
-        match self { Self::Local(workspace) => workspace.search_markdown(query), Self::Empty => Ok(Vec::new()) }
+        match self { Self::Local(workspace) => workspace.search_markdown(query), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.search_markdown(query), Self::Empty => Ok(Vec::new()) }
     }
     fn resolve_markdown_link(&self, current_file: &str, link: &str) -> Option<LinkTarget> {
-        match self { Self::Local(workspace) => workspace.resolve_markdown_link(current_file, link), Self::Empty => None }
+        match self { Self::Local(workspace) => workspace.resolve_markdown_link(current_file, link), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.resolve_markdown_link(current_file, link), Self::Empty => None }
     }
     fn resolve_asset_link(&self, current_file: &str, link: &str) -> Option<EntryId> {
-        match self { Self::Local(workspace) => workspace.resolve_asset_link(current_file, link), Self::Empty => None }
+        match self { Self::Local(workspace) => workspace.resolve_asset_link(current_file, link), #[cfg(target_os = "ios")] Self::Ios(workspace) => workspace.resolve_asset_link(current_file, link), Self::Empty => None }
     }
+    fn display_name(&self) -> String { self.root_display() }
+    fn identity(&self) -> String { self.root_display() }
+    fn asset_path(&self, id: &str) -> io::Result<Option<PathBuf>> { self.absolute_asset_path(id).map(Some) }
 }
 
 #[cfg(test)]

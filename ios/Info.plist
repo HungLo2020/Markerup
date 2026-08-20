@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key><string>Markerup</string>
+    <key>CFBundleIdentifier</key><string>com.example.markerup</string>
+    <key>CFBundleName</key><string>Markerup</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>UILaunchScreen</key><dict/>
+    <key>UIRequiresFullScreen</key><true/>
+</dict>
+</plist>

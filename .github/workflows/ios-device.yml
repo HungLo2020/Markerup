@@ -1,0 +1,151 @@
+name: Signed iOS device build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  device:
+    name: Archive signed iOS app
+    runs-on: macos-14
+    env:
+      IOS_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
+      IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+      IOS_PROFILE_NAME: ${{ secrets.IOS_PROFILE_NAME }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install Rust targets
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: aarch64-apple-ios
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-device
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Validate signing configuration
+        env:
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          for value in IOS_BUNDLE_ID IOS_TEAM_ID IOS_PROFILE_NAME IOS_CERTIFICATE_P12_BASE64 IOS_CERTIFICATE_PASSWORD IOS_PROVISIONING_PROFILE_BASE64; do
+            if [[ -z "${!value:-}" ]]; then
+              echo "Missing required repository secret: $value"
+              exit 1
+            fi
+          done
+
+      - name: Install signing certificate and provisioning profile
+        env:
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain_path="$RUNNER_TEMP/markerup-signing.keychain-db"
+          certificate_path="$RUNNER_TEMP/markerup-signing.p12"
+          profile_path="$RUNNER_TEMP/markerup.mobileprovision"
+          profile_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profile_dir"
+
+          printf '%s' "$IOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate_path"
+          printf '%s' "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile_path"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          cp "$profile_path" "$profile_dir/$IOS_PROFILE_NAME.mobileprovision"
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate --spec project.yml
+
+      - name: Archive signed iOS application
+        run: >-
+          xcodebuild
+          -project ios/Markerup.xcodeproj
+          -scheme Markerup
+          -configuration Debug
+          -sdk iphoneos
+          -archivePath "$RUNNER_TEMP/Markerup.xcarchive"
+          DEVELOPMENT_TEAM="$IOS_TEAM_ID"
+          PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID"
+          CURRENT_PROJECT_VERSION="${{ github.run_number }}"
+          MARKETING_VERSION="0.2.0"
+          CODE_SIGN_STYLE=Manual
+          CODE_SIGN_IDENTITY="Apple Distribution"
+          PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME"
+          archive
+
+      - name: Create device export options
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>destination</key><string>upload</string>
+              <key>method</key><string>app-store</string>
+              <key>signingStyle</key><string>manual</string>
+              <key>signingCertificate</key><string>Apple Distribution</string>
+              <key>teamID</key><string>$IOS_TEAM_ID</string>
+              <key>provisioningProfiles</key>
+              <dict><key>$IOS_BUNDLE_ID</key><string>$IOS_PROFILE_NAME</string></dict>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Export signed IPA
+        run: >-
+          xcodebuild -exportArchive
+          -archivePath "$RUNNER_TEMP/Markerup.xcarchive"
+          -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+          -exportPath "$RUNNER_TEMP/Markerup-export"
+
+      - name: Locate exported IPA
+        id: ipa
+        run: |
+          ipa_path="$(find "$RUNNER_TEMP/Markerup-export" -type f -name '*.ipa' -print -quit)"
+          if [[ -z "$ipa_path" ]]; then
+            find "$RUNNER_TEMP/Markerup-export" -maxdepth 3 -print
+            exit 1
+          fi
+          echo "ipa_path=$ipa_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build to TestFlight
+        uses: apple-actions/upload-testflight-build@v4
+        with:
+          app-path: ${{ steps.ipa.outputs.ipa_path }}
+          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          uses-non-exempt-encryption: 'false'
+          wait-for-processing: 'true'
+
+      - name: Upload signed IPA and archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: markerup-ios-signed-device
+          path: |
+            ${{ steps.ipa.outputs.ipa_path }}
+            ${{ runner.temp }}/Markerup.xcarchive/dSYMs
+          if-no-files-found: error

@@ -1,6 +1,8 @@
 import { Button, CheckBox, HorizontalBox, LineEdit, ListView, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
+import { MobileWindow } from "mobile.slint";
+export { MobileWindow } from "mobile.slint";
 
-export component MainWindow inherits Window {
+export component DesktopWindow inherits Window {
     title: root.dirty ? "Markerup *" : "Markerup";
     preferred-width: 1360px;
     preferred-height: 820px;

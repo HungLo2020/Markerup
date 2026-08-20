@@ -2,17 +2,19 @@
 
 Markerup must treat an iOS workspace as a user-granted document-provider directory, not as a Unix path that happens to be reachable from the sandbox.
 
-## Required selection flow
+## Implemented selection flow
 
 1. Present `UIDocumentPickerViewController` configured for directory selection.
 2. Accept the returned security-scoped URL for the selected directory.
 3. Call `startAccessingSecurityScopedResource()` before touching the directory.
 4. Create bookmark data for the selected URL when the user pins the workspace.
 5. On a later launch, resolve the bookmark and re-enter the security scope.
-6. Use `NSFileCoordinator` for reads and writes to provider-backed content.
+6. Use `NSFileCoordinator` for reads, writes, creates, renames, and deletes to provider-backed content.
 7. Release security-scoped access when the workspace is closed or the application no longer needs it.
 
 This is intentionally different from the Linux implementation. The shared `Workspace` API uses opaque entry IDs so provider items do not have to masquerade as ordinary local `PathBuf`s.
+
+The implementation is split between `src/ios_workspace.rs`, `src/ios_bridge.rs`, and `ios/MarkerupIOSBridge.m`. The mobile Slint component is `ui/mobile.slint`; the desktop component remains separate in `ui/main.slint`.
 
 ## SMB acceptance target
 

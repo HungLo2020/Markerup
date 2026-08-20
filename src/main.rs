@@ -6,11 +6,21 @@ mod persistence;
 mod workers;
 mod workspace;
 mod workspace_picker;
+#[cfg(target_os = "ios")]
+mod ios_bridge;
+#[cfg(target_os = "ios")]
+mod ios_workspace;
 
 use crate::app::{apply_preview_result, apply_scan_result, apply_search_result, open_file, render_tree, reset_workspace_ui, save_session_for, set_status, sync_flags, AppState, SCAN_DEBOUNCE};
-use crate::persistence::{clear_session, load_session};
+use crate::persistence::load_session;
+#[cfg(not(target_os = "ios"))]
+use crate::persistence::clear_session;
 use crate::workers::{WorkerRequest, WorkerResult};
-use crate::workspace::{LocalWorkspace, WorkspaceSlot};
+use crate::workspace::WorkspaceSlot;
+#[cfg(not(target_os = "ios"))]
+use crate::workspace::LocalWorkspace;
+#[cfg(target_os = "ios")]
+use crate::ios_workspace::IosWorkspace;
 use notify::{EventKind, RecursiveMode, Watcher};
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::cell::{Cell, RefCell};
@@ -19,6 +29,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 slint::include_modules!();
+
+#[cfg(target_os = "ios")]
+type MainWindow = MobileWindow;
+#[cfg(not(target_os = "ios"))]
+type MainWindow = DesktopWindow;
 
 const UI_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -38,9 +53,43 @@ fn arm_poll_timer(timer: Rc<Timer>, callback: PollCallback, interval: Duration) 
     });
 }
 
+fn install_workspace<W: Watcher>(
+    ui: &MainWindow,
+    state: &Rc<RefCell<AppState>>,
+    watcher: &Rc<RefCell<W>>,
+    workspace: WorkspaceSlot,
+    pinned: bool,
+) {
+    let old_root = state.borrow().workspace.root_path().map(ToOwned::to_owned);
+    if let Some(old_root) = old_root.as_deref() { let _ = watcher.borrow_mut().unwatch(old_root); }
+    let new_root = workspace.root_path().map(ToOwned::to_owned);
+    let watch_error = new_root.as_deref().and_then(|root| watcher.borrow_mut().watch(root, RecursiveMode::Recursive).err());
+    let generations = {
+        let state = state.borrow();
+        (state.preview_generation, state.search_generation, state.scan_generation)
+    };
+    {
+        let mut state = state.borrow_mut();
+        state.replace_workspace(workspace, pinned);
+        state.preview_generation = generations.0.wrapping_add(1);
+        state.search_generation = generations.1.wrapping_add(1);
+        state.scan_generation = generations.2.wrapping_add(1);
+        reset_workspace_ui(ui, &mut state);
+        state.schedule_scan(Duration::ZERO);
+        sync_flags(ui, &state);
+    }
+    if let Some(error) = watch_error {
+        set_status(ui, format!("Workspace selected; automatic file watching unavailable: {error}"));
+    } else {
+        set_status(ui, "Workspace selected. Loading notes in the background…");
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved = load_session();
-    let (workspace, restore_file, pinned) = match saved {
+    let (workspace, restore_file, pinned) = {
+        #[cfg(not(target_os = "ios"))]
+        let value = match saved {
         Some(session) if session.pinned_workspace.is_dir() => {
             match LocalWorkspace::open(&session.pinned_workspace) {
                 Ok(workspace) => (WorkspaceSlot::local(workspace), session.current_file, true),
@@ -55,10 +104,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (WorkspaceSlot::Empty, None, false)
         }
         None => (WorkspaceSlot::Empty, None, false),
+        };
+        #[cfg(target_os = "ios")]
+        let value = match saved.and_then(|session| {
+            let bookmark = session.bookmark?;
+            let selection = crate::ios_bridge::resolve_bookmark(&bookmark).ok()?;
+            let workspace = IosWorkspace::open(selection).ok()?;
+            Some((WorkspaceSlot::ios(workspace), session.current_file, true))
+        }) {
+            Some(value) => value,
+            None => (WorkspaceSlot::Empty, None, false),
+        };
+        value
     };
 
     let ui = MainWindow::new()?;
     let state = Rc::new(RefCell::new(AppState::new(workspace, pinned)));
+    #[cfg(target_os = "ios")]
+    crate::ios_bridge::install_lifecycle_observers();
     {
         let mut state = state.borrow_mut();
         render_tree(&ui, &mut state);
@@ -87,6 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     handlers_workspace::wire(&ui, state.clone());
     handlers_editor::wire(&ui, state.clone());
 
+    #[cfg(not(target_os = "ios"))]
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
@@ -115,33 +179,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            let old_root = state.borrow().workspace.root_path().map(ToOwned::to_owned);
-            if let Some(old_root) = old_root.as_deref() {
-                let _ = watcher.borrow_mut().unwatch(old_root);
-            }
-            let new_root = workspace.root_path().to_path_buf();
-            let watch_error = watcher.borrow_mut().watch(&new_root, RecursiveMode::Recursive).err();
+            install_workspace(&ui, &state, &watcher, WorkspaceSlot::local(workspace), false);
+        });
+    }
 
-            let generations = {
-                let state = state.borrow();
-                (state.preview_generation, state.search_generation, state.scan_generation)
-            };
-            {
-                let mut state = state.borrow_mut();
-                state.replace_workspace(WorkspaceSlot::local(workspace), false);
-                state.preview_generation = generations.0.wrapping_add(1);
-                state.search_generation = generations.1.wrapping_add(1);
-                state.scan_generation = generations.2.wrapping_add(1);
-                reset_workspace_ui(&ui, &mut state);
-                state.schedule_scan(Duration::ZERO);
-                sync_flags(&ui, &state);
+    #[cfg(target_os = "ios")]
+    {
+        let ui_weak = ui.as_weak();
+        let state = state.clone();
+        let watcher = watcher.clone();
+        ui.on_choose_workspace_requested(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if state.borrow().dirty {
+                set_status(&ui, "Save or reload the current note before changing workspaces");
+                return;
             }
-
-            if let Some(error) = watch_error {
-                set_status(&ui, format!("Workspace selected; automatic file watching unavailable: {error}"));
-            } else {
-                set_status(&ui, "Workspace selected. Loading notes in the background…");
-            }
+            let ui_weak = ui.as_weak();
+            let state = state.clone();
+            let watcher = watcher.clone();
+            workspace_picker::choose_workspace(move |result| {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let selection = match result {
+                    Ok(Some(selection)) => selection,
+                    Ok(None) => return,
+                    Err(error) => { set_status(&ui, format!("Folder picker failed: {error}")); return; }
+                };
+                match IosWorkspace::open(selection) {
+                    Ok(workspace) => install_workspace(&ui, &state, &watcher, WorkspaceSlot::ios(workspace), false),
+                    Err(error) => set_status(&ui, format!("Could not open workspace: {error}")),
+                }
+            });
         });
     }
 
@@ -190,6 +257,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut watcher_requires_full_scan = false;
             let mut watcher_current_file_changed = false;
             let mut watcher_error = None;
+            #[cfg(target_os = "ios")]
+            if crate::ios_bridge::take_resume_request() {
+                state.borrow_mut().schedule_scan(Duration::ZERO);
+            }
             while let Ok(result) = watch_rx.try_recv() {
                 match result {
                     Ok(event) => {
@@ -261,7 +332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let search_ready = state.pending_search.as_ref().is_some_and(|pending| pending.due <= now);
                 if search_ready {
                     if let Some(pending) = state.pending_search.take() {
-                        if let Some(workspace) = state.workspace.local_clone() {
+                        if let Some(workspace) = state.workspace.shared_clone() {
                             if workers.io.send(WorkerRequest::Search {
                                 generation: pending.generation,
                                 workspace,
@@ -278,7 +349,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let scan_ready = state.pending_scan.as_ref().is_some_and(|pending| pending.due <= now);
                 if scan_ready {
                     if let Some(pending) = state.pending_scan.take() {
-                        if let Some(workspace) = state.workspace.local_clone() {
+                        if let Some(workspace) = state.workspace.shared_clone() {
                             if workers.io.send(WorkerRequest::Scan {
                                 generation: pending.generation,
                                 workspace,
