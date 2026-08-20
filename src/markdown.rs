@@ -96,7 +96,7 @@ fn parse_atx_heading(line: &str) -> Option<(u8, &str)> {
         return None;
     }
     let remainder = &trimmed[hashes..];
-    if !remainder.is_empty() && !remainder.starts_with(char::is_whitespace) {
+    if !remainder.is_empty() && !remainder.chars().next().is_some_and(char::is_whitespace) {
         return None;
     }
     Some((hashes as u8, remainder.trim()))
