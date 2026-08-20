@@ -1,0 +1,135 @@
+import { Button, LineEdit, ListView, ScrollView, TextEdit, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component MobileWindow inherits Window {
+    title: root.dirty ? "Markerup *" : "Markerup";
+    preferred-width: 390px;
+    preferred-height: 844px;
+    min-width: 320px;
+    min-height: 480px;
+
+    in-out property <[string]> tree-labels;
+    in-out property <[string]> search-results;
+    in-out property <[styled-text]> preview-block-texts;
+    in-out property <[string]> preview-block-plain-texts;
+    in-out property <[int]> preview-block-kinds;
+    in-out property <[int]> preview-heading-levels;
+    in-out property <[bool]> preview-task-checked;
+    in-out property <[image]> preview-block-mermaid-images;
+    in-out property <[string]> preview-block-mermaid-errors;
+    in-out property <[image]> preview-images;
+    in-out property <[string]> preview-image-labels;
+    in-out property <string> workspace-path: "";
+    in-out property <string> selected-path: "";
+    in-out property <string> current-path: "No note selected";
+    in-out property <string> editor-text: "";
+    in-out property <string> status: "Choose a folder to use as a Markerup workspace";
+    in-out property <string> action-name: "";
+    in-out property <string> search-query: "";
+    in-out property <string> find-query: "";
+    in-out property <string> find-status: "";
+    in-out property <bool> workspace-open: false;
+    in-out property <bool> workspace-pinned: false;
+    in-out property <bool> dirty: false;
+    in-out property <bool> external-conflict: false;
+    in-out property <bool> can-go-back: false;
+    in-out property <bool> can-go-forward: false;
+    in-out property <int> view-mode: 0;
+
+    callback choose-workspace-requested();
+    callback pin-workspace-requested();
+    callback tree-selected(int);
+    callback save-requested(string);
+    callback overwrite-requested(string);
+    callback reload-requested();
+    callback editor-changed(string);
+    callback preview-link-clicked(string);
+    callback refresh-requested();
+    callback new-note-requested(string);
+    callback new-folder-requested(string);
+    callback rename-requested(string);
+    callback delete-requested();
+    callback search-requested(string);
+    callback search-result-selected(int);
+    callback find-next-requested(string);
+    callback back-requested();
+    callback forward-requested();
+    callback select-editor-range(int, int);
+
+    VerticalBox {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalBox {
+            height: 42px;
+            Button { text: "☰"; clicked => { root.view-mode = 3; } }
+            Text { text: root.workspace-open ? root.current-path : "Markerup"; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+            Button { text: "↻"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
+            Button { text: "Save"; enabled: root.workspace-open && root.dirty && !root.external-conflict; clicked => { root.save-requested(root.editor-text); } }
+        }
+
+        Rectangle {
+            height: 30px;
+            background: #7d2b2b;
+            visible: root.external-conflict;
+            Text { text: "External change conflict"; color: white; vertical-alignment: center; horizontal-alignment: center; }
+        }
+
+        if root.view-mode == 3 : VerticalBox {
+            vertical-stretch: 1;
+            Text { text: root.workspace-open ? root.workspace-path : "No workspace selected"; wrap: word-wrap; }
+            Button { text: "Choose Workspace"; clicked => { root.choose-workspace-requested(); } }
+            Button { text: root.workspace-pinned ? "Unpin Workspace" : "Pin Workspace"; enabled: root.workspace-open; clicked => { root.pin-workspace-requested(); } }
+            LineEdit { text <=> root.search-query; edited => { root.search-requested(self.text); } }
+            ListView { vertical-stretch: 1; for result[index] in root.search-results : Button { text: result; clicked => { root.search-result-selected(index); root.view-mode = 0; } } }
+            Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
+        }
+
+        if root.view-mode == 0 : VerticalBox {
+            vertical-stretch: 1;
+            Text { text: root.workspace-open ? "Notes" : "Choose a workspace to begin"; font-weight: 700; }
+            if !root.workspace-open : Button { text: "Choose Workspace"; clicked => { root.choose-workspace-requested(); } }
+            ListView {
+                vertical-stretch: 1;
+                for label[index] in root.tree-labels : Button { text: label; clicked => { root.tree-selected(index); } }
+            }
+        }
+
+        if root.view-mode == 1 : VerticalBox {
+            vertical-stretch: 1;
+            Text { text: root.current-path; font-weight: 700; overflow: elide; }
+            TextEdit { text <=> root.editor-text; edited => { root.editor-changed(self.text); } vertical-stretch: 1; }
+            HorizontalBox {
+                Button { text: "Find"; clicked => { root.find-next-requested(root.find-query); } }
+                LineEdit { text <=> root.find-query; horizontal-stretch: 1; }
+                Button { text: "Reload"; enabled: root.workspace-open && root.current-path != "No note selected"; clicked => { root.reload-requested(); } }
+            }
+        }
+
+        if root.view-mode == 2 : ScrollView {
+            vertical-stretch: 1;
+            VerticalBox {
+                for block[index] in root.preview-block-texts : VerticalBox {
+                    if root.preview-block-kinds[index] == 3 : Image {
+                        source: root.preview-block-mermaid-images[index];
+                        width: root.width - 24px;
+                        height: 260px;
+                        image-fit: contain;
+                    }
+                    if root.preview-block-kinds[index] != 3 : StyledText {
+                        text: block;
+                        width: root.width - 24px;
+                        link-clicked(link) => { root.preview-link-clicked(link); }
+                    }
+                }
+            }
+        }
+
+        Text { text: root.status; wrap: word-wrap; max-height: 42px; }
+        HorizontalBox {
+            height: 46px;
+            Button { text: "Notes"; clicked => { root.view-mode = 0; } }
+            Button { text: "Edit"; enabled: root.workspace-open; clicked => { root.view-mode = 1; } }
+            Button { text: "Preview"; enabled: root.workspace-open; clicked => { root.view-mode = 2; } }
+        }
+    }
+}

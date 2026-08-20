@@ -1,0 +1,41 @@
+name: Markerup
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  Markerup:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Markerup
+        CFBundleName: Markerup
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleIconName: AppIcon
+        LSRequiresIPhoneOS: true
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        "UISupportedInterfaceOrientations~ipad":
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    sources:
+      - Assets.xcassets
+      - LaunchScreen.storyboard
+    settings:
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    postCompileScripts:
+      - name: Build Rust executable
+        script: ./build_for_ios_with_cargo.sh markerup
+        basedOnDependencyAnalysis: false

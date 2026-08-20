@@ -3209,6 +3209,7 @@ dependencies = [
 name = "markerup"
 version = "0.2.0"
 dependencies = [
+ "cc",
  "merman",
  "notify",
  "percent-encoding",

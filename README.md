@@ -67,7 +67,7 @@ For iOS, the intended implementation follows Apple's supported external-director
 
 ## Current limitations
 
-- Android and iOS workspace adapters are not implemented yet.
+- Android workspace integration remains planned. iOS now has a native folder picker, security-scoped bookmark persistence, coordinated file access, foreground reconciliation, and a separate mobile UI. The iOS package must be built on macOS with Xcode/Xcodegen.
 - Mermaid rendering currently uses the Rust-native Merman `0.7.0-alpha.1` release because Merman `0.8.0-alpha.5` requires a newer Rust toolchain than the project currently uses.
 - Slint's stock `TextEdit` does not expose per-range text styling, so the editable source pane is monospace but does not yet provide true syntax highlighting. The rendered preview is Markdown-aware.
 - Heading-fragment navigation selects the matching heading in the source editor; preview scrolling to an anchor is not yet exposed by Slint's `StyledText`.
