@@ -51,7 +51,7 @@ fn show_file(ui: &MainWindow, state: &mut AppState, relative_path: PathBuf) {
     match state.workspace.read(&relative_path) {
         Ok(contents) => {
             state.current_file = Some(relative_path.clone());
-            ui.set_current_path(relative_path.to_string_lossy().into());
+            ui.set_current_path(relative_path.to_string_lossy().into_owned().into());
             ui.set_editor_text(contents.clone().into());
             set_preview(ui, &contents);
             ui.set_status("Ready".into());
@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = LocalWorkspace::open(&root)?;
 
     let ui = MainWindow::new()?;
-    ui.set_workspace_path(workspace.root().to_string_lossy().into());
+    ui.set_workspace_path(workspace.root().to_string_lossy().into_owned().into());
 
     let state = Rc::new(RefCell::new(AppState::new(workspace)));
     refresh_file_list(&ui, &mut state.borrow_mut());
