@@ -91,6 +91,7 @@ jobs:
 
       - name: Validate generated iOS resources
         run: |
+          test -f resources/markerup_notepad_icon.svg
           test -f ios/Info.plist
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-60@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-76@2x.png

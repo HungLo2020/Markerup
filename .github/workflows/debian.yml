@@ -1,0 +1,105 @@
+name: Debian package release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: debian-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Debian package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out selected source
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            dpkg-dev \
+            libfontconfig1-dev \
+            libgl1-mesa-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxkbcommon-dev
+
+      - name: Select stable Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build Debian package
+        run: |
+          set -euo pipefail
+          cargo build --locked --release
+          package_root="$RUNNER_TEMP/markerup-package"
+          mkdir -p "$package_root/DEBIAN" \
+            "$package_root/usr/bin" \
+            "$package_root/usr/share/applications" \
+            "$package_root/usr/share/icons/hicolor/scalable/apps"
+          install -m 0755 target/release/markerup "$package_root/usr/bin/markerup"
+          install -m 0644 resources/markerup_notepad_transparent.svg \
+            "$package_root/usr/share/icons/hicolor/scalable/apps/markerup.svg"
+          cat > "$package_root/DEBIAN/control" <<EOF
+          Package: markerup
+          Version: ${GITHUB_RUN_NUMBER}
+          Section: editors
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Markerup contributors
+          Description: Filesystem-first Markdown notes editor
+           Markerup is a Markdown notes editor built with Rust and Slint.
+          EOF
+          cat > "$package_root/usr/share/applications/markerup.desktop" <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Markerup
+          Comment=Filesystem-first Markdown notes editor
+          Exec=markerup
+          Icon=markerup
+          Terminal=false
+          Categories=Office;TextEditor;
+          MimeType=text/markdown;text/plain;
+          EOF
+          mkdir -p release
+          dpkg-deb --build --root-owner-group "$package_root" \
+            "release/markerup_${GITHUB_RUN_NUMBER}_amd64.deb"
+          sha256sum release/* > release/SHA256SUMS
+
+      - name: Upload Debian package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: markerup-debian
+          path: release/
+          if-no-files-found: error
+
+  release:
+    name: Replace Debian release only
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Debian package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: markerup-debian
+          path: release-assets
+
+      - name: Replace dedicated Debian release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release delete debian --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create debian \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title debian \
+            --notes "Automated Debian package for ${GITHUB_SHA}. This release is independent of latest." \
+            release-assets/markerup_*.deb \
+            release-assets/SHA256SUMS

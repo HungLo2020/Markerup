@@ -65,8 +65,9 @@ jobs:
           set -euo pipefail
           cargo build --locked --release
           package_root="$RUNNER_TEMP/markerup-package"
-          mkdir -p "$package_root/DEBIAN" "$package_root/usr/bin" "$package_root/usr/share/applications"
+          mkdir -p "$package_root/DEBIAN" "$package_root/usr/bin" "$package_root/usr/share/applications" "$package_root/usr/share/icons/hicolor/scalable/apps"
           install -m 0755 target/release/markerup "$package_root/usr/bin/markerup"
+          install -m 0644 resources/markerup_notepad_transparent.svg "$package_root/usr/share/icons/hicolor/scalable/apps/markerup.svg"
           cat > "$package_root/DEBIAN/control" <<EOF
           Package: markerup
           Version: ${GITHUB_RUN_NUMBER}
@@ -83,6 +84,7 @@ jobs:
           Name=Markerup
           Comment=Filesystem-first Markdown notes editor
           Exec=markerup
+          Icon=markerup
           Terminal=false
           Categories=Office;TextEditor;
           MimeType=text/markdown;text/plain;
