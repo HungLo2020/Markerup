@@ -371,22 +371,45 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                         current_file,
                         full_tree,
                     } => {
-                        let started = Instant::now();
                         // A current-file check can still represent an edited
                         // note, so invalidate cached search contents for both
                         // scan modes. The next search rebuilds from disk.
                         search_index = None;
-                        let entries = full_tree.then(|| safe_workspace_scan(workspace.clone()));
-                        let current_text = current_file
-                            .as_deref()
-                            .map(|id| safe_workspace_call(|| workspace.read(id)));
-                        WorkerResult::Scan(ScanResult {
-                            generation,
-                            entries,
-                            current_file,
-                            current_text,
-                            elapsed: started.elapsed(),
-                        })
+                        // Do not let a provider/network scan block the shared
+                        // search worker. In particular, an SMB transport can
+                        // outlive its request when a server disappears; the
+                        // scan watchdog will report that operation while this
+                        // worker remains able to process newer requests.
+                        let scan_result_tx = result_tx.clone();
+                        let scan_start = thread::Builder::new()
+                            .name("markerup-workspace-scan".to_string())
+                            .spawn(move || {
+                                let started = Instant::now();
+                                let entries =
+                                    full_tree.then(|| safe_workspace_scan(workspace.clone()));
+                                let current_text = current_file
+                                    .as_deref()
+                                    .map(|id| safe_workspace_call(|| workspace.read(id)));
+                                let _ = scan_result_tx.send(WorkerResult::Scan(ScanResult {
+                                    generation,
+                                    entries,
+                                    current_file,
+                                    current_text,
+                                    elapsed: started.elapsed(),
+                                }));
+                            });
+                        if let Err(error) = scan_start {
+                            let _ = result_tx.send(WorkerResult::Scan(ScanResult {
+                                generation,
+                                entries: full_tree.then(|| {
+                                    Err(format!("could not start workspace scan: {error}"))
+                                }),
+                                current_file: None,
+                                current_text: None,
+                                elapsed: Duration::ZERO,
+                            }));
+                        }
+                        continue;
                     }
                     WorkerRequest::Preview { .. } => continue,
                 };
