@@ -548,6 +548,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if scan_ready {
                     if let Some(pending) = state.pending_scan.take() {
                         if let Some(workspace) = state.workspace.shared_clone() {
+                            if matches!(state.workspace, WorkspaceSlot::Smb(_)) {
+                                set_status(&ui, "Scanning SMB workspace…");
+                            }
                             if workers
                                 .io
                                 .send(WorkerRequest::Scan {

@@ -1,9 +1,13 @@
 use crate::workspace::{EntryId, EntryKind, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry};
 use smb2::{ClientConfig, DirectoryEntry, SmbClient, Tree};
+use std::future::Future;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const SMB_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const SMB_SCAN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Connection information for a direct SMB workspace.
 ///
@@ -91,6 +95,26 @@ impl SmbWorkspace {
         Ok(())
     }
 
+    fn run_smb<T, F>(&self, operation: &'static str, future: F) -> io::Result<T>
+    where
+        F: Future<Output = Result<T, smb2::Error>>,
+    {
+        match self
+            .runtime
+            .block_on(tokio::time::timeout(SMB_OPERATION_TIMEOUT, future))
+        {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(io::Error::other(format!("SMB {operation} failed: {error}"))),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "SMB {operation} timed out after {} seconds",
+                    SMB_OPERATION_TIMEOUT.as_secs()
+                ),
+            )),
+        }
+    }
+
     fn list_directory(&self, path: &str) -> io::Result<Vec<DirectoryEntry>> {
         let mut session = self
             .session
@@ -98,7 +122,7 @@ impl SmbWorkspace {
             .map_err(|_| io::Error::other("SMB session lock poisoned"))?;
         let result = {
             let SmbSession { client, tree } = &mut *session;
-            self.runtime.block_on(client.list_directory(tree, path))
+            self.run_smb("directory enumeration", client.list_directory(tree, path))
         };
         match result {
             Ok(entries) => Ok(entries),
@@ -109,11 +133,13 @@ impl SmbWorkspace {
                     ))
                 })?;
                 let SmbSession { client, tree } = &mut *session;
-                self.runtime
-                    .block_on(client.list_directory(tree, path))
-                    .map_err(|retry| {
-                        io::Error::other(format!("SMB list failed after reconnect: {retry}"))
-                    })
+                self.run_smb(
+                    "directory enumeration after reconnect",
+                    client.list_directory(tree, path),
+                )
+                .map_err(|retry| {
+                    io::Error::other(format!("SMB list failed after reconnect: {retry}"))
+                })
             }
         }
     }
@@ -125,8 +151,7 @@ impl SmbWorkspace {
             .map_err(|_| io::Error::other("SMB session lock poisoned"))?;
         let result = {
             let SmbSession { client, tree } = &mut *session;
-            self.runtime
-                .block_on(client.read_file_pipelined(tree, path))
+            self.run_smb("read", client.read_file_pipelined(tree, path))
         };
         match result {
             Ok(data) => Ok(data),
@@ -137,11 +162,13 @@ impl SmbWorkspace {
                     ))
                 })?;
                 let SmbSession { client, tree } = &mut *session;
-                self.runtime
-                    .block_on(client.read_file_pipelined(tree, path))
-                    .map_err(|retry| {
-                        io::Error::other(format!("SMB read failed after reconnect: {retry}"))
-                    })
+                self.run_smb(
+                    "read after reconnect",
+                    client.read_file_pipelined(tree, path),
+                )
+                .map_err(|retry| {
+                    io::Error::other(format!("SMB read failed after reconnect: {retry}"))
+                })
             }
         }
     }
@@ -163,8 +190,15 @@ impl SmbWorkspace {
         directory: &str,
         relative_directory: &str,
         depth: usize,
+        deadline: Instant,
         output: &mut Vec<WorkspaceEntry>,
     ) -> io::Result<()> {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "SMB workspace scan timed out",
+            ));
+        }
         let mut children = self.list_directory(directory)?;
         children.sort_by_key(|entry| entry.name.to_lowercase());
         for child in children {
@@ -189,7 +223,7 @@ impl SmbWorkspace {
                 } else {
                     format!("{directory}/{child_name}")
                 };
-                self.collect_entries(&child_directory, &id, depth + 1, output)?;
+                self.collect_entries(&child_directory, &id, depth + 1, deadline, output)?;
             } else if child.name.to_ascii_lowercase().ends_with(".md") {
                 output.push(WorkspaceEntry {
                     id,
@@ -327,7 +361,13 @@ impl Workspace for SmbWorkspace {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
         let root = self.remote_path("")?;
         let mut entries = Vec::new();
-        self.collect_entries(&root, "", 0, &mut entries)?;
+        self.collect_entries(
+            &root,
+            "",
+            0,
+            Instant::now() + SMB_SCAN_TIMEOUT,
+            &mut entries,
+        )?;
         Ok(entries)
     }
 
