@@ -30,6 +30,7 @@ export component DesktopWindow inherits Window {
     in-out property <string> search-query: "";
     in-out property <string> find-query: "";
     in-out property <string> find-status: "";
+    in-out property <string> diagnostic-report: "No diagnostic report available.";
     in-out property <bool> workspace-open: false;
     in-out property <bool> workspace-pinned: false;
     in-out property <bool> dirty: false;
@@ -57,6 +58,8 @@ export component DesktopWindow inherits Window {
     callback back-requested();
     callback forward-requested();
     callback select-editor-range(int, int);
+    callback diagnostic-requested();
+    callback copy-diagnostic-requested();
 
     select-editor-range(start, end) => {
         editor.set-selection-offsets(start, end);

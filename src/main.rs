@@ -183,6 +183,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     handlers_workspace::wire(&ui, state.clone());
     handlers_editor::wire(&ui, state.clone());
 
+    #[cfg(target_os = "ios")]
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_diagnostic_requested(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            ui.set_diagnostic_report(crate::ios_bridge::diagnostics().into());
+            ui.set_view_mode(4);
+        });
+        let ui_weak = ui.as_weak();
+        ui.on_copy_diagnostic_requested(move || {
+            crate::ios_bridge::copy_diagnostics();
+            if let Some(ui) = ui_weak.upgrade() {
+                set_status(&ui, "Diagnostic report copied to the iPhone clipboard");
+            }
+        });
+    }
+
     #[cfg(not(target_os = "ios"))]
     {
         let ui_weak = ui.as_weak();
