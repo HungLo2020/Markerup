@@ -69,7 +69,7 @@ impl SmbWorkspace {
             .enable_time()
             .build()
             .map_err(|error| io::Error::other(format!("could not create SMB runtime: {error}")))?;
-        let session = runtime.block_on(connect_session(&config))?;
+        let session = runtime.block_on(async { connect_session(&config).await })?;
         Ok(Self {
             config,
             runtime,
@@ -91,18 +91,22 @@ impl SmbWorkspace {
     }
 
     fn reconnect(&self, session: &mut SmbSession) -> io::Result<()> {
-        *session = self.runtime.block_on(connect_session(&self.config))?;
+        *session = self
+            .runtime
+            .block_on(async { connect_session(&self.config).await })?;
         Ok(())
     }
 
-    fn run_smb<T, F>(&self, operation: &'static str, future: F) -> io::Result<T>
+    fn run_smb<T, F, Fut>(&self, operation: &'static str, future: F) -> io::Result<T>
     where
-        F: Future<Output = Result<T, smb2::Error>>,
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, smb2::Error>>,
     {
-        match self
-            .runtime
-            .block_on(tokio::time::timeout(SMB_OPERATION_TIMEOUT, future))
-        {
+        match self.runtime.block_on(async move {
+            // Construct the smb2 future inside the runtime. Some smb2
+            // operations query Tokio's reactor while they are built.
+            tokio::time::timeout(SMB_OPERATION_TIMEOUT, future()).await
+        }) {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(error)) => Err(io::Error::other(format!("SMB {operation} failed: {error}"))),
             Err(_) => Err(io::Error::new(
@@ -122,7 +126,9 @@ impl SmbWorkspace {
             .map_err(|_| io::Error::other("SMB session lock poisoned"))?;
         let result = {
             let SmbSession { client, tree } = &mut *session;
-            self.run_smb("directory enumeration", client.list_directory(tree, path))
+            self.run_smb("directory enumeration", || {
+                client.list_directory(tree, path)
+            })
         };
         match result {
             Ok(entries) => Ok(entries),
@@ -133,10 +139,9 @@ impl SmbWorkspace {
                     ))
                 })?;
                 let SmbSession { client, tree } = &mut *session;
-                self.run_smb(
-                    "directory enumeration after reconnect",
-                    client.list_directory(tree, path),
-                )
+                self.run_smb("directory enumeration after reconnect", || {
+                    client.list_directory(tree, path)
+                })
                 .map_err(|retry| {
                     io::Error::other(format!("SMB list failed after reconnect: {retry}"))
                 })
@@ -151,7 +156,7 @@ impl SmbWorkspace {
             .map_err(|_| io::Error::other("SMB session lock poisoned"))?;
         let result = {
             let SmbSession { client, tree } = &mut *session;
-            self.run_smb("read", client.read_file_pipelined(tree, path))
+            self.run_smb("read", || client.read_file_pipelined(tree, path))
         };
         match result {
             Ok(data) => Ok(data),
@@ -162,10 +167,9 @@ impl SmbWorkspace {
                     ))
                 })?;
                 let SmbSession { client, tree } = &mut *session;
-                self.run_smb(
-                    "read after reconnect",
-                    client.read_file_pipelined(tree, path),
-                )
+                self.run_smb("read after reconnect", || {
+                    client.read_file_pipelined(tree, path)
+                })
                 .map_err(|retry| {
                     io::Error::other(format!("SMB read failed after reconnect: {retry}"))
                 })
@@ -399,10 +403,10 @@ impl Workspace for SmbWorkspace {
     fn write(&self, id: &str, contents: &str) -> io::Result<()> {
         let path = self.remote_path(id)?;
         self.mutate(|client, tree| {
-            self.runtime
-                .block_on(client.write_file(tree, &path, contents.as_bytes()))
-                .map(|_| ())
-                .map_err(|error| io::Error::other(format!("SMB write failed: {error}")))
+            self.run_smb("write", || {
+                client.write_file(tree, &path, contents.as_bytes())
+            })
+            .map(|_| ())
         })
     }
 
@@ -445,11 +449,9 @@ impl Workspace for SmbWorkspace {
         };
         let path = self.remote_path(&id)?;
         self.mutate(|client, tree| {
-            self.runtime
-                .block_on(client.create_directory(tree, &path))
-                .map_err(|error| {
-                    io::Error::other(format!("SMB directory creation failed: {error}"))
-                })
+            self.run_smb("directory creation", || {
+                client.create_directory(tree, &path)
+            })
         })?;
         Ok(id)
     }
@@ -466,9 +468,7 @@ impl Workspace for SmbWorkspace {
         };
         let destination = self.remote_path(&destination_id)?;
         self.mutate(|client, tree| {
-            self.runtime
-                .block_on(client.rename(tree, &source, &destination))
-                .map_err(|error| io::Error::other(format!("SMB rename failed: {error}")))
+            self.run_smb("rename", || client.rename(tree, &source, &destination))
         })?;
         Ok(destination_id)
     }
@@ -478,11 +478,11 @@ impl Workspace for SmbWorkspace {
         let is_directory = self.list_directory(&path).is_ok();
         self.mutate(|client, tree| {
             let result = if is_directory {
-                self.runtime.block_on(client.delete_directory(tree, &path))
+                self.run_smb("directory delete", || client.delete_directory(tree, &path))
             } else {
-                self.runtime.block_on(client.delete_file(tree, &path))
+                self.run_smb("file delete", || client.delete_file(tree, &path))
             };
-            result.map_err(|error| io::Error::other(format!("SMB delete failed: {error}")))
+            result
         })
     }
 
