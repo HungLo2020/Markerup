@@ -224,10 +224,24 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
             [directories removeLastObject];
             [relativeDirectories removeLastObject];
             BOOL directoryScope = [directory startAccessingSecurityScopedResource];
-            NSArray<NSURL *> *children = [manager contentsOfDirectoryAtURL:directory
-                                                   includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsRegularFileKey]
-                                                                      options:NSDirectoryEnumerationSkipsHiddenFiles
-                                                                        error:&error];
+            NSArray<NSURL *> *children = nil;
+            // iOS has a known File Provider bug where the first enumeration
+            // of a remote SMB directory can report an empty result without
+            // an error. Apple DTS documents that an immediate second
+            // enumeration returns the actual contents (r.150542999).
+            for (NSUInteger attempt = 0; attempt < 3; attempt++) {
+                NSError *directoryError = nil;
+                children = [manager contentsOfDirectoryAtURL:directory
+                                      includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsRegularFileKey]
+                                                         options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                           error:&directoryError];
+                if (!children || children.count > 0 || attempt == 2) {
+                    error = directoryError;
+                    break;
+                }
+                NSLog(@"Markerup: empty provider enumeration for %@; retrying (%lu)",
+                      directory, (unsigned long)(attempt + 1));
+            }
             if (!children) {
                 if (directoryScope) [directory stopAccessingSecurityScopedResource];
                 break;
