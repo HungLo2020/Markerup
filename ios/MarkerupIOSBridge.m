@@ -211,51 +211,65 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
     __block NSMutableString *serialized = [NSMutableString string];
     __block NSError *error = nil;
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
-    NSFileCoordinatorReadingOptions readOptions =
-        NSFileCoordinatorReadingWithoutChanges | NSFileCoordinatorReadingImmediatelyAvailableMetadataOnly;
-    [coordinator coordinateReadingItemAtURL:root options:readOptions error:&error byAccessor:^(NSURL *coordinatedURL) {
-        NSDirectoryEnumerator *enumerator = [NSFileManager.defaultManager
-            enumeratorAtURL:coordinatedURL
-            includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsRegularFileKey]
-            options:NSDirectoryEnumerationSkipsHiddenFiles
-            errorHandler:^BOOL(NSURL *url, NSError *enumerationError) {
-                (void)url;
-                error = enumerationError;
-                return NO;
-        }];
-        for (NSURL *item in enumerator) {
-            // File Provider URLs returned by enumeration are independently
-            // security-scoped. Apple requires access to be opened before
-            // reading their resource values or using them for file access.
-            BOOL hasSecurityScope = [item startAccessingSecurityScopedResource];
-            NSNumber *isDirectory = nil;
-            NSNumber *isRegularFile = nil;
-            NSError *resourceError = nil;
-            if (![item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError] ||
-                ![item getResourceValue:&isRegularFile forKey:NSURLIsRegularFileKey error:&resourceError]) {
-                error = resourceError;
-                if (hasSecurityScope) [item stopAccessingSecurityScopedResource];
+    [coordinator coordinateReadingItemAtURL:root options:NSFileCoordinatorReadingWithoutChanges error:&error byAccessor:^(NSURL *coordinatedURL) {
+        // Some remote File Providers do not implement NSDirectoryEnumerator
+        // correctly for network-backed folders. Read one directory at a time
+        // instead, retaining the provider URL returned by each operation.
+        NSMutableArray<NSURL *> *directories = [NSMutableArray arrayWithObject:coordinatedURL];
+        NSMutableArray<NSString *> *relativeDirectories = [NSMutableArray arrayWithObject:@""];
+        NSFileManager *manager = NSFileManager.defaultManager;
+        while (directories.count > 0 && !error) {
+            NSURL *directory = directories.lastObject;
+            NSString *relativeDirectory = relativeDirectories.lastObject;
+            [directories removeLastObject];
+            [relativeDirectories removeLastObject];
+            BOOL directoryScope = [directory startAccessingSecurityScopedResource];
+            NSArray<NSURL *> *children = [manager contentsOfDirectoryAtURL:directory
+                                                   includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsRegularFileKey]
+                                                                      options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                                        error:&error];
+            if (!children) {
+                if (directoryScope) [directory stopAccessingSecurityScopedResource];
                 break;
             }
-            NSString *itemPath = item.path;
-            NSString *rootPath = coordinatedURL.path;
-            BOOL isDescendant = [itemPath hasPrefix:rootPath] &&
-                itemPath.length > rootPath.length &&
-                [itemPath characterAtIndex:rootPath.length] == '/';
-            if (!isDescendant) {
-                error = [NSError errorWithDomain:@"Markerup" code:2 userInfo:@{
-                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Enumerated URL is outside workspace: %@", item]
-                }];
-                if (hasSecurityScope) [item stopAccessingSecurityScopedResource];
-                break;
+
+            for (NSURL *item in children) {
+                BOOL itemScope = [item startAccessingSecurityScopedResource];
+                NSNumber *isDirectory = nil;
+                NSNumber *isRegularFile = nil;
+                NSError *resourceError = nil;
+                if (![item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError] ||
+                    ![item getResourceValue:&isRegularFile forKey:NSURLIsRegularFileKey error:&resourceError]) {
+                    error = resourceError;
+                    if (itemScope) [item stopAccessingSecurityScopedResource];
+                    break;
+                }
+
+                NSString *name = item.lastPathComponent;
+                if (name.length == 0 || [name isEqualToString:@"."] || [name isEqualToString:@".."] ||
+                    [name containsString:@"/"] || [name containsString:@"\\"]) {
+                    error = [NSError errorWithDomain:@"Markerup" code:2 userInfo:@{
+                        NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Provider returned an invalid child URL: %@", item]
+                    }];
+                    if (itemScope) [item stopAccessingSecurityScopedResource];
+                    break;
+                }
+
+                NSString *relative = relativeDirectory.length > 0
+                    ? [relativeDirectory stringByAppendingPathComponent:name]
+                    : name;
+                if (isDirectory.boolValue) {
+                    if (![name hasPrefix:@"."]) {
+                        [serialized appendFormat:@"D:%@\n", MarkerupEscapedRelativePath(relative)];
+                        [directories addObject:item];
+                        [relativeDirectories addObject:relative];
+                    }
+                } else if (isRegularFile.boolValue && [item.pathExtension.lowercaseString isEqualToString:@"md"]) {
+                    [serialized appendFormat:@"F:%@\n", MarkerupEscapedRelativePath(relative)];
+                }
+                if (itemScope) [item stopAccessingSecurityScopedResource];
             }
-            NSString *relative = [itemPath substringFromIndex:rootPath.length + 1];
-            if (isDirectory.boolValue) {
-                [serialized appendFormat:@"D:%@\n", MarkerupEscapedRelativePath(relative)];
-            } else if (isRegularFile.boolValue && [item.pathExtension.lowercaseString isEqualToString:@"md"]) {
-                [serialized appendFormat:@"F:%@\n", MarkerupEscapedRelativePath(relative)];
-            }
-            if (hasSecurityScope) [item stopAccessingSecurityScopedResource];
+            if (directoryScope) [directory stopAccessingSecurityScopedResource];
         }
     }];
     if (error) {
