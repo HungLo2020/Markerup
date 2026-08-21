@@ -371,8 +371,14 @@ pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResu
             Ok(entries) => entries,
             Err(error) => { set_status(ui, format!("Workspace refresh failed: {error}")); return; }
         };
+        let note_count = entries.iter().filter(|entry| entry.kind == EntryKind::File).count();
         state.apply_entries(entries);
         render_tree(ui, state);
+        if note_count == 0 {
+            set_status(ui, "Workspace loaded; no Markdown notes found");
+        } else {
+            set_status(ui, format!("Workspace loaded; {note_count} Markdown note(s) found"));
+        }
     }
 
     if let Some(current) = state.current_file.clone() {
