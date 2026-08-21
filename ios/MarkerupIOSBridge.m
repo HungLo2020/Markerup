@@ -232,7 +232,7 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
             for (NSUInteger attempt = 0; attempt < 3; attempt++) {
                 NSError *directoryError = nil;
                 children = [manager contentsOfDirectoryAtURL:directory
-                                      includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsRegularFileKey]
+                                      includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey]
                                                          options:NSDirectoryEnumerationSkipsHiddenFiles
                                                            error:&directoryError];
                 if (!children || children.count > 0 || attempt == 2) {
@@ -250,14 +250,13 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
             for (NSURL *item in children) {
                 BOOL itemScope = [item startAccessingSecurityScopedResource];
                 NSNumber *isDirectory = nil;
-                NSNumber *isRegularFile = nil;
                 NSError *resourceError = nil;
-                if (![item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError] ||
-                    ![item getResourceValue:&isRegularFile forKey:NSURLIsRegularFileKey error:&resourceError]) {
+                if (![item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError]) {
                     error = resourceError;
                     if (itemScope) [item stopAccessingSecurityScopedResource];
                     break;
                 }
+                if (!isDirectory) isDirectory = @NO;
 
                 NSString *name = item.lastPathComponent;
                 if (name.length == 0 || [name isEqualToString:@"."] || [name isEqualToString:@".."] ||
@@ -278,7 +277,7 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
                         [directories addObject:item];
                         [relativeDirectories addObject:relative];
                     }
-                } else if (isRegularFile.boolValue && [item.pathExtension.lowercaseString isEqualToString:@"md"]) {
+                } else if ([name.pathExtension.lowercaseString isEqualToString:@"md"]) {
                     [serialized appendFormat:@"F:%@\n", MarkerupEscapedRelativePath(relative)];
                 }
                 if (itemScope) [item stopAccessingSecurityScopedResource];
