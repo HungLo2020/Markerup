@@ -24,6 +24,8 @@ unsafe extern "C" {
     fn markerup_ios_free_data(data: *mut u8, len: usize);
     fn markerup_ios_mutate(path: *const c_char, destination: *const c_char, operation: u8, data: *const u8, len: usize) -> bool;
     fn markerup_ios_list_entries(path: *const c_char, data: *mut *mut u8, len: *mut usize) -> bool;
+    fn markerup_ios_diagnostics() -> *mut c_char;
+    fn markerup_ios_copy_diagnostics();
     fn markerup_ios_install_lifecycle_observers();
 }
 
@@ -106,4 +108,16 @@ pub fn list_entries(path: &std::path::Path) -> Result<Vec<u8>, String> {
     let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
     unsafe { markerup_ios_free_data(data, len) };
     Ok(bytes)
+}
+
+pub fn diagnostics() -> String {
+    let pointer = unsafe { markerup_ios_diagnostics() };
+    if pointer.is_null() { return "No diagnostic report available.".to_string(); }
+    let report = unsafe { CStr::from_ptr(pointer) }.to_string_lossy().into_owned();
+    unsafe { markerup_ios_free_string(pointer); }
+    report
+}
+
+pub fn copy_diagnostics() {
+    unsafe { markerup_ios_copy_diagnostics(); }
 }

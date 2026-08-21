@@ -27,6 +27,7 @@ export component MobileWindow inherits Window {
     in-out property <string> search-query: "";
     in-out property <string> find-query: "";
     in-out property <string> find-status: "";
+    in-out property <string> diagnostic-report: "No diagnostic report available.";
     in-out property <bool> workspace-open: false;
     in-out property <bool> workspace-pinned: false;
     in-out property <bool> dirty: false;
@@ -54,6 +55,8 @@ export component MobileWindow inherits Window {
     callback back-requested();
     callback forward-requested();
     callback select-editor-range(int, int);
+    callback diagnostic-requested();
+    callback copy-diagnostic-requested();
 
     VerticalBox {
         // Keep controls out of the iOS status-bar and home-indicator regions.
@@ -85,6 +88,19 @@ export component MobileWindow inherits Window {
             LineEdit { text <=> root.search-query; edited => { root.search-requested(self.text); } }
             ListView { vertical-stretch: 1; for result[index] in root.search-results : Button { text: result; clicked => { root.search-result-selected(index); root.view-mode = 0; } } }
             Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
+            Button { text: "SMB Diagnostics"; clicked => { root.diagnostic-requested(); } }
+        }
+
+        if root.view-mode == 4 : VerticalBox {
+            vertical-stretch: 1;
+            Text { text: "SMB Diagnostics"; font-weight: 700; }
+            Text { text: "Select the SMB workspace, wait for loading to finish, then open this screen and photograph the report."; wrap: word-wrap; }
+            ScrollView {
+                vertical-stretch: 1;
+                Text { text: root.diagnostic-report; wrap: word-wrap; font-family: "monospace"; }
+            }
+            Button { text: "Copy Report"; clicked => { root.copy-diagnostic-requested(); } }
+            Button { text: "Back"; clicked => { root.view-mode = 3; } }
         }
 
         if root.view-mode == 0 : VerticalBox {

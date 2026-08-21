@@ -24,6 +24,32 @@ static NSMutableDictionary<NSString *, NSURL *> *MarkerupAccessMap(void) {
     return map;
 }
 
+static NSString *MarkerupLastDiagnostics;
+
+static void MarkerupStoreDiagnostics(NSString *report) {
+    @synchronized (MarkerupAccessMap()) {
+        MarkerupLastDiagnostics = [report copy];
+    }
+}
+
+char *markerup_ios_diagnostics(void) {
+    NSString *report = nil;
+    @synchronized (MarkerupAccessMap()) {
+        report = MarkerupLastDiagnostics ?: @"No iOS workspace scan has completed yet.";
+    }
+    return strdup(report.UTF8String ?: "No diagnostic report available.");
+}
+
+void markerup_ios_copy_diagnostics(void) {
+    NSString *report = nil;
+    @synchronized (MarkerupAccessMap()) {
+        report = MarkerupLastDiagnostics ?: @"No iOS workspace scan has completed yet.";
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIPasteboard.generalPasteboard.string = report;
+    });
+}
+
 @interface MarkerupPickerDelegate : NSObject <UIDocumentPickerDelegate>
 @property(nonatomic, assign) MarkerupPickerCallback callback;
 @property(nonatomic, assign) void *context;
@@ -219,9 +245,10 @@ static NSString *MarkerupEscapedRelativePath(NSString *path) {
 // FileManager's directory APIs even while Files can display the same folder.
 // getattrlistbulk is a public iOS API that reads directory entries directly;
 // Apple DTS recommends it as the workaround for this exact failure mode.
-static NSArray<NSURL *> *MarkerupBulkDirectoryContents(NSURL *directory, NSError **errorOut) {
+static NSArray<NSURL *> *MarkerupBulkDirectoryContents(NSURL *directory, NSError **errorOut, NSMutableString *diagnostics) {
     const char *path = directory.fileSystemRepresentation;
     if (!path) {
+        [diagnostics appendFormat:@"getattrlistbulk: no filesystem representation\n"];
         if (errorOut) *errorOut = [NSError errorWithDomain:@"Markerup" code:4 userInfo:@{
             NSLocalizedDescriptionKey: @"The provider directory does not have a filesystem path"
         }];
@@ -230,9 +257,11 @@ static NSArray<NSURL *> *MarkerupBulkDirectoryContents(NSURL *directory, NSError
 
     int directoryFD = open(path, O_RDONLY | O_DIRECTORY);
     if (directoryFD < 0) {
+        [diagnostics appendFormat:@"getattrlistbulk: open failed errno=%d (%s) path=%s\n", errno, strerror(errno), path];
         if (errorOut) *errorOut = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
         return nil;
     }
+    [diagnostics appendFormat:@"getattrlistbulk: open succeeded fd=%d path=%s\n", directoryFD, path];
 
     struct attrlist attributes;
     memset(&attributes, 0, sizeof(attributes));
@@ -253,9 +282,11 @@ static NSArray<NSURL *> *MarkerupBulkDirectoryContents(NSURL *directory, NSError
         int count = getattrlistbulk(directoryFD, &attributes, buffer, bufferSize, FSOPT_PACK_INVAL_ATTRS);
         if (count == 0) break;
         if (count < 0) {
+            [diagnostics appendFormat:@"getattrlistbulk: failed errno=%d (%s)\n", errno, strerror(errno)];
             enumerationError = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
             break;
         }
+        [diagnostics appendFormat:@"getattrlistbulk: returned %d record(s)\n", count];
 
         uint8_t *entry = buffer;
         uint8_t *bufferEnd = buffer + bufferSize;
@@ -318,6 +349,7 @@ static NSArray<NSURL *> *MarkerupBulkDirectoryContents(NSURL *directory, NSError
             if (nameLength > 0 && nameBytes[nameLength - 1] == '\0') nameLength--;
             NSString *name = [[NSString alloc] initWithBytes:nameBytes length:nameLength encoding:NSUTF8StringEncoding];
             if (name.length > 0) {
+                [diagnostics appendFormat:@"  bulk child name=%@ type=%@\n", name, objectType == MarkerupVnodeDirectory ? @"directory" : @"file/other"];
                 [children addObject:[directory URLByAppendingPathComponent:name isDirectory:(objectType == MarkerupVnodeDirectory)]];
             }
             entry = entryEnd;
@@ -328,9 +360,11 @@ static NSArray<NSURL *> *MarkerupBulkDirectoryContents(NSURL *directory, NSError
     free(buffer);
 
     if (enumerationError) {
+        [diagnostics appendFormat:@"getattrlistbulk: malformed/entry error=%@\n", enumerationError.localizedDescription ?: @"unknown error"];
         if (errorOut) *errorOut = enumerationError;
         return nil;
     }
+    [diagnostics appendFormat:@"getattrlistbulk: completed with %lu child URL(s)\n", (unsigned long)children.count];
     return children;
 }
 
@@ -338,10 +372,12 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
     if (!path || !data_out || !length_out) return false;
     NSURL *root = MarkerupURLForPath(path, YES);
     if (!root) return false;
+    NSMutableString *diagnostics = [NSMutableString stringWithFormat:@"Markerup iOS workspace diagnostic\nroot path=%@\nroot URL=%@\nroot isFileURL=%@\n", root.path ?: @"<nil>", root.absoluteString ?: @"<nil>", root.isFileURL ? @"yes" : @"no"];
     __block NSMutableString *serialized = [NSMutableString string];
     __block NSError *error = nil;
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
     [coordinator coordinateReadingItemAtURL:root options:NSFileCoordinatorReadingWithoutChanges error:&error byAccessor:^(NSURL *coordinatedURL) {
+        [diagnostics appendFormat:@"coordinated URL=%@\ncoordinated path=%@\ncoordinated isFileURL=%@\n", coordinatedURL.absoluteString ?: @"<nil>", coordinatedURL.path ?: @"<nil>", coordinatedURL.isFileURL ? @"yes" : @"no"];
         // Some remote File Providers do not implement NSDirectoryEnumerator
         // correctly for network-backed folders. Read one directory at a time
         // instead, retaining the provider URL returned by each operation.
@@ -354,8 +390,9 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
             [directories removeLastObject];
             [relativeDirectories removeLastObject];
             BOOL directoryScope = [directory startAccessingSecurityScopedResource];
+            [diagnostics appendFormat:@"directory=%@ securityScope=%@\n", directory.path ?: directory.absoluteString ?: @"<nil>", directoryScope ? @"yes" : @"no"];
             NSError *bulkError = nil;
-            NSArray<NSURL *> *children = MarkerupBulkDirectoryContents(directory, &bulkError);
+            NSArray<NSURL *> *children = MarkerupBulkDirectoryContents(directory, &bulkError, diagnostics);
             // File Provider APIs remain the fallback for providers that do
             // not support getattrlistbulk. Also consult them after an empty
             // direct enumeration because Apple's r.150542999 can make the
@@ -369,6 +406,7 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
                                             includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey, NSURLFileResourceTypeKey]
                                                                options:NSDirectoryEnumerationSkipsHiddenFiles
                                                                  error:&providerError];
+                    [diagnostics appendFormat:@"provider enumeration attempt=%lu count=%lu error=%@\n", (unsigned long)(attempt + 1), (unsigned long)providerChildren.count, providerError.localizedDescription ?: @"none"];
                     if (!providerChildren || providerChildren.count > 0 || attempt == 2) break;
                     NSLog(@"Markerup: empty provider enumeration for %@; retrying (%lu)",
                           directory, (unsigned long)(attempt + 1));
@@ -381,6 +419,8 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
                 if (directoryScope) [directory stopAccessingSecurityScopedResource];
                 break;
             }
+
+            [diagnostics appendFormat:@"using %lu child URL(s) for directory=%@\n", (unsigned long)children.count, directory.path ?: @"<nil>"];
 
             for (NSURL *item in children) {
                 BOOL itemScope = [item startAccessingSecurityScopedResource];
@@ -403,6 +443,8 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
                     if (itemScope) [item stopAccessingSecurityScopedResource];
                     break;
                 }
+
+                [diagnostics appendFormat:@"  child name=%@ isDirectory=%@ resourceType=%@\n", name, isDirectory.boolValue ? @"yes" : @"no", resourceType ?: @"<nil>"];
 
                 if ([name isEqualToString:@"."] || [name isEqualToString:@".."] ||
                     [name containsString:@"/"] || [name containsString:@"\\"]) {
@@ -439,9 +481,14 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
         }
     }];
     if (error) {
+        [diagnostics appendFormat:@"coordinated enumeration FAILED: %@\n", error.localizedDescription ?: @"unknown error"];
+        MarkerupStoreDiagnostics(diagnostics);
         NSLog(@"Markerup: failed to enumerate workspace %@: %@", root, error);
         return false;
     }
+    [diagnostics appendFormat:@"serialized output bytes=%lu\n", (unsigned long)[serialized lengthOfBytesUsingEncoding:NSUTF8StringEncoding]];
+    [diagnostics appendFormat:@"serialized entries:\n%@", serialized.length > 0 ? serialized : @"<none>\n"];
+    MarkerupStoreDiagnostics(diagnostics);
     NSData *bytes = [serialized dataUsingEncoding:NSUTF8StringEncoding];
     *length_out = bytes.length;
     *data_out = malloc(bytes.length == 0 ? 1 : bytes.length);
