@@ -1,12 +1,14 @@
-use crate::markdown::{preview_markdown, PreviewBlockKind};
-use crate::persistence::{clear_session, save_session};
-use crate::workers::{hash_text, PreviewResult, ScanResult, SearchResult, LATEST_SEARCH_GENERATION};
-use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use crate::MainWindow;
+use crate::markdown::{PreviewBlockKind, preview_markdown};
+use crate::persistence::{clear_session, save_session};
+use crate::workers::{
+    LATEST_SEARCH_GENERATION, PreviewResult, ScanResult, SearchResult, hash_text,
+};
+use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant, SystemTime};
 use std::rc::Rc;
+use std::time::{Duration, Instant, SystemTime};
 
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -75,13 +77,29 @@ impl AppState {
         Self {
             workspace,
             pinned,
-            entries: Vec::new(), tree_ids: Vec::new(), expanded: HashSet::new(),
-            expansion_initialized: false, selected: None, current_file: None,
-            disk_text: String::new(), saved_hash: hash_text(""), dirty: false,
-            external_conflict: false, back: Vec::new(), forward: Vec::new(),
-            search_results: Vec::new(), find_query: String::new(), find_matches: Vec::new(),
-            find_index: 0, delete_armed: None, preview_generation: 0, search_generation: 0,
-            scan_generation: 0, pending_preview: None, pending_search: None, pending_scan: None,
+            entries: Vec::new(),
+            tree_ids: Vec::new(),
+            expanded: HashSet::new(),
+            expansion_initialized: false,
+            selected: None,
+            current_file: None,
+            disk_text: String::new(),
+            saved_hash: hash_text(""),
+            dirty: false,
+            external_conflict: false,
+            back: Vec::new(),
+            forward: Vec::new(),
+            search_results: Vec::new(),
+            find_query: String::new(),
+            find_matches: Vec::new(),
+            find_index: 0,
+            delete_armed: None,
+            preview_generation: 0,
+            search_generation: 0,
+            scan_generation: 0,
+            pending_preview: None,
+            pending_search: None,
+            pending_scan: None,
             tree_model: Rc::new(VecModel::from(Vec::<SharedString>::new())),
             image_cache: HashMap::new(),
         }
@@ -94,9 +112,12 @@ impl AppState {
     pub fn apply_entries(&mut self, entries: Vec<WorkspaceEntry>) {
         self.entries = entries;
         if !self.expansion_initialized {
-            self.expanded.extend(self.entries.iter()
-                .filter(|entry| entry.kind == EntryKind::Directory)
-                .map(|entry| entry.id.clone()));
+            self.expanded.extend(
+                self.entries
+                    .iter()
+                    .filter(|entry| entry.kind == EntryKind::Directory)
+                    .map(|entry| entry.id.clone()),
+            );
             self.expansion_initialized = true;
         }
     }
@@ -112,7 +133,8 @@ impl AppState {
 
     pub fn schedule_search(&mut self, query: String) {
         self.search_generation = self.search_generation.wrapping_add(1);
-        LATEST_SEARCH_GENERATION.store(self.search_generation, std::sync::atomic::Ordering::Relaxed);
+        LATEST_SEARCH_GENERATION
+            .store(self.search_generation, std::sync::atomic::Ordering::Relaxed);
         if query.trim().is_empty() {
             self.pending_search = None;
             self.search_results.clear();
@@ -134,7 +156,9 @@ impl AppState {
     }
 
     fn schedule_scan_mode(&mut self, delay: Duration, full_tree: bool) {
-        if !self.workspace.is_open() { return; }
+        if !self.workspace.is_open() {
+            return;
+        }
         self.scan_generation = self.scan_generation.wrapping_add(1);
         let due = Instant::now() + delay;
         self.pending_scan = Some(match self.pending_scan.take() {
@@ -157,46 +181,73 @@ impl AppState {
 
     pub fn selected_parent(&self) -> EntryId {
         if let Some(selected) = self.selected.as_deref() {
-            if self.entry(selected).is_some_and(|e| e.kind == EntryKind::Directory) {
+            if self
+                .entry(selected)
+                .is_some_and(|e| e.kind == EntryKind::Directory)
+            {
                 return selected.to_string();
             }
             return parent_id(selected);
         }
-        self.current_file.as_deref().map(parent_id).unwrap_or_default()
+        self.current_file
+            .as_deref()
+            .map(parent_id)
+            .unwrap_or_default()
     }
 
     pub fn current_is_under(&self, id: &str) -> bool {
-        self.current_file.as_deref()
+        self.current_file
+            .as_deref()
             .is_some_and(|current| current == id || current.starts_with(&format!("{id}/")))
     }
 
     pub fn delete_is_armed(&self, id: &str) -> bool {
-        self.delete_armed.as_ref().is_some_and(|(armed, when)|
-            armed == id && when.elapsed() < Duration::from_secs(5))
+        self.delete_armed
+            .as_ref()
+            .is_some_and(|(armed, when)| armed == id && when.elapsed() < Duration::from_secs(5))
     }
 }
 
 pub fn string_model(values: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
-    ModelRc::new(VecModel::from(values.into_iter().map(SharedString::from).collect::<Vec<_>>()))
+    ModelRc::new(VecModel::from(
+        values
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    ))
 }
 
-fn image_model(values: Vec<Image>) -> ModelRc<Image> { ModelRc::new(VecModel::from(values)) }
-fn styled_model(values: Vec<StyledText>) -> ModelRc<StyledText> { ModelRc::new(VecModel::from(values)) }
-fn int_model(values: Vec<i32>) -> ModelRc<i32> { ModelRc::new(VecModel::from(values)) }
-fn bool_model(values: Vec<bool>) -> ModelRc<bool> { ModelRc::new(VecModel::from(values)) }
+fn image_model(values: Vec<Image>) -> ModelRc<Image> {
+    ModelRc::new(VecModel::from(values))
+}
+fn styled_model(values: Vec<StyledText>) -> ModelRc<StyledText> {
+    ModelRc::new(VecModel::from(values))
+}
+fn int_model(values: Vec<i32>) -> ModelRc<i32> {
+    ModelRc::new(VecModel::from(values))
+}
+fn bool_model(values: Vec<bool>) -> ModelRc<bool> {
+    ModelRc::new(VecModel::from(values))
+}
 
 pub fn parent_id(id: &str) -> EntryId {
-    id.rsplit_once('/').map(|(parent, _)| parent.to_string()).unwrap_or_default()
+    id.rsplit_once('/')
+        .map(|(parent, _)| parent.to_string())
+        .unwrap_or_default()
 }
 
 pub fn rebase_id(id: &str, old: &str, new: &str) -> EntryId {
-    if id == old { return new.to_string(); }
+    if id == old {
+        return new.to_string();
+    }
     id.strip_prefix(&format!("{old}/"))
         .map(|suffix| format!("{new}/{suffix}"))
         .unwrap_or_else(|| id.to_string())
 }
 
-pub fn set_status(ui: &MainWindow, text: impl Into<SharedString>) { ui.set_status(text.into()); }
+pub fn set_status(ui: &MainWindow, text: impl Into<SharedString>) {
+    ui.set_status(text.into());
+}
 
 pub fn sync_flags(ui: &MainWindow, state: &AppState) {
     ui.set_workspace_open(state.workspace.is_open());
@@ -219,7 +270,11 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
         let visible = ancestors.iter().all(|id| state.expanded.contains(id));
         if visible {
             let indent = "    ".repeat(entry.depth);
-            let marker = if state.selected.as_deref() == Some(entry.id.as_str()) { "• " } else { "  " };
+            let marker = if state.selected.as_deref() == Some(entry.id.as_str()) {
+                "• "
+            } else {
+                "  "
+            };
             let kind = match entry.kind {
                 EntryKind::Directory if state.expanded.contains(&entry.id) => "▾ ",
                 EntryKind::Directory => "▸ ",
@@ -233,7 +288,12 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
         }
     }
     state.tree_ids = ids;
-    state.tree_model.set_vec(labels.into_iter().map(SharedString::from).collect::<Vec<_>>());
+    state.tree_model.set_vec(
+        labels
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    );
     ui.set_tree_labels(ModelRc::from(state.tree_model.clone()));
     ui.set_selected_path(state.selected.clone().unwrap_or_default().into());
 }
@@ -245,7 +305,9 @@ fn styled_from_markdown(markdown: &str) -> StyledText {
 }
 
 pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: PreviewResult) {
-    if result.generation != state.preview_generation { return; }
+    if result.generation != state.preview_generation {
+        return;
+    }
 
     let apply_started = Instant::now();
     let mut texts = Vec::new();
@@ -266,10 +328,26 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
             styled_from_markdown(&block.markdown)
         });
         match &block.kind {
-            PreviewBlockKind::Body => { kinds.push(0); heading_levels.push(0); task_checked.push(false); }
-            PreviewBlockKind::Heading(level) => { kinds.push(1); heading_levels.push(*level as i32); task_checked.push(false); }
-            PreviewBlockKind::Task(checked) => { kinds.push(2); heading_levels.push(0); task_checked.push(*checked); }
-            PreviewBlockKind::Mermaid => { kinds.push(3); heading_levels.push(0); task_checked.push(false); }
+            PreviewBlockKind::Body => {
+                kinds.push(0);
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Heading(level) => {
+                kinds.push(1);
+                heading_levels.push(*level as i32);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Task(checked) => {
+                kinds.push(2);
+                heading_levels.push(0);
+                task_checked.push(*checked);
+            }
+            PreviewBlockKind::Mermaid => {
+                kinds.push(3);
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
         }
     }
 
@@ -316,23 +394,47 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
     if let Some(current) = state.current_file.as_deref() {
         let mut seen_assets = HashSet::new();
         for reference in result.images {
-            let Some(asset_id) = state.workspace.resolve_asset_link(current, &reference.destination) else { continue };
-            if !seen_assets.insert(asset_id.clone()) { continue; }
-            let Ok(Some(path)) = state.workspace.asset_path(&asset_id) else { continue };
+            let Some(asset_id) = state
+                .workspace
+                .resolve_asset_link(current, &reference.destination)
+            else {
+                continue;
+            };
+            if !seen_assets.insert(asset_id.clone()) {
+                continue;
+            }
+            let Ok(Some(path)) = state.workspace.asset_path(&asset_id) else {
+                continue;
+            };
             let metadata = std::fs::metadata(&path).ok();
             let modified = metadata.as_ref().and_then(|value| value.modified().ok());
             let len = metadata.as_ref().map_or(0, |value| value.len());
 
-            let image = state.image_cache.get(&asset_id)
+            let image = state
+                .image_cache
+                .get(&asset_id)
                 .filter(|cached| cached.modified == modified && cached.len == len)
                 .map(|cached| cached.image.clone())
-                .or_else(|| Image::load_from_path(&path).ok().map(|image| {
-                    state.image_cache.insert(asset_id.clone(), CachedImage { modified, len, image: image.clone() });
-                    image
-                }));
+                .or_else(|| {
+                    Image::load_from_path(&path).ok().map(|image| {
+                        state.image_cache.insert(
+                            asset_id.clone(),
+                            CachedImage {
+                                modified,
+                                len,
+                                image: image.clone(),
+                            },
+                        );
+                        image
+                    })
+                });
 
             if let Some(image) = image {
-                labels.push(if reference.alt.is_empty() { asset_id } else { reference.alt });
+                labels.push(if reference.alt.is_empty() {
+                    asset_id
+                } else {
+                    reference.alt
+                });
                 images.push(image);
             }
         }
@@ -344,13 +446,21 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
     sync_flags(ui, state);
 
     if perf_enabled() {
-        eprintln!("markerup perf: preview worker={:?} apply={:?}", result.elapsed, apply_started.elapsed());
+        eprintln!(
+            "markerup perf: preview worker={:?} apply={:?}",
+            result.elapsed,
+            apply_started.elapsed()
+        );
     }
 }
 
 pub fn apply_search_result(ui: &MainWindow, state: &mut AppState, result: SearchResult) {
-    if result.generation != state.search_generation { return; }
-    if result.cancelled { return; }
+    if result.generation != state.search_generation {
+        return;
+    }
+    if result.cancelled {
+        return;
+    }
     match result.results {
         Ok(results) => {
             state.search_results = results.clone();
@@ -358,31 +468,48 @@ pub fn apply_search_result(ui: &MainWindow, state: &mut AppState, result: Search
         }
         Err(error) => set_status(ui, format!("Search failed: {error}")),
     }
-    if perf_enabled() { eprintln!("markerup perf: search worker={:?}", result.elapsed); }
+    if perf_enabled() {
+        eprintln!("markerup perf: search worker={:?}", result.elapsed);
+    }
 }
 
 pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResult) {
-    if result.generation != state.scan_generation { return; }
+    if result.generation != state.scan_generation {
+        return;
+    }
     let apply_started = Instant::now();
 
     let full_tree = result.entries.is_some();
     if let Some(entries) = result.entries {
         let entries = match entries {
             Ok(entries) => entries,
-            Err(error) => { set_status(ui, format!("Workspace refresh failed: {error}")); return; }
+            Err(error) => {
+                set_status(ui, format!("Workspace refresh failed: {error}"));
+                return;
+            }
         };
-        let note_count = entries.iter().filter(|entry| entry.kind == EntryKind::File).count();
+        let note_count = entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::File)
+            .count();
         state.apply_entries(entries);
         render_tree(ui, state);
         if note_count == 0 {
             set_status(ui, "Workspace loaded; no Markdown notes found");
         } else {
-            set_status(ui, format!("Workspace loaded; {note_count} Markdown note(s) found"));
+            set_status(
+                ui,
+                format!("Workspace loaded; {note_count} Markdown note(s) found"),
+            );
         }
     }
 
     if let Some(current) = state.current_file.clone() {
-        let still_exists = !full_tree || state.entries.iter().any(|entry| entry.kind == EntryKind::File && entry.id == current);
+        let still_exists = !full_tree
+            || state
+                .entries
+                .iter()
+                .any(|entry| entry.kind == EntryKind::File && entry.id == current);
         if !still_exists {
             if state.dirty {
                 state.external_conflict = true;
@@ -398,7 +525,10 @@ pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResu
                     if state.dirty {
                         state.external_conflict = true;
                         sync_flags(ui, state);
-                        set_status(ui, "CONFLICT: this note changed externally while you have unsaved edits");
+                        set_status(
+                            ui,
+                            "CONFLICT: this note changed externally while you have unsaved edits",
+                        );
                     } else {
                         state.disk_text = disk.clone();
                         state.saved_hash = hash_text(&disk);
@@ -414,7 +544,11 @@ pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResu
     }
 
     if perf_enabled() {
-        eprintln!("markerup perf: workspace scan worker={:?} apply={:?}", result.elapsed, apply_started.elapsed());
+        eprintln!(
+            "markerup perf: workspace scan worker={:?} apply={:?}",
+            result.elapsed,
+            apply_started.elapsed()
+        );
     }
 }
 
@@ -471,16 +605,25 @@ pub fn reset_workspace_ui(ui: &MainWindow, state: &mut AppState) {
 
 pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bool) -> bool {
     if state.dirty && state.current_file.as_deref() != Some(id.as_str()) {
-        set_status(ui, "Unsaved changes: save or reload before leaving this note");
+        set_status(
+            ui,
+            "Unsaved changes: save or reload before leaving this note",
+        );
         return false;
     }
     let contents = match state.workspace.read(&id) {
         Ok(contents) => contents,
-        Err(error) => { set_status(ui, format!("Open failed: {error}")); return false; }
+        Err(error) => {
+            set_status(ui, format!("Open failed: {error}"));
+            return false;
+        }
     };
     if history {
         if let Some(current) = state.current_file.clone() {
-            if current != id { state.back.push(current); state.forward.clear(); }
+            if current != id {
+                state.back.push(current);
+                state.forward.clear();
+            }
         }
     }
     state.current_file = Some(id.clone());
@@ -489,7 +632,9 @@ pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bo
     state.saved_hash = hash_text(&contents);
     state.dirty = false;
     state.external_conflict = false;
-    state.find_query.clear(); state.find_matches.clear(); state.find_index = 0;
+    state.find_query.clear();
+    state.find_matches.clear();
+    state.find_index = 0;
     ui.set_current_path(id.into());
     ui.set_editor_text(contents.clone().into());
     ui.set_find_status("".into());
@@ -503,9 +648,15 @@ pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bo
 }
 
 pub fn save_current(ui: &MainWindow, state: &mut AppState, contents: &str, force: bool) {
-    let Some(current) = state.current_file.clone() else { set_status(ui, "No note selected"); return; };
+    let Some(current) = state.current_file.clone() else {
+        set_status(ui, "No note selected");
+        return;
+    };
     if state.external_conflict && !force {
-        set_status(ui, "File changed externally. Reload external changes or choose Overwrite.");
+        set_status(
+            ui,
+            "File changed externally. Reload external changes or choose Overwrite.",
+        );
         return;
     }
     match state.workspace.write(&current, contents) {
@@ -522,7 +673,9 @@ pub fn save_current(ui: &MainWindow, state: &mut AppState, contents: &str, force
 }
 
 pub fn reload_current(ui: &MainWindow, state: &mut AppState) {
-    let Some(current) = state.current_file.clone() else { return; };
+    let Some(current) = state.current_file.clone() else {
+        return;
+    };
     match state.workspace.read(&current) {
         Ok(contents) => {
             state.disk_text = contents.clone();
@@ -539,7 +692,9 @@ pub fn reload_current(ui: &MainWindow, state: &mut AppState) {
 }
 
 pub fn refresh_workspace(ui: &MainWindow, state: &mut AppState) {
-    if !state.workspace.is_open() { return; }
+    if !state.workspace.is_open() {
+        return;
+    }
     state.schedule_scan(Duration::ZERO);
     set_status(ui, "Refreshing workspace…");
 }

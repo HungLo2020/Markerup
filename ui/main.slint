@@ -31,6 +31,11 @@ export component DesktopWindow inherits Window {
     in-out property <string> find-query: "";
     in-out property <string> find-status: "";
     in-out property <string> diagnostic-report: "No diagnostic report available.";
+    in-out property <string> smb-server: "";
+    in-out property <string> smb-share: "";
+    in-out property <string> smb-username: "";
+    in-out property <string> smb-password: "";
+    in-out property <string> smb-remote-path: "";
     in-out property <bool> workspace-open: false;
     in-out property <bool> workspace-pinned: false;
     in-out property <bool> dirty: false;
@@ -60,6 +65,9 @@ export component DesktopWindow inherits Window {
     callback select-editor-range(int, int);
     callback diagnostic-requested();
     callback copy-diagnostic-requested();
+    callback connect-smb-requested();
+    callback smb-connect-submitted(string, string, string, string, string);
+    callback smb-connect-cancelled();
 
     select-editor-range(start, end) => {
         editor.set-selection-offsets(start, end);
@@ -92,6 +100,7 @@ export component DesktopWindow inherits Window {
                     overflow: elide;
                 }
                 Button { text: "Choose Folder"; clicked => { root.choose-workspace-requested(); } }
+                Button { text: "Connect SMB"; clicked => { root.connect-smb-requested(); } }
                 Button {
                     text: root.workspace-pinned ? "Unpin Workspace" : "Pin Workspace";
                     enabled: root.workspace-open;
@@ -170,7 +179,7 @@ export component DesktopWindow inherits Window {
                     y: 0px;
                     width: parent.width;
                     height: parent.height;
-                    visible: root.workspace-open;
+                    visible: root.workspace-open && root.view-mode != 5;
                     spacing: 8px;
 
                     VerticalBox {
@@ -320,6 +329,30 @@ export component DesktopWindow inherits Window {
                             }
                         }
                     }
+                }
+            }
+
+            Rectangle {
+                visible: root.view-mode == 5;
+                vertical-stretch: 1;
+                HorizontalBox {
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalBox {
+                        width: 520px;
+                        spacing: 8px;
+                        Text { text: "Connect to SMB"; font-size: 24px; font-weight: 700; }
+                        Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
+                        LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
+                        LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
+                        LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }
+                        LineEdit { text <=> root.smb-password; placeholder-text: "Password"; input-type: password; }
+                        LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share (optional)"; }
+                        HorizontalBox {
+                            Button { text: "Connect"; primary: true; clicked => { root.smb-connect-submitted(root.smb-server, root.smb-share, root.smb-username, root.smb-password, root.smb-remote-path); } }
+                            Button { text: "Cancel"; clicked => { root.smb-connect-cancelled(); } }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
                 }
             }
 

@@ -10,6 +10,8 @@ fn main() {
             .flag("-fobjc-arc")
             .compile("markerup_ios_bridge");
     } else if target_is_ios {
-        println!("cargo:warning=Skipping UIKit bridge compilation on a non-Apple host; use macOS/Xcode for an iOS app build");
+        println!(
+            "cargo:warning=Skipping UIKit bridge compilation on a non-Apple host; use macOS/Xcode for an iOS app build"
+        );
     }
 }

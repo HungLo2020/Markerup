@@ -28,6 +28,11 @@ export component MobileWindow inherits Window {
     in-out property <string> find-query: "";
     in-out property <string> find-status: "";
     in-out property <string> diagnostic-report: "No diagnostic report available.";
+    in-out property <string> smb-server: "";
+    in-out property <string> smb-share: "";
+    in-out property <string> smb-username: "";
+    in-out property <string> smb-password: "";
+    in-out property <string> smb-remote-path: "";
     in-out property <bool> workspace-open: false;
     in-out property <bool> workspace-pinned: false;
     in-out property <bool> dirty: false;
@@ -57,6 +62,9 @@ export component MobileWindow inherits Window {
     callback select-editor-range(int, int);
     callback diagnostic-requested();
     callback copy-diagnostic-requested();
+    callback connect-smb-requested();
+    callback smb-connect-submitted(string, string, string, string, string);
+    callback smb-connect-cancelled();
 
     VerticalBox {
         // Keep controls out of the iOS status-bar and home-indicator regions.
@@ -89,6 +97,20 @@ export component MobileWindow inherits Window {
             ListView { vertical-stretch: 1; for result[index] in root.search-results : Button { text: result; clicked => { root.search-result-selected(index); root.view-mode = 0; } } }
             Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
             Button { text: "SMB Diagnostics"; clicked => { root.diagnostic-requested(); } }
+            Button { text: "Connect to SMB"; clicked => { root.connect-smb-requested(); } }
+        }
+
+        if root.view-mode == 5 : VerticalBox {
+            vertical-stretch: 1;
+            Text { text: "Connect to SMB"; font-weight: 700; }
+            Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
+            LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
+            LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
+            LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }
+            LineEdit { text <=> root.smb-password; placeholder-text: "Password"; input-type: password; }
+            LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share (optional)"; }
+            Button { text: "Connect"; clicked => { root.smb-connect-submitted(root.smb-server, root.smb-share, root.smb-username, root.smb-password, root.smb-remote-path); } }
+            Button { text: "Cancel"; clicked => { root.smb-connect-cancelled(); } }
         }
 
         if root.view-mode == 4 : VerticalBox {

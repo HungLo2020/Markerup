@@ -111,7 +111,10 @@ pub fn preview_blocks(source: &str) -> Vec<PreviewBlock> {
 fn flush_body(body: &mut String, blocks: &mut Vec<PreviewBlock>) {
     let markdown = body.trim_end().to_string();
     if !markdown.is_empty() {
-        blocks.push(PreviewBlock { kind: PreviewBlockKind::Body, markdown });
+        blocks.push(PreviewBlock {
+            kind: PreviewBlockKind::Body,
+            markdown,
+        });
     }
     body.clear();
 }
@@ -157,12 +160,14 @@ fn parse_task_item(line: &str) -> Option<(bool, &str)> {
     if let Some(text) = rest.strip_prefix("[ ] ") {
         return Some((false, text));
     }
-    if let Some(text) = rest.strip_prefix("[x] ").or_else(|| rest.strip_prefix("[X] ")) {
+    if let Some(text) = rest
+        .strip_prefix("[x] ")
+        .or_else(|| rest.strip_prefix("[X] "))
+    {
         return Some((true, text));
     }
     None
 }
-
 
 pub fn preview_markdown(source: &str) -> String {
     let parser = Parser::new_ext(source, Options::all());
@@ -231,7 +236,9 @@ pub fn preview_markdown(source: &str) -> String {
             }
             Event::SoftBreak | Event::HardBreak => output.push('\n'),
             Event::Rule => output.push_str("\n---\n"),
-            Event::TaskListMarker(checked) => output.push_str(if checked { "[x] " } else { "[ ] " }),
+            Event::TaskListMarker(checked) => {
+                output.push_str(if checked { "[x] " } else { "[ ] " })
+            }
             Event::Html(html) | Event::InlineHtml(html) => {
                 output.push_str(&html.replace('<', "&lt;").replace('>', "&gt;"));
             }
@@ -266,7 +273,10 @@ pub fn image_references(source: &str) -> Vec<ImageReference> {
     for event in Parser::new_ext(source, Options::all()) {
         match event {
             Event::Start(Tag::Image { dest_url, .. }) => {
-                current = Some(ImageReference { alt: String::new(), destination: dest_url.into_string() });
+                current = Some(ImageReference {
+                    alt: String::new(),
+                    destination: dest_url.into_string(),
+                });
             }
             Event::Text(text) => {
                 if let Some(reference) = current.as_mut() {
@@ -288,7 +298,10 @@ pub fn find_matches(source: &str, query: &str) -> Vec<(usize, usize)> {
     if query.is_empty() {
         return Vec::new();
     }
-    source.match_indices(query).map(|(start, matched)| (start, start + matched.len())).collect()
+    source
+        .match_indices(query)
+        .map(|(start, matched)| (start, start + matched.len()))
+        .collect()
 }
 
 pub fn find_heading_range(source: &str, requested_anchor: &str) -> Option<(usize, usize)> {
@@ -337,7 +350,9 @@ fn unescape_marker(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_heading_range, find_matches, image_references, preview_blocks, PreviewBlockKind};
+    use super::{
+        PreviewBlockKind, find_heading_range, find_matches, image_references, preview_blocks,
+    };
 
     #[test]
     fn headings_keep_levels() {
@@ -392,6 +407,9 @@ mod tests {
 
     #[test]
     fn finds_heading_anchor() {
-        assert_eq!(find_heading_range("# Hello World\ntext\n", "hello-world"), Some((2, 13)));
+        assert_eq!(
+            find_heading_range("# Hello World\ntext\n", "hello-world"),
+            Some((2, 13))
+        );
     }
 }

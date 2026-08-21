@@ -23,6 +23,7 @@ targets:
         # every uploaded build.
         ITSAppUsesNonExemptEncryption: false
         LSRequiresIPhoneOS: true
+        NSLocalNetworkUsageDescription: Markerup connects directly to the SMB server you choose to access your Markdown workspace.
         UILaunchStoryboardName: LaunchScreen
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
