@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build, download, and install the Debian package through GitHub Actions only."""
+"""Build, download, and optionally install the Debian package through GitHub Actions."""
 
 from __future__ import annotations
 
@@ -64,6 +64,16 @@ def find_run(repo: str, started_after: datetime, source_sha: str) -> dict[str, A
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", help="GitHub repository, for example HungLo2020/Markerup")
+    parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help="Download the package without installing it",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Directory for a downloaded package; useful with --download-only",
+    )
     args = parser.parse_args()
     repo = args.repo or gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
 
@@ -78,7 +88,15 @@ def main() -> int:
     if result.returncode != 0:
         raise RuntimeError(f"Debian workflow run {run_id} failed")
 
-    with tempfile.TemporaryDirectory(prefix="markerup-debian-") as download_dir:
+    if args.download_only:
+        download_dir = args.output_dir or Path(__file__).resolve().parent / "downloads"
+        download_dir.mkdir(parents=True, exist_ok=True)
+        temporary_download = None
+    else:
+        temporary_download = tempfile.TemporaryDirectory(prefix="markerup-debian-")
+        download_dir = Path(temporary_download.name)
+
+    try:
         print("Downloading the Debian package artifact from GitHub...")
         gh(
             "run",
@@ -95,11 +113,18 @@ def main() -> int:
         if len(packages) != 1:
             raise RuntimeError(f"Expected one Debian package, found {len(packages)}")
         package = packages[0]
+        if args.download_only:
+            print(f"Downloaded Debian package: {package}")
+            return 0
+
         print(f"Installing {package} locally...")
         install = subprocess.run(["sudo", "dpkg", "-i", str(package)])
         if install.returncode != 0:
             print("dpkg reported missing dependencies; asking apt to fix them...")
             subprocess.run(["sudo", "apt-get", "install", "-f", "-y"], check=True)
+    finally:
+        if temporary_download is not None:
+            temporary_download.cleanup()
     print("Debian package installed successfully.")
     return 0
 
