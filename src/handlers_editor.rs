@@ -1,7 +1,10 @@
-use crate::app::{open_file, refresh_workspace, reload_current, save_current, set_status, string_model, sync_flags, AppState, PREVIEW_DEBOUNCE};
+use crate::MainWindow;
+use crate::app::{
+    AppState, PREVIEW_DEBOUNCE, open_file, refresh_workspace, reload_current, save_current,
+    set_status, string_model, sync_flags,
+};
 use crate::markdown::{find_heading_range, find_matches};
 use crate::workspace::Workspace;
-use crate::MainWindow;
 use slint::ComponentHandle;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -43,7 +46,9 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         ui.on_editor_changed(move |contents| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mut state = state.borrow_mut();
-            if state.current_file.is_none() { return; }
+            if state.current_file.is_none() {
+                return;
+            }
             state.dirty = true;
             state.schedule_preview(contents.to_string(), PREVIEW_DEBOUNCE);
             sync_flags(&ui, &state);
@@ -82,7 +87,9 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         ui.on_search_result_selected(move |index| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let id = state.borrow().search_results.get(index as usize).cloned();
-            if let Some(id) = id { open_file(&ui, &mut state.borrow_mut(), id, true); }
+            if let Some(id) = id {
+                open_file(&ui, &mut state.borrow_mut(), id, true);
+            }
         });
     }
 
@@ -107,7 +114,9 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
             }
             let (start, end) = state.find_matches[state.find_index];
             ui.invoke_select_editor_range(start as i32, end as i32);
-            ui.set_find_status(format!("{}/{}", state.find_index + 1, state.find_matches.len()).into());
+            ui.set_find_status(
+                format!("{}/{}", state.find_index + 1, state.find_matches.len()).into(),
+            );
         });
     }
 
@@ -116,10 +125,20 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         let state = state.clone();
         ui.on_preview_link_clicked(move |link| {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let Some(current) = state.borrow().current_file.clone() else { return; };
-            let target = state.borrow().workspace.resolve_markdown_link(&current, &link);
+            let Some(current) = state.borrow().current_file.clone() else {
+                return;
+            };
+            let target = state
+                .borrow()
+                .workspace
+                .resolve_markdown_link(&current, &link);
             let Some(target) = target else {
-                if state.borrow().workspace.resolve_asset_link(&current, &link).is_some() {
+                if state
+                    .borrow()
+                    .workspace
+                    .resolve_asset_link(&current, &link)
+                    .is_some()
+                {
                     set_status(&ui, format!("Local asset: {link}"));
                 } else {
                     set_status(&ui, format!("Not a local Markdown link: {link}"));

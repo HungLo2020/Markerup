@@ -1,6 +1,6 @@
 [package]
 name = "markerup"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A filesystem-first Markdown notes editor"
 
@@ -10,6 +10,8 @@ percent-encoding = "2.3.2"
 pulldown-cmark = "0.13.4"
 slint = "1.17.1"
 merman = { version = "0.7.0-alpha.1", default-features = false, features = ["render"] }
+smb2 = "0.18.1"
+tokio = { version = "1.53.1", features = ["io-util", "net", "rt", "rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }

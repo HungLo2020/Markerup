@@ -1,34 +1,38 @@
 mod app;
 mod handlers_editor;
 mod handlers_workspace;
-mod markdown;
-mod persistence;
-mod workers;
-mod workspace;
-mod workspace_picker;
 #[cfg(target_os = "ios")]
 mod ios_bridge;
 #[cfg(target_os = "ios")]
 mod ios_workspace;
+mod markdown;
+mod persistence;
+mod smb_workspace;
+mod workers;
+mod workspace;
+mod workspace_picker;
 
-use crate::app::{apply_preview_result, apply_scan_result, apply_search_result, open_file, render_tree, reset_workspace_ui, save_session_for, set_status, sync_flags, AppState, SCAN_DEBOUNCE};
-use crate::persistence::load_session;
-#[cfg(not(target_os = "ios"))]
-use crate::persistence::clear_session;
-use crate::workers::{WorkerRequest, WorkerResult};
-use crate::workspace::WorkspaceSlot;
-#[cfg(not(target_os = "ios"))]
-use crate::workspace::LocalWorkspace;
+use crate::app::{
+    AppState, SCAN_DEBOUNCE, apply_preview_result, apply_scan_result, apply_search_result,
+    open_file, render_tree, reset_workspace_ui, save_session_for, set_status, sync_flags,
+};
 #[cfg(target_os = "ios")]
 use crate::ios_workspace::IosWorkspace;
+#[cfg(not(target_os = "ios"))]
+use crate::persistence::clear_session;
+use crate::persistence::load_session;
+use crate::workers::{WorkerRequest, WorkerResult};
+#[cfg(not(target_os = "ios"))]
+use crate::workspace::LocalWorkspace;
+use crate::workspace::WorkspaceSlot;
 use notify::{EventKind, RecursiveMode, Watcher};
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::cell::{Cell, RefCell};
+#[cfg(target_os = "ios")]
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-#[cfg(target_os = "ios")]
-use std::path::Path;
 
 slint::include_modules!();
 
@@ -88,12 +92,23 @@ fn install_workspace<W: Watcher>(
     pinned: bool,
 ) {
     let old_root = state.borrow().workspace.root_path().map(ToOwned::to_owned);
-    if let Some(old_root) = old_root.as_deref() { let _ = watcher.borrow_mut().unwatch(old_root); }
+    if let Some(old_root) = old_root.as_deref() {
+        let _ = watcher.borrow_mut().unwatch(old_root);
+    }
     let new_root = workspace.root_path().map(ToOwned::to_owned);
-    let watch_error = new_root.as_deref().and_then(|root| watcher.borrow_mut().watch(root, RecursiveMode::Recursive).err());
+    let watch_error = new_root.as_deref().and_then(|root| {
+        watcher
+            .borrow_mut()
+            .watch(root, RecursiveMode::Recursive)
+            .err()
+    });
     let generations = {
         let state = state.borrow();
-        (state.preview_generation, state.search_generation, state.scan_generation)
+        (
+            state.preview_generation,
+            state.search_generation,
+            state.scan_generation,
+        )
     };
     {
         let mut state = state.borrow_mut();
@@ -106,7 +121,10 @@ fn install_workspace<W: Watcher>(
         sync_flags(ui, &state);
     }
     if let Some(error) = watch_error {
-        set_status(ui, format!("Workspace selected; automatic file watching unavailable: {error}"));
+        set_status(
+            ui,
+            format!("Workspace selected; automatic file watching unavailable: {error}"),
+        );
     } else {
         set_status(ui, "Workspace selected. Loading notes in the background…");
     }
@@ -117,23 +135,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (workspace, restore_file, pinned) = {
         #[cfg(not(target_os = "ios"))]
         let value = match saved {
-        Some(session) if session.pinned_workspace.is_dir() => {
-            match LocalWorkspace::open(&session.pinned_workspace) {
-                Ok(workspace) => (WorkspaceSlot::local(workspace), session.current_file, true),
-                Err(_) => {
-                    let _ = clear_session();
-                    (WorkspaceSlot::Empty, None, false)
+            Some(session) if session.pinned_workspace.is_dir() => {
+                match LocalWorkspace::open(&session.pinned_workspace) {
+                    Ok(workspace) => (WorkspaceSlot::local(workspace), session.current_file, true),
+                    Err(_) => {
+                        let _ = clear_session();
+                        (WorkspaceSlot::Empty, None, false)
+                    }
                 }
             }
-        }
-        Some(_) => {
-            let _ = clear_session();
-            (WorkspaceSlot::Empty, None, false)
-        }
-        None => (WorkspaceSlot::Empty, None, false),
+            Some(_) => {
+                let _ = clear_session();
+                (WorkspaceSlot::Empty, None, false)
+            }
+            None => (WorkspaceSlot::Empty, None, false),
         };
         #[cfg(target_os = "ios")]
         let value = match saved.and_then(|session| {
+            if let Some(smb) = session.smb {
+                let password = crate::ios_bridge::load_smb_password(&format!(
+                    "{}\n{}\n{}\n{}",
+                    smb.server, smb.share, smb.username, smb.remote_path
+                ))?;
+                let config = crate::smb_workspace::SmbConnectionConfig {
+                    server: smb.server,
+                    share: smb.share,
+                    username: smb.username,
+                    password,
+                    remote_path: smb.remote_path,
+                };
+                let workspace = crate::smb_workspace::SmbWorkspace::connect(config).ok()?;
+                return Some((WorkspaceSlot::smb(workspace), session.current_file, true));
+            }
             let bookmark = session.bookmark?;
             let selection = crate::ios_bridge::resolve_bookmark(&bookmark).ok()?;
             let workspace = IosWorkspace::open(selection).ok()?;
@@ -173,10 +206,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?));
     #[cfg(target_os = "ios")]
     let watcher = Rc::new(RefCell::new(NoopWatcher));
+    let (smb_connect_tx, smb_connect_rx) =
+        mpsc::channel::<Result<crate::smb_workspace::SmbWorkspace, String>>();
 
     if let Some(root) = state.borrow().workspace.root_path() {
         if let Err(error) = watcher.borrow_mut().watch(root, RecursiveMode::Recursive) {
-            set_status(&ui, format!("Workspace opened, but file watching failed: {error}"));
+            set_status(
+                &ui,
+                format!("Workspace opened, but file watching failed: {error}"),
+            );
         }
     }
 
@@ -200,6 +238,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_connect_smb_requested(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_view_mode(5);
+            }
+        });
+    }
+    {
+        ui.on_smb_keyboard_dismiss_requested(move || {
+            #[cfg(target_os = "ios")]
+            crate::ios_bridge::dismiss_keyboard();
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_smb_connect_cancelled(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_view_mode(if cfg!(target_os = "ios") { 3 } else { 1 });
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let smb_connect_tx = smb_connect_tx.clone();
+        ui.on_smb_connect_submitted(move |server, share, username, password, remote_path| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if server.trim().is_empty() || share.trim().is_empty() {
+                set_status(&ui, "SMB server and share are required");
+                return;
+            }
+            set_status(&ui, "Connecting to SMB server…");
+            let smb_connect_tx = smb_connect_tx.clone();
+            std::thread::spawn(move || {
+                let config = crate::smb_workspace::SmbConnectionConfig {
+                    server: server.to_string(),
+                    share: share.to_string(),
+                    username: username.to_string(),
+                    password: password.to_string(),
+                    remote_path: remote_path.to_string(),
+                };
+                let result = crate::smb_workspace::SmbWorkspace::connect(config)
+                    .map_err(|error| error.to_string());
+                let _ = smb_connect_tx.send(result);
+            });
+        });
+    }
+
     #[cfg(not(target_os = "ios"))]
     {
         let ui_weak = ui.as_weak();
@@ -208,7 +294,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_choose_workspace_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             if state.borrow().dirty {
-                set_status(&ui, "Save or reload the current note before changing workspaces");
+                set_status(
+                    &ui,
+                    "Save or reload the current note before changing workspaces",
+                );
                 return;
             }
 
@@ -229,7 +318,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            install_workspace(&ui, &state, &watcher, WorkspaceSlot::local(workspace), false);
+            install_workspace(
+                &ui,
+                &state,
+                &watcher,
+                WorkspaceSlot::local(workspace),
+                false,
+            );
         });
     }
 
@@ -241,7 +336,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_choose_workspace_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             if state.borrow().dirty {
-                set_status(&ui, "Save or reload the current note before changing workspaces");
+                set_status(
+                    &ui,
+                    "Save or reload the current note before changing workspaces",
+                );
                 return;
             }
             let ui_weak = ui.as_weak();
@@ -252,10 +350,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let selection = match result {
                     Ok(Some(selection)) => selection,
                     Ok(None) => return,
-                    Err(error) => { set_status(&ui, format!("Folder picker failed: {error}")); return; }
+                    Err(error) => {
+                        set_status(&ui, format!("Folder picker failed: {error}"));
+                        return;
+                    }
                 };
                 match IosWorkspace::open(selection) {
-                    Ok(workspace) => install_workspace(&ui, &state, &watcher, WorkspaceSlot::ios(workspace), false),
+                    Ok(workspace) => install_workspace(
+                        &ui,
+                        &state,
+                        &watcher,
+                        WorkspaceSlot::ios(workspace),
+                        false,
+                    ),
                     Err(error) => set_status(&ui, format!("Could not open workspace: {error}")),
                 }
             });
@@ -268,8 +375,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_pin_workspace_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mut state = state.borrow_mut();
-            if !state.workspace.is_open() { return; }
-            state.pinned = !state.pinned;
+            if !state.workspace.is_open() {
+                return;
+            }
+            if let Some(config) = state.workspace.smb_config() {
+                #[cfg(not(target_os = "ios"))]
+                let _ = &config;
+                #[cfg(target_os = "ios")]
+                {
+                    if state.pinned {
+                        crate::ios_bridge::delete_smb_password(&config.keychain_account());
+                        state.pinned = false;
+                    } else if let Err(error) = crate::ios_bridge::save_smb_password(
+                        &config.keychain_account(),
+                        &config.password,
+                    ) {
+                        set_status(&ui, error);
+                        return;
+                    } else {
+                        state.pinned = true;
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                {
+                    state.pinned = false;
+                    sync_flags(&ui, &state);
+                    set_status(
+                        &ui,
+                        "SMB pinning is available on iOS; Linux keeps SMB credentials session-only",
+                    );
+                    return;
+                }
+            } else {
+                state.pinned = !state.pinned;
+            }
             save_session_for(&state);
             sync_flags(&ui, &state);
             set_status(
@@ -289,6 +428,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
+        let smb_connect_rx = smb_connect_rx;
+        let watcher_for_poll = watcher.clone();
         let timer_for_poll = timer.clone();
         let callback_for_poll = poll_callback.clone();
         let reconcile_tick = Cell::new(0u16);
@@ -307,6 +448,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut watcher_requires_full_scan = false;
             let mut watcher_current_file_changed = false;
             let mut watcher_error = None;
+            while let Ok(result) = smb_connect_rx.try_recv() {
+                match result {
+                    Ok(workspace) => {
+                        install_workspace(
+                            &ui,
+                            &state,
+                            &watcher_for_poll,
+                            WorkspaceSlot::smb(workspace),
+                            false,
+                        );
+                        // The SMB form is view-mode 5. Leave it as soon as
+                        // the connection succeeds so the workspace tree can
+                        // display the scan result on mobile.
+                        ui.set_view_mode(if cfg!(target_os = "ios") { 0 } else { 1 });
+                        set_status(&ui, "SMB workspace connected. Loading notes…");
+                    }
+                    Err(error) => {
+                        ui.set_view_mode(5);
+                        set_status(&ui, format!("SMB connection failed: {error}"));
+                    }
+                }
+            }
             #[cfg(target_os = "ios")]
             if crate::ios_bridge::take_resume_request() {
                 state.borrow_mut().schedule_scan(Duration::ZERO);
@@ -334,7 +497,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         let is_current_file_modify = matches!(event.kind, EventKind::Modify(_))
                             && current_file_path.as_ref().is_some_and(|current| {
-                                !event.paths.is_empty() && event.paths.iter().all(|path| path == current)
+                                !event.paths.is_empty()
+                                    && event.paths.iter().all(|path| path == current)
                             });
                         if is_current_file_modify {
                             watcher_current_file_changed = true;
@@ -364,13 +528,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if ui.get_view_mode() != 0 {
-                    let ready = state.pending_preview.as_ref().is_some_and(|pending| pending.due <= now);
+                    let ready = state
+                        .pending_preview
+                        .as_ref()
+                        .is_some_and(|pending| pending.due <= now);
                     if ready {
                         if let Some(pending) = state.pending_preview.take() {
-                            if workers.preview.send(WorkerRequest::Preview {
-                                generation: pending.generation,
-                                source: pending.source,
-                            }).is_err() {
+                            if workers
+                                .preview
+                                .send(WorkerRequest::Preview {
+                                    generation: pending.generation,
+                                    source: pending.source,
+                                })
+                                .is_err()
+                            {
                                 set_status(&ui, "Preview worker stopped unexpectedly");
                             } else {
                                 busy_until.set(now + ACTIVE_POLL_WINDOW);
@@ -379,15 +550,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                let search_ready = state.pending_search.as_ref().is_some_and(|pending| pending.due <= now);
+                let search_ready = state
+                    .pending_search
+                    .as_ref()
+                    .is_some_and(|pending| pending.due <= now);
                 if search_ready {
                     if let Some(pending) = state.pending_search.take() {
                         if let Some(workspace) = state.workspace.shared_clone() {
-                            if workers.io.send(WorkerRequest::Search {
-                                generation: pending.generation,
-                                workspace,
-                                query: pending.query,
-                            }).is_err() {
+                            if workers
+                                .io
+                                .send(WorkerRequest::Search {
+                                    generation: pending.generation,
+                                    workspace,
+                                    query: pending.query,
+                                })
+                                .is_err()
+                            {
                                 set_status(&ui, "Search worker stopped unexpectedly");
                             } else {
                                 busy_until.set(now + ACTIVE_POLL_WINDOW);
@@ -396,16 +574,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                let scan_ready = state.pending_scan.as_ref().is_some_and(|pending| pending.due <= now);
+                let scan_ready = state
+                    .pending_scan
+                    .as_ref()
+                    .is_some_and(|pending| pending.due <= now);
                 if scan_ready {
                     if let Some(pending) = state.pending_scan.take() {
                         if let Some(workspace) = state.workspace.shared_clone() {
-                            if workers.io.send(WorkerRequest::Scan {
-                                generation: pending.generation,
-                                workspace,
-                                current_file: state.current_file.clone(),
-                                full_tree: pending.full_tree,
-                            }).is_err() {
+                            if matches!(state.workspace, WorkspaceSlot::Smb(_)) {
+                                set_status(&ui, "Scanning SMB workspace…");
+                            }
+                            if workers
+                                .io
+                                .send(WorkerRequest::Scan {
+                                    generation: pending.generation,
+                                    workspace,
+                                    current_file: state.current_file.clone(),
+                                    full_tree: pending.full_tree,
+                                })
+                                .is_err()
+                            {
                                 set_status(&ui, "Workspace worker stopped unexpectedly");
                             } else {
                                 busy_until.set(now + ACTIVE_POLL_WINDOW);
@@ -434,14 +622,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             arm_poll_timer(
                 timer_for_poll.clone(),
                 callback_for_poll.clone(),
-                if active { UI_POLL_INTERVAL } else { IDLE_POLL_INTERVAL },
+                if active {
+                    UI_POLL_INTERVAL
+                } else {
+                    IDLE_POLL_INTERVAL
+                },
             );
 
             if std::env::var_os("MARKERUP_PERF").is_some() {
-                let interval = perf_last_tick.get().map(|last| tick_started.duration_since(last));
+                let interval = perf_last_tick
+                    .get()
+                    .map(|last| tick_started.duration_since(last));
                 perf_last_tick.set(Some(tick_started));
-                let elapsed = perf_tick_started.get().map(|started| tick_started.duration_since(started));
-                if perf_tick_started.get().is_none() { perf_tick_started.set(Some(tick_started)); }
+                let elapsed = perf_tick_started
+                    .get()
+                    .map(|started| tick_started.duration_since(started));
+                if perf_tick_started.get().is_none() {
+                    perf_tick_started.set(Some(tick_started));
+                }
                 let count = perf_tick_count.get().wrapping_add(1);
                 perf_tick_count.set(count);
                 if count % 20 == 0 {

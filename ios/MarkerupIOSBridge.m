@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <Security/Security.h>
 #import <sys/attr.h>
 #import <fcntl.h>
 #import <unistd.h>
@@ -48,6 +49,75 @@ void markerup_ios_copy_diagnostics(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         UIPasteboard.generalPasteboard.string = report;
     });
+}
+
+void markerup_ios_dismiss_keyboard(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // UIKit routes this action to the current first responder, which is
+        // the active Slint LineEdit when the SMB form is being edited.
+        [UIApplication.sharedApplication sendAction:@selector(resignFirstResponder)
+                                                 to:nil
+                                               from:nil
+                                           forEvent:nil];
+    });
+}
+
+static NSString *MarkerupKeychainService(void) {
+    return @"com.matt.markerup.smb-password";
+}
+
+bool markerup_ios_keychain_set_password(const char *account, const char *password) {
+    if (!account || !password) return false;
+    NSString *accountString = [NSString stringWithUTF8String:account];
+    NSData *passwordData = [NSData dataWithBytes:password length:strlen(password)];
+    if (!accountString || !passwordData) return false;
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: MarkerupKeychainService(),
+        (__bridge id)kSecAttrAccount: accountString,
+    };
+    NSDictionary *attributes = @{(__bridge id)kSecValueData: passwordData};
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query,
+                                    (__bridge CFDictionaryRef)attributes);
+    if (status == errSecItemNotFound) {
+        NSMutableDictionary *item = [query mutableCopy];
+        item[(__bridge id)kSecValueData] = passwordData;
+        status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
+    }
+    return status == errSecSuccess;
+}
+
+char *markerup_ios_keychain_get_password(const char *account) {
+    if (!account) return NULL;
+    NSString *accountString = [NSString stringWithUTF8String:account];
+    if (!accountString) return NULL;
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: MarkerupKeychainService(),
+        (__bridge id)kSecAttrAccount: accountString,
+        (__bridge id)kSecReturnData: @YES,
+        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
+    };
+    CFTypeRef result = NULL;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) != errSecSuccess) return NULL;
+    NSData *data = (__bridge_transfer NSData *)result;
+    char *password = malloc(data.length + 1);
+    if (!password) return NULL;
+    memcpy(password, data.bytes, data.length);
+    password[data.length] = '\0';
+    return password;
+}
+
+void markerup_ios_keychain_delete_password(const char *account) {
+    if (!account) return;
+    NSString *accountString = [NSString stringWithUTF8String:account];
+    if (!accountString) return;
+    NSDictionary *query = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: MarkerupKeychainService(),
+        (__bridge id)kSecAttrAccount: accountString,
+    };
+    SecItemDelete((__bridge CFDictionaryRef)query);
 }
 
 @interface MarkerupPickerDelegate : NSObject <UIDocumentPickerDelegate>

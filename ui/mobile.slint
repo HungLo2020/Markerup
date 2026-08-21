@@ -1,5 +1,26 @@
 import { Button, LineEdit, ListView, ScrollView, TextEdit, VerticalBox, HorizontalBox } from "std-widgets.slint";
 
+component TreeRow inherits Rectangle {
+    in property <string> text;
+    callback activated;
+    height: 42px;
+    horizontal-stretch: 1;
+
+    TouchArea {
+        clicked => { root.activated(); }
+    }
+    Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.text;
+        font-size: 18px;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+        overflow: elide;
+    }
+}
+
 export component MobileWindow inherits Window {
     title: root.dirty ? "Markerup *" : "Markerup";
     preferred-width: 390px;
@@ -22,12 +43,18 @@ export component MobileWindow inherits Window {
     in-out property <string> selected-path: "";
     in-out property <string> current-path: "No note selected";
     in-out property <string> editor-text: "";
+    in-out property <length> editor-content-height: 480px;
     in-out property <string> status: "Choose a folder to use as a Markerup workspace";
     in-out property <string> action-name: "";
     in-out property <string> search-query: "";
     in-out property <string> find-query: "";
     in-out property <string> find-status: "";
     in-out property <string> diagnostic-report: "No diagnostic report available.";
+    in-out property <string> smb-server: "";
+    in-out property <string> smb-share: "";
+    in-out property <string> smb-username: "";
+    in-out property <string> smb-password: "";
+    in-out property <string> smb-remote-path: "";
     in-out property <bool> workspace-open: false;
     in-out property <bool> workspace-pinned: false;
     in-out property <bool> dirty: false;
@@ -57,6 +84,10 @@ export component MobileWindow inherits Window {
     callback select-editor-range(int, int);
     callback diagnostic-requested();
     callback copy-diagnostic-requested();
+    callback connect-smb-requested();
+    callback smb-keyboard-dismiss-requested();
+    callback smb-connect-submitted(string, string, string, string, string);
+    callback smb-connect-cancelled();
 
     VerticalBox {
         // Keep controls out of the iOS status-bar and home-indicator regions.
@@ -86,9 +117,37 @@ export component MobileWindow inherits Window {
             Button { text: "Choose Workspace"; clicked => { root.choose-workspace-requested(); } }
             Button { text: root.workspace-pinned ? "Unpin Workspace" : "Pin Workspace"; enabled: root.workspace-open; clicked => { root.pin-workspace-requested(); } }
             LineEdit { text <=> root.search-query; edited => { root.search-requested(self.text); } }
-            ListView { vertical-stretch: 1; for result[index] in root.search-results : Button { text: result; clicked => { root.search-result-selected(index); root.view-mode = 0; } } }
+            ListView {
+                vertical-stretch: 1;
+                mouse-drag-pan-enabled: true;
+                for result[index] in root.search-results : TreeRow { text: result; activated => { root.search-result-selected(index); root.view-mode = 0; } }
+            }
             Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
             Button { text: "SMB Diagnostics"; clicked => { root.diagnostic-requested(); } }
+            Button { text: "Connect to SMB"; clicked => { root.connect-smb-requested(); } }
+        }
+
+        if root.view-mode == 5 : VerticalBox {
+            vertical-stretch: 1;
+            ScrollView {
+                vertical-stretch: 1;
+                mouse-drag-pan-enabled: true;
+                VerticalBox {
+                    spacing: 8px;
+                    Text { text: "Connect to SMB"; font-weight: 700; }
+                    Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
+                    // This stays above the keyboard so the user can always
+                    // dismiss it before reaching the action buttons.
+                    Button { text: "Done / Hide Keyboard"; clicked => { root.smb-keyboard-dismiss-requested(); } }
+                    LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
+                    LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
+                    LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }
+                    LineEdit { text <=> root.smb-password; placeholder-text: "Password"; input-type: password; }
+                    LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share (optional)"; }
+                    Button { text: "Connect"; clicked => { root.smb-connect-submitted(root.smb-server, root.smb-share, root.smb-username, root.smb-password, root.smb-remote-path); } }
+                    Button { text: "Cancel"; clicked => { root.smb-connect-cancelled(); } }
+                }
+            }
         }
 
         if root.view-mode == 4 : VerticalBox {
@@ -97,6 +156,7 @@ export component MobileWindow inherits Window {
             Text { text: "Select the SMB workspace, wait for loading to finish, then open this screen and photograph the report."; wrap: word-wrap; }
             ScrollView {
                 vertical-stretch: 1;
+                mouse-drag-pan-enabled: true;
                 Text { text: root.diagnostic-report; wrap: word-wrap; font-family: "monospace"; }
             }
             Button { text: "Copy Report"; clicked => { root.copy-diagnostic-requested(); } }
@@ -109,14 +169,28 @@ export component MobileWindow inherits Window {
             if !root.workspace-open : Button { text: "Choose Workspace"; clicked => { root.choose-workspace-requested(); } }
             ListView {
                 vertical-stretch: 1;
-                for label[index] in root.tree-labels : Button { text: label; clicked => { root.tree-selected(index); } }
+                mouse-drag-pan-enabled: true;
+                for label[index] in root.tree-labels : TreeRow { text: label; activated => { root.tree-selected(index); } }
             }
         }
 
         if root.view-mode == 1 : VerticalBox {
             vertical-stretch: 1;
             Text { text: root.current-path; font-weight: 700; overflow: elide; }
-            TextEdit { text <=> root.editor-text; edited => { root.editor-changed(self.text); } vertical-stretch: 1; }
+            // TextEdit's built-in Cupertino scroll view does not enable
+            // finger panning. Put it in a touch-enabled outer scroll view and
+            // give the editor an intrinsic content-sized surface so long
+            // notes can be dragged on iOS as well as edited.
+            ScrollView {
+                vertical-stretch: 1;
+                mouse-drag-pan-enabled: true;
+                TextEdit {
+                    width: parent.width;
+                    height: max(parent.height, root.editor-content-height);
+                    text <=> root.editor-text;
+                    edited => { root.editor-changed(self.text); }
+                }
+            }
             HorizontalBox {
                 Button { text: "Find"; clicked => { root.find-next-requested(root.find-query); } }
                 LineEdit { text <=> root.find-query; horizontal-stretch: 1; }
@@ -126,6 +200,7 @@ export component MobileWindow inherits Window {
 
         if root.view-mode == 2 : ScrollView {
             vertical-stretch: 1;
+            mouse-drag-pan-enabled: true;
             VerticalBox {
                 for block[index] in root.preview-block-texts : VerticalBox {
                     if root.preview-block-kinds[index] == 3 : Image {

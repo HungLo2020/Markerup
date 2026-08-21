@@ -17,6 +17,8 @@ pub fn choose_workspace() -> Result<Option<PathBuf>, String> {
 pub use crate::ios_bridge::WorkspaceSelection;
 
 #[cfg(target_os = "ios")]
-pub fn choose_workspace(callback: impl FnOnce(Result<Option<WorkspaceSelection>, String>) + 'static) {
+pub fn choose_workspace(
+    callback: impl FnOnce(Result<Option<WorkspaceSelection>, String>) + 'static,
+) {
     crate::ios_bridge::choose_workspace(callback);
 }
