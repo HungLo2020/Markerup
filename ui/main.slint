@@ -66,6 +66,7 @@ export component DesktopWindow inherits Window {
     callback diagnostic-requested();
     callback copy-diagnostic-requested();
     callback connect-smb-requested();
+    callback smb-keyboard-dismiss-requested();
     callback smb-connect-submitted(string, string, string, string, string);
     callback smb-connect-cancelled();
 
@@ -342,6 +343,7 @@ export component DesktopWindow inherits Window {
                         spacing: 8px;
                         Text { text: "Connect to SMB"; font-size: 24px; font-weight: 700; }
                         Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
+                        Button { text: "Done / Hide Keyboard"; clicked => { root.smb-keyboard-dismiss-requested(); } }
                         LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
                         LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
                         LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }

@@ -232,6 +232,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     {
+        ui.on_smb_keyboard_dismiss_requested(move || {
+            #[cfg(target_os = "ios")]
+            crate::ios_bridge::dismiss_keyboard();
+        });
+    }
+    {
         let ui_weak = ui.as_weak();
         ui.on_smb_connect_cancelled(move || {
             if let Some(ui) = ui_weak.upgrade() {

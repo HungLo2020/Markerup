@@ -63,6 +63,7 @@ export component MobileWindow inherits Window {
     callback diagnostic-requested();
     callback copy-diagnostic-requested();
     callback connect-smb-requested();
+    callback smb-keyboard-dismiss-requested();
     callback smb-connect-submitted(string, string, string, string, string);
     callback smb-connect-cancelled();
 
@@ -102,15 +103,24 @@ export component MobileWindow inherits Window {
 
         if root.view-mode == 5 : VerticalBox {
             vertical-stretch: 1;
-            Text { text: "Connect to SMB"; font-weight: 700; }
-            Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
-            LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
-            LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
-            LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }
-            LineEdit { text <=> root.smb-password; placeholder-text: "Password"; input-type: password; }
-            LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share (optional)"; }
-            Button { text: "Connect"; clicked => { root.smb-connect-submitted(root.smb-server, root.smb-share, root.smb-username, root.smb-password, root.smb-remote-path); } }
-            Button { text: "Cancel"; clicked => { root.smb-connect-cancelled(); } }
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalBox {
+                    spacing: 8px;
+                    Text { text: "Connect to SMB"; font-weight: 700; }
+                    Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
+                    // This stays above the keyboard so the user can always
+                    // dismiss it before reaching the action buttons.
+                    Button { text: "Done / Hide Keyboard"; clicked => { root.smb-keyboard-dismiss-requested(); } }
+                    LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
+                    LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
+                    LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }
+                    LineEdit { text <=> root.smb-password; placeholder-text: "Password"; input-type: password; }
+                    LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share (optional)"; }
+                    Button { text: "Connect"; clicked => { root.smb-connect-submitted(root.smb-server, root.smb-share, root.smb-username, root.smb-password, root.smb-remote-path); } }
+                    Button { text: "Cancel"; clicked => { root.smb-connect-cancelled(); } }
+                }
+            }
         }
 
         if root.view-mode == 4 : VerticalBox {

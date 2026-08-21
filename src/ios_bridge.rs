@@ -36,6 +36,7 @@ unsafe extern "C" {
     fn markerup_ios_diagnostics() -> *mut c_char;
     fn markerup_ios_copy_diagnostics();
     fn markerup_ios_install_lifecycle_observers();
+    fn markerup_ios_dismiss_keyboard();
 }
 
 pub fn install_lifecycle_observers() {
@@ -192,5 +193,11 @@ pub fn diagnostics() -> String {
 pub fn copy_diagnostics() {
     unsafe {
         markerup_ios_copy_diagnostics();
+    }
+}
+
+pub fn dismiss_keyboard() {
+    unsafe {
+        markerup_ios_dismiss_keyboard();
     }
 }
