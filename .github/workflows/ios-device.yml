@@ -2,6 +2,12 @@ name: Signed iOS device build
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Commit SHA to build.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -18,6 +24,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
