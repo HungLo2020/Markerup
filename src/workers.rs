@@ -30,6 +30,32 @@ fn safe_workspace_call<T>(operation: impl FnOnce() -> std::io::Result<T>) -> Res
     }
 }
 
+// Keep a stuck provider/client operation from permanently wedging the shared
+// I/O worker. The SMB backend has shorter per-request timeouts, but this outer
+// guard also covers a transport/runtime deadlock.
+const SMB_SCAN_WATCHDOG: Duration = Duration::from_secs(60);
+
+fn safe_workspace_scan(workspace: WorkspaceRef) -> Result<Vec<WorkspaceEntry>, String> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("markerup-smb-scan-watchdog".to_string())
+        .spawn(move || {
+            let result = safe_workspace_call(|| workspace.entries());
+            let _ = sender.send(result);
+        })
+        .map_err(|error| format!("could not start SMB scan watchdog: {error}"))?;
+
+    receiver
+        .recv_timeout(SMB_SCAN_WATCHDOG)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => format!(
+                "SMB workspace scan exceeded {} seconds",
+                SMB_SCAN_WATCHDOG.as_secs()
+            ),
+            mpsc::RecvTimeoutError::Disconnected => "SMB scan worker disconnected".to_string(),
+        })?
+}
+
 fn normalize_mermaid_source(source: &str) -> String {
     source
         .lines()
@@ -350,8 +376,7 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                         // note, so invalidate cached search contents for both
                         // scan modes. The next search rebuilds from disk.
                         search_index = None;
-                        let entries =
-                            full_tree.then(|| safe_workspace_call(|| workspace.entries()));
+                        let entries = full_tree.then(|| safe_workspace_scan(workspace.clone()));
                         let current_text = current_file
                             .as_deref()
                             .map(|id| safe_workspace_call(|| workspace.read(id)));

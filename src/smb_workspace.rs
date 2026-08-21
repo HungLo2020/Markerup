@@ -64,7 +64,11 @@ pub struct SmbWorkspace {
 impl SmbWorkspace {
     pub fn connect(config: SmbConnectionConfig) -> io::Result<Self> {
         config.validate()?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        // smb2 owns background transport/receiver tasks. Keep those tasks on
+        // a runtime that is safe to move between the connection and I/O
+        // worker threads used by the application, including iOS.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_io()
             .enable_time()
             .build()
