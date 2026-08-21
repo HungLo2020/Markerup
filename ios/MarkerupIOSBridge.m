@@ -232,7 +232,7 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
             for (NSUInteger attempt = 0; attempt < 3; attempt++) {
                 NSError *directoryError = nil;
                 children = [manager contentsOfDirectoryAtURL:directory
-                                      includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey]
+                                      includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey, NSURLFileResourceTypeKey]
                                                          options:NSDirectoryEnumerationSkipsHiddenFiles
                                                            error:&directoryError];
                 if (!children || children.count > 0 || attempt == 2) {
@@ -249,17 +249,27 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
 
             for (NSURL *item in children) {
                 BOOL itemScope = [item startAccessingSecurityScopedResource];
+                NSString *name = nil;
                 NSNumber *isDirectory = nil;
+                NSString *resourceType = nil;
                 NSError *resourceError = nil;
-                if (![item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError]) {
-                    error = resourceError;
+                // File Provider URLs are not ordinary file URLs. Use the
+                // provider's resource name instead of parsing lastPathComponent,
+                // and use its file-resource type when directory metadata is
+                // unavailable (both cases occur with SMB providers).
+                [item getResourceValue:&name forKey:NSURLNameKey error:&resourceError];
+                [item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError];
+                [item getResourceValue:&resourceType forKey:NSURLFileResourceTypeKey error:&resourceError];
+                if (name.length == 0) name = item.lastPathComponent;
+                if (name.length == 0) {
+                    error = resourceError ?: [NSError errorWithDomain:@"Markerup" code:3 userInfo:@{
+                        NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Provider returned a child without a name: %@", item]
+                    }];
                     if (itemScope) [item stopAccessingSecurityScopedResource];
                     break;
                 }
-                if (!isDirectory) isDirectory = @NO;
 
-                NSString *name = item.lastPathComponent;
-                if (name.length == 0 || [name isEqualToString:@"."] || [name isEqualToString:@".."] ||
+                if ([name isEqualToString:@"."] || [name isEqualToString:@".."] ||
                     [name containsString:@"/"] || [name containsString:@"\\"]) {
                     error = [NSError errorWithDomain:@"Markerup" code:2 userInfo:@{
                         NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Provider returned an invalid child URL: %@", item]
@@ -268,16 +278,24 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
                     break;
                 }
 
+                BOOL directoryValue = isDirectory.boolValue;
+                if ([resourceType isEqualToString:NSURLFileResourceTypeDirectory]) {
+                    directoryValue = YES;
+                } else if ([resourceType isEqualToString:NSURLFileResourceTypeRegular] ||
+                           [resourceType isEqualToString:NSURLFileResourceTypeSymbolicLink]) {
+                    directoryValue = NO;
+                }
+
                 NSString *relative = relativeDirectory.length > 0
                     ? [relativeDirectory stringByAppendingPathComponent:name]
                     : name;
-                if (isDirectory.boolValue) {
+                if (directoryValue) {
                     if (![name hasPrefix:@"."]) {
                         [serialized appendFormat:@"D:%@\n", MarkerupEscapedRelativePath(relative)];
                         [directories addObject:item];
                         [relativeDirectories addObject:relative];
                     }
-                } else if ([name.pathExtension.lowercaseString isEqualToString:@"md"]) {
+                } else if ([name.lowercaseString hasSuffix:@".md"]) {
                     [serialized appendFormat:@"F:%@\n", MarkerupEscapedRelativePath(relative)];
                 }
                 if (itemScope) [item stopAccessingSecurityScopedResource];

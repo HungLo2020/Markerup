@@ -79,6 +79,7 @@ jobs:
           grep -q 'Assets.xcassets' ios/Markerup.xcodeproj/project.pbxproj
           grep -q 'LaunchScreen.storyboard' ios/Markerup.xcodeproj/project.pbxproj
           grep -q 'CFBundleIconName' ios/Info.plist
+          test "$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' ios/Info.plist)" = "false"
           grep -q 'UILaunchStoryboardName' ios/Info.plist
 
       - name: Build the actual iOS application

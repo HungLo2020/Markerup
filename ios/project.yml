@@ -18,6 +18,10 @@ targets:
         CFBundleShortVersionString: "0.2.0"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleIconName: AppIcon
+        # Markerup does not implement non-exempt cryptography. This lets
+        # App Store Connect skip the export-compliance questionnaire for
+        # every uploaded build.
+        ITSAppUsesNonExemptEncryption: false
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiresFullScreen: true
