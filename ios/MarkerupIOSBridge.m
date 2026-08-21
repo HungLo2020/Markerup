@@ -26,9 +26,10 @@ static NSMutableDictionary<NSString *, NSURL *> *MarkerupAccessMap(void) {
         return;
     }
     NSError *error = nil;
-    // On iOS, a document-picker URL already carries its security scope. The
-    // WithSecurityScope bookmark flags are macOS-only in the iPhone SDK.
-    NSData *bookmark = [url bookmarkDataWithOptions:0
+    // iOS document-picker URLs already carry the required implicit security
+    // scope. iOS does not expose the macOS WithSecurityScope bookmark flags;
+    // Apple's directory-access sample persists these URLs as minimal bookmarks.
+    NSData *bookmark = [url bookmarkDataWithOptions:NSURLBookmarkCreationMinimalBookmark
                      includingResourceValuesForKeys:nil relativeToURL:nil error:&error];
     if (error || !bookmark) {
         [url stopAccessingSecurityScopedResource];
@@ -135,10 +136,15 @@ bool markerup_ios_read_file(const char *path, unsigned char **data_out, size_t *
     __block NSData *contents = nil;
     __block NSError *error = nil;
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
-    [coordinator coordinateReadingItemAtURL:url options:0 error:&error byAccessor:^(NSURL *coordinatedURL) {
+    [coordinator coordinateReadingItemAtURL:url options:NSFileCoordinatorReadingWithoutChanges error:&error byAccessor:^(NSURL *coordinatedURL) {
+        BOOL hasSecurityScope = [coordinatedURL startAccessingSecurityScopedResource];
         contents = [NSData dataWithContentsOfURL:coordinatedURL options:0 error:&error];
+        if (hasSecurityScope) [coordinatedURL stopAccessingSecurityScopedResource];
     }];
-    if (error || !contents) return false;
+    if (error || !contents) {
+        NSLog(@"Markerup: failed to read %@: %@", url, error);
+        return false;
+    }
     *length_out = contents.length;
     *data_out = malloc(contents.length);
     if (!*data_out && contents.length != 0) return false;
@@ -205,7 +211,9 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
     __block NSMutableString *serialized = [NSMutableString string];
     __block NSError *error = nil;
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
-    [coordinator coordinateReadingItemAtURL:root options:0 error:&error byAccessor:^(NSURL *coordinatedURL) {
+    NSFileCoordinatorReadingOptions readOptions =
+        NSFileCoordinatorReadingWithoutChanges | NSFileCoordinatorReadingImmediatelyAvailableMetadataOnly;
+    [coordinator coordinateReadingItemAtURL:root options:readOptions error:&error byAccessor:^(NSURL *coordinatedURL) {
         NSDirectoryEnumerator *enumerator = [NSFileManager.defaultManager
             enumeratorAtURL:coordinatedURL
             includingPropertiesForKeys:@[NSURLIsDirectoryKey, NSURLIsRegularFileKey]
@@ -214,25 +222,46 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
                 (void)url;
                 error = enumerationError;
                 return NO;
-            }];
+        }];
         for (NSURL *item in enumerator) {
+            // File Provider URLs returned by enumeration are independently
+            // security-scoped. Apple requires access to be opened before
+            // reading their resource values or using them for file access.
+            BOOL hasSecurityScope = [item startAccessingSecurityScopedResource];
             NSNumber *isDirectory = nil;
             NSNumber *isRegularFile = nil;
             NSError *resourceError = nil;
             if (![item getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&resourceError] ||
                 ![item getResourceValue:&isRegularFile forKey:NSURLIsRegularFileKey error:&resourceError]) {
                 error = resourceError;
+                if (hasSecurityScope) [item stopAccessingSecurityScopedResource];
                 break;
             }
-            NSString *relative = [item.path substringFromIndex:coordinatedURL.path.length + 1];
+            NSString *itemPath = item.path;
+            NSString *rootPath = coordinatedURL.path;
+            BOOL isDescendant = [itemPath hasPrefix:rootPath] &&
+                itemPath.length > rootPath.length &&
+                [itemPath characterAtIndex:rootPath.length] == '/';
+            if (!isDescendant) {
+                error = [NSError errorWithDomain:@"Markerup" code:2 userInfo:@{
+                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Enumerated URL is outside workspace: %@", item]
+                }];
+                if (hasSecurityScope) [item stopAccessingSecurityScopedResource];
+                break;
+            }
+            NSString *relative = [itemPath substringFromIndex:rootPath.length + 1];
             if (isDirectory.boolValue) {
                 [serialized appendFormat:@"D:%@\n", MarkerupEscapedRelativePath(relative)];
             } else if (isRegularFile.boolValue && [item.pathExtension.lowercaseString isEqualToString:@"md"]) {
                 [serialized appendFormat:@"F:%@\n", MarkerupEscapedRelativePath(relative)];
             }
+            if (hasSecurityScope) [item stopAccessingSecurityScopedResource];
         }
     }];
-    if (error) return false;
+    if (error) {
+        NSLog(@"Markerup: failed to enumerate workspace %@: %@", root, error);
+        return false;
+    }
     NSData *bytes = [serialized dataUsingEncoding:NSUTF8StringEncoding];
     *length_out = bytes.length;
     *data_out = malloc(bytes.length == 0 ? 1 : bytes.length);
