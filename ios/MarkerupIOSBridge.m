@@ -98,8 +98,40 @@ void markerup_ios_stop_access(const char *path) {
     [url stopAccessingSecurityScopedResource];
 }
 
+// Keep using the original security-scoped provider URL whenever possible.
+// Reconstructing a plain file URL from url.path loses File Provider/SMB URL
+// semantics even though the path looks equivalent.
+static NSURL *MarkerupURLForPath(const char *path, BOOL isDirectory) {
+    if (!path) return nil;
+    NSString *key = [NSString stringWithUTF8String:path];
+    if (!key) return nil;
+
+    @synchronized (MarkerupAccessMap()) {
+        NSURL *exact = MarkerupAccessMap()[key];
+        if (exact) return exact;
+
+        NSURL *bestURL = nil;
+        NSString *bestKey = nil;
+        for (NSString *candidate in MarkerupAccessMap()) {
+            if (candidate.length >= key.length || ![key hasPrefix:candidate]) continue;
+            if ([key characterAtIndex:candidate.length] != '/') continue;
+            if (!bestKey || candidate.length > bestKey.length) {
+                bestKey = candidate;
+                bestURL = MarkerupAccessMap()[candidate];
+            }
+        }
+        if (bestURL && bestKey) {
+            NSString *relative = [key substringFromIndex:bestKey.length + 1];
+            return [bestURL URLByAppendingPathComponent:relative isDirectory:isDirectory];
+        }
+    }
+
+    return [NSURL fileURLWithPath:key isDirectory:isDirectory];
+}
+
 bool markerup_ios_read_file(const char *path, unsigned char **data_out, size_t *length_out) {
-    NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+    NSURL *url = MarkerupURLForPath(path, NO);
+    if (!url) return false;
     __block NSData *contents = nil;
     __block NSError *error = nil;
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
@@ -115,7 +147,8 @@ bool markerup_ios_read_file(const char *path, unsigned char **data_out, size_t *
 }
 
 bool markerup_ios_write_file(const char *path, const unsigned char *data, size_t length) {
-    NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+    NSURL *url = MarkerupURLForPath(path, NO);
+    if (!url) return false;
     NSData *contents = [NSData dataWithBytes:data length:length];
     __block NSError *error = nil;
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
@@ -131,8 +164,9 @@ void markerup_ios_free_data(unsigned char *data, size_t length) {
 }
 
 bool markerup_ios_mutate(const char *path, const char *destination, unsigned char operation, const unsigned char *data, size_t length) {
-    NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
-    NSURL *destinationURL = destination ? [NSURL fileURLWithPath:[NSString stringWithUTF8String:destination]] : nil;
+    NSURL *url = MarkerupURLForPath(path, NO);
+    NSURL *destinationURL = destination ? MarkerupURLForPath(destination, NO) : nil;
+    if (!url || (destination && !destinationURL)) return false;
     __block NSError *error = nil;
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
     [coordinator coordinateWritingItemAtURL:url options:0 error:&error byAccessor:^(NSURL *coordinatedURL) {
@@ -166,7 +200,8 @@ static NSString *MarkerupEscapedRelativePath(NSString *path) {
 
 bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_t *length_out) {
     if (!path || !data_out || !length_out) return false;
-    NSURL *root = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path] isDirectory:YES];
+    NSURL *root = MarkerupURLForPath(path, YES);
+    if (!root) return false;
     __block NSMutableString *serialized = [NSMutableString string];
     __block NSError *error = nil;
     NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
