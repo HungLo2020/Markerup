@@ -2,12 +2,33 @@ use crate::markdown::{ImageReference, PreviewBlock, image_references, preview_bl
 use crate::workspace::{EntryId, Workspace, WorkspaceEntry, WorkspaceRef};
 use merman::render::HeadlessRenderer;
 use std::collections::{HashMap, VecDeque};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub static LATEST_SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+fn safe_workspace_call<T>(operation: impl FnOnce() -> std::io::Result<T>) -> Result<T, String> {
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result.map_err(|error| error.to_string()),
+        Err(payload) => Err(format!(
+            "workspace operation panicked: {}",
+            panic_text(payload)
+        )),
+    }
+}
 
 fn normalize_mermaid_source(source: &str) -> String {
     source
@@ -329,11 +350,11 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                         // note, so invalidate cached search contents for both
                         // scan modes. The next search rebuilds from disk.
                         search_index = None;
-                        let entries = full_tree
-                            .then(|| workspace.entries().map_err(|error| error.to_string()));
+                        let entries =
+                            full_tree.then(|| safe_workspace_call(|| workspace.entries()));
                         let current_text = current_file
                             .as_deref()
-                            .map(|id| workspace.read(id).map_err(|error| error.to_string()));
+                            .map(|id| safe_workspace_call(|| workspace.read(id)));
                         WorkerResult::Scan(ScanResult {
                             generation,
                             entries,
