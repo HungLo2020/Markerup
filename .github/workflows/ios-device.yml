@@ -115,7 +115,7 @@ jobs:
           DEVELOPMENT_TEAM="$IOS_TEAM_ID"
           PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID"
           CURRENT_PROJECT_VERSION="${{ github.run_id }}"
-          MARKETING_VERSION="0.2.0"
+          MARKETING_VERSION="0.3.0"
           CODE_SIGN_STYLE=Manual
           CODE_SIGN_IDENTITY="Apple Distribution"
           PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME"
