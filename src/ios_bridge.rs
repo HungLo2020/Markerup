@@ -37,6 +37,9 @@ unsafe extern "C" {
     fn markerup_ios_copy_diagnostics();
     fn markerup_ios_install_lifecycle_observers();
     fn markerup_ios_dismiss_keyboard();
+    fn markerup_ios_keychain_set_password(account: *const c_char, password: *const c_char) -> bool;
+    fn markerup_ios_keychain_get_password(account: *const c_char) -> *mut c_char;
+    fn markerup_ios_keychain_delete_password(account: *const c_char);
 }
 
 pub fn install_lifecycle_observers() {
@@ -47,6 +50,34 @@ pub fn install_lifecycle_observers() {
 
 pub fn take_resume_request() -> bool {
     RESUME_REQUESTED.swap(false, Ordering::AcqRel)
+}
+
+pub fn save_smb_password(account: &str, password: &str) -> Result<(), String> {
+    let account = CString::new(account).map_err(|_| "invalid SMB keychain account".to_string())?;
+    let password = CString::new(password).map_err(|_| "invalid SMB password".to_string())?;
+    let ok = unsafe { markerup_ios_keychain_set_password(account.as_ptr(), password.as_ptr()) };
+    ok.then_some(())
+        .ok_or_else(|| "could not save SMB password in Keychain".to_string())
+}
+
+pub fn load_smb_password(account: &str) -> Option<String> {
+    let account = CString::new(account).ok()?;
+    let password = unsafe { markerup_ios_keychain_get_password(account.as_ptr()) };
+    if password.is_null() {
+        return None;
+    }
+    let value = unsafe { CStr::from_ptr(password) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { markerup_ios_free_string(password) };
+    Some(value)
+}
+
+pub fn delete_smb_password(account: &str) {
+    let Ok(account) = CString::new(account) else {
+        return;
+    };
+    unsafe { markerup_ios_keychain_delete_password(account.as_ptr()) };
 }
 
 #[unsafe(no_mangle)]

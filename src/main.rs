@@ -152,6 +152,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         #[cfg(target_os = "ios")]
         let value = match saved.and_then(|session| {
+            if let Some(smb) = session.smb {
+                let password = crate::ios_bridge::load_smb_password(&format!(
+                    "{}\n{}\n{}\n{}",
+                    smb.server, smb.share, smb.username, smb.remote_path
+                ))?;
+                let config = crate::smb_workspace::SmbConnectionConfig {
+                    server: smb.server,
+                    share: smb.share,
+                    username: smb.username,
+                    password,
+                    remote_path: smb.remote_path,
+                };
+                let workspace = crate::smb_workspace::SmbWorkspace::connect(config).ok()?;
+                return Some((WorkspaceSlot::smb(workspace), session.current_file, true));
+            }
             let bookmark = session.bookmark?;
             let selection = crate::ios_bridge::resolve_bookmark(&bookmark).ok()?;
             let workspace = IosWorkspace::open(selection).ok()?;
@@ -363,19 +378,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !state.workspace.is_open() {
                 return;
             }
-            if matches!(state.workspace, WorkspaceSlot::Smb(_)) {
-                // Direct SMB credentials are deliberately session-only until
-                // a platform secure-secret store is wired into persistence.
-                // Never offer to persist them in the ordinary session file.
-                state.pinned = false;
-                sync_flags(&ui, &state);
-                set_status(
-                    &ui,
-                    "Direct SMB connections are session-only and cannot be pinned",
-                );
-                return;
+            if let Some(config) = state.workspace.smb_config() {
+                #[cfg(not(target_os = "ios"))]
+                let _ = &config;
+                #[cfg(target_os = "ios")]
+                {
+                    if state.pinned {
+                        crate::ios_bridge::delete_smb_password(&config.keychain_account());
+                        state.pinned = false;
+                    } else if let Err(error) = crate::ios_bridge::save_smb_password(
+                        &config.keychain_account(),
+                        &config.password,
+                    ) {
+                        set_status(&ui, error);
+                        return;
+                    } else {
+                        state.pinned = true;
+                    }
+                }
+                #[cfg(not(target_os = "ios"))]
+                {
+                    state.pinned = false;
+                    sync_flags(&ui, &state);
+                    set_status(
+                        &ui,
+                        "SMB pinning is available on iOS; Linux keeps SMB credentials session-only",
+                    );
+                    return;
+                }
+            } else {
+                state.pinned = !state.pinned;
             }
-            state.pinned = !state.pinned;
             save_session_for(&state);
             sync_flags(&ui, &state);
             set_status(

@@ -2,7 +2,16 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const SESSION_HEADER: &str = "markerup-session-v2";
+const SESSION_HEADER: &str = "markerup-session-v3";
+const LEGACY_SESSION_HEADER: &str = "markerup-session-v2";
+
+#[derive(Debug, Clone)]
+pub struct SavedSmbConfig {
+    pub server: String,
+    pub share: String,
+    pub username: String,
+    pub remote_path: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionState {
@@ -11,6 +20,8 @@ pub struct SessionState {
     pub current_file: Option<String>,
     #[allow(dead_code)]
     pub bookmark: Option<Vec<u8>>,
+    #[allow(dead_code)]
+    pub smb: Option<SavedSmbConfig>,
 }
 
 fn state_path() -> Option<PathBuf> {
@@ -29,7 +40,8 @@ fn state_path() -> Option<PathBuf> {
 pub fn load_session() -> Option<SessionState> {
     let text = fs::read_to_string(state_path()?).ok()?;
     let mut lines = text.lines();
-    if lines.next()? != SESSION_HEADER {
+    let header = lines.next()?;
+    if header != SESSION_HEADER && header != LEGACY_SESSION_HEADER {
         return None;
     }
     let pinned_workspace = PathBuf::from(lines.next()?);
@@ -39,17 +51,37 @@ pub fn load_session() -> Option<SessionState> {
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned);
     let bookmark = lines.next().and_then(decode_hex);
+    let smb = if header == SESSION_HEADER {
+        let server = decode_text(lines.next()?)?;
+        let share = decode_text(lines.next()?)?;
+        let username = decode_text(lines.next()?)?;
+        let remote_path = decode_text(lines.next()?)?;
+        if server.is_empty() && share.is_empty() && username.is_empty() && remote_path.is_empty() {
+            None
+        } else {
+            Some(SavedSmbConfig {
+                server,
+                share,
+                username,
+                remote_path,
+            })
+        }
+    } else {
+        None
+    };
     Some(SessionState {
         pinned_workspace,
         current_file,
         bookmark,
+        smb,
     })
 }
 
 pub fn save_session(
-    workspace: &Path,
+    workspace: Option<&Path>,
     current_file: Option<&str>,
     bookmark: Option<&[u8]>,
+    smb: Option<&SavedSmbConfig>,
 ) -> io::Result<()> {
     let Some(path) = state_path() else {
         return Ok(());
@@ -60,10 +92,14 @@ pub fn save_session(
     fs::write(
         path,
         format!(
-            "{SESSION_HEADER}\n{}\n{}\n{}\n",
-            workspace.to_string_lossy(),
+            "{SESSION_HEADER}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+            workspace.map_or(String::new(), |path| path.to_string_lossy().into_owned()),
             current_file.unwrap_or(""),
-            bookmark.map(encode_hex).unwrap_or_default()
+            bookmark.map(encode_hex).unwrap_or_default(),
+            smb.map_or(String::new(), |value| encode_text(&value.server)),
+            smb.map_or(String::new(), |value| encode_text(&value.share)),
+            smb.map_or(String::new(), |value| encode_text(&value.username)),
+            smb.map_or(String::new(), |value| encode_text(&value.remote_path)),
         ),
     )
 }
@@ -84,6 +120,17 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|index| u8::from_str_radix(&text[index..index + 2], 16).ok())
         .collect()
+}
+
+fn encode_text(text: &str) -> String {
+    encode_hex(text.as_bytes())
+}
+
+fn decode_text(text: &str) -> Option<String> {
+    if text.is_empty() {
+        return Some(String::new());
+    }
+    String::from_utf8(decode_hex(text)?).ok()
 }
 
 pub fn clear_session() -> io::Result<()> {

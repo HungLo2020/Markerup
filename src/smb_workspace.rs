@@ -42,6 +42,14 @@ impl SmbConnectionConfig {
             format!("{}:445", self.server)
         }
     }
+
+    #[cfg(target_os = "ios")]
+    pub fn keychain_account(&self) -> String {
+        format!(
+            "{}\n{}\n{}\n{}",
+            self.server, self.share, self.username, self.remote_path
+        )
+    }
 }
 
 struct SmbSession {
@@ -79,6 +87,10 @@ impl SmbWorkspace {
             runtime,
             session: Mutex::new(session),
         })
+    }
+
+    pub fn connection_config(&self) -> SmbConnectionConfig {
+        self.config.clone()
     }
 
     fn remote_path(&self, id: &str) -> io::Result<String> {

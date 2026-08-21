@@ -5,6 +5,7 @@ fn main() {
     let host_is_apple = std::env::var("HOST").is_ok_and(|host| host.contains("apple"));
     if target_is_ios && host_is_apple {
         println!("cargo:rustc-link-lib=framework=UniformTypeIdentifiers");
+        println!("cargo:rustc-link-lib=framework=Security");
         cc::Build::new()
             .file("ios/MarkerupIOSBridge.m")
             .flag("-fobjc-arc")

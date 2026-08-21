@@ -1,6 +1,6 @@
 use crate::MainWindow;
 use crate::markdown::{PreviewBlockKind, preview_markdown};
-use crate::persistence::{clear_session, save_session};
+use crate::persistence::{SavedSmbConfig, clear_session, save_session};
 use crate::workers::{
     LATEST_SEARCH_GENERATION, PreviewResult, ScanResult, SearchResult, hash_text,
 };
@@ -13,6 +13,21 @@ use std::time::{Duration, Instant, SystemTime};
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 pub const SCAN_DEBOUNCE: Duration = Duration::from_millis(100);
+
+fn set_editor_text(ui: &MainWindow, text: String) {
+    // Slint's mobile TextEdit does not expose the gesture-panning switch of
+    // its internal scroll view. The mobile shell therefore scrolls an
+    // intrinsic-height editor surface; estimate wrapped Markdown lines so the
+    // surface remains large enough for touch panning without growing to an
+    // unbounded fixed size.
+    let visual_lines: usize = text
+        .lines()
+        .map(|line| line.chars().count().max(1).div_ceil(48))
+        .sum::<usize>()
+        .max(20);
+    ui.set_editor_content_height((visual_lines.saturating_mul(22).max(480)) as f32);
+    ui.set_editor_text(text.into());
+}
 
 #[derive(Debug)]
 pub struct PendingPreview {
@@ -276,8 +291,8 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
                 "  "
             };
             let kind = match entry.kind {
-                EntryKind::Directory if state.expanded.contains(&entry.id) => "▾ ",
-                EntryKind::Directory => "▸ ",
+                EntryKind::Directory if state.expanded.contains(&entry.id) => "▼ ",
+                EntryKind::Directory => "▶ ",
                 EntryKind::File => "  ",
             };
             labels.push(format!("{marker}{indent}{kind}{}", entry.name));
@@ -532,7 +547,7 @@ pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResu
                     } else {
                         state.disk_text = disk.clone();
                         state.saved_hash = hash_text(&disk);
-                        ui.set_editor_text(disk.clone().into());
+                        set_editor_text(ui, disk.clone());
                         state.schedule_preview(disk, Duration::ZERO);
                         set_status(ui, "Reloaded external change");
                     }
@@ -566,11 +581,21 @@ fn clear_preview(ui: &MainWindow) {
 
 pub fn save_session_for(state: &AppState) {
     if state.pinned {
-        if let Some(root) = state.workspace.root_path() {
-            let bookmark = state.workspace.bookmark();
-            let _ = save_session(root, state.current_file.as_deref(), bookmark.as_deref());
-            return;
-        }
+        let root = state.workspace.root_path();
+        let bookmark = state.workspace.bookmark();
+        let smb = state.workspace.smb_config().map(|config| SavedSmbConfig {
+            server: config.server,
+            share: config.share,
+            username: config.username,
+            remote_path: config.remote_path,
+        });
+        let _ = save_session(
+            root,
+            state.current_file.as_deref(),
+            bookmark.as_deref(),
+            smb.as_ref(),
+        );
+        return;
     }
     let _ = clear_session();
 }
@@ -584,7 +609,7 @@ pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
     state.preview_generation = state.preview_generation.wrapping_add(1);
     state.pending_preview = None;
     ui.set_current_path("No note selected".into());
-    ui.set_editor_text("".into());
+    set_editor_text(ui, String::new());
     clear_preview(ui);
     sync_flags(ui, state);
     save_session_for(state);
@@ -636,7 +661,7 @@ pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bo
     state.find_matches.clear();
     state.find_index = 0;
     ui.set_current_path(id.into());
-    ui.set_editor_text(contents.clone().into());
+    set_editor_text(ui, contents.clone());
     ui.set_find_status("".into());
     clear_preview(ui);
     state.schedule_preview(contents, Duration::ZERO);
@@ -682,7 +707,7 @@ pub fn reload_current(ui: &MainWindow, state: &mut AppState) {
             state.saved_hash = hash_text(&contents);
             state.dirty = false;
             state.external_conflict = false;
-            ui.set_editor_text(contents.clone().into());
+            set_editor_text(ui, contents.clone());
             state.schedule_preview(contents, Duration::ZERO);
             sync_flags(ui, state);
             set_status(ui, "Reloaded from disk");

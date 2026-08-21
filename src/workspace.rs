@@ -467,6 +467,13 @@ impl WorkspaceSlot {
             Self::Empty => None,
         }
     }
+
+    pub fn smb_config(&self) -> Option<crate::smb_workspace::SmbConnectionConfig> {
+        match self {
+            Self::Smb(workspace) => Some(workspace.connection_config()),
+            _ => None,
+        }
+    }
     pub fn absolute_asset_path(&self, id: &str) -> io::Result<PathBuf> {
         match self {
             Self::Local(workspace) => workspace.absolute_asset_path(id),
