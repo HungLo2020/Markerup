@@ -4,6 +4,10 @@ version = "0.3.0"
 edition = "2024"
 description = "A filesystem-first Markdown notes editor"
 
+[features]
+default = []
+mobile-preview = []
+
 [dependencies]
 notify = "8.2.0"
 percent-encoding = "2.3.2"

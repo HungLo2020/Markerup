@@ -36,9 +36,9 @@ use std::time::{Duration, Instant};
 
 slint::include_modules!();
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", feature = "mobile-preview"))]
 type MainWindow = MobileWindow;
-#[cfg(not(target_os = "ios"))]
+#[cfg(all(not(target_os = "ios"), not(feature = "mobile-preview")))]
 type MainWindow = DesktopWindow;
 
 const UI_POLL_INTERVAL: Duration = Duration::from_millis(50);
