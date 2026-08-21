@@ -425,6 +425,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             WorkspaceSlot::smb(workspace),
                             false,
                         );
+                        // The SMB form is view-mode 5. Leave it as soon as
+                        // the connection succeeds so the workspace tree can
+                        // display the scan result on mobile.
+                        ui.set_view_mode(if cfg!(target_os = "ios") { 0 } else { 1 });
                         set_status(&ui, "SMB workspace connected. Loading notes…");
                     }
                     Err(error) => {
