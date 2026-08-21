@@ -2,9 +2,20 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <sys/attr.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import <errno.h>
+#import <string.h>
+#import <stdlib.h>
 
 typedef void (*MarkerupPickerCallback)(const char *, const unsigned char *, size_t, void *);
 extern void markerup_ios_resume_request(void);
+
+// ATTR_CMN_OBJTYPE returns the Darwin vnode type. The iOS SDK exposes the
+// attribute but not the private sys/vnode.h constants: VREG is 1 and VDIR is 2.
+static const uint32_t MarkerupVnodeRegularFile = 1;
+static const uint32_t MarkerupVnodeDirectory = 2;
 
 static NSMutableDictionary<NSString *, NSURL *> *MarkerupAccessMap(void) {
     static NSMutableDictionary<NSString *, NSURL *> *map;
@@ -204,6 +215,125 @@ static NSString *MarkerupEscapedRelativePath(NSString *path) {
     return [path stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet alphanumericCharacterSet]];
 }
 
+// Some SMB File Provider implementations return an empty result from
+// FileManager's directory APIs even while Files can display the same folder.
+// getattrlistbulk is a public iOS API that reads directory entries directly;
+// Apple DTS recommends it as the workaround for this exact failure mode.
+static NSArray<NSURL *> *MarkerupBulkDirectoryContents(NSURL *directory, NSError **errorOut) {
+    const char *path = directory.fileSystemRepresentation;
+    if (!path) {
+        if (errorOut) *errorOut = [NSError errorWithDomain:@"Markerup" code:4 userInfo:@{
+            NSLocalizedDescriptionKey: @"The provider directory does not have a filesystem path"
+        }];
+        return nil;
+    }
+
+    int directoryFD = open(path, O_RDONLY | O_DIRECTORY);
+    if (directoryFD < 0) {
+        if (errorOut) *errorOut = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
+        return nil;
+    }
+
+    struct attrlist attributes;
+    memset(&attributes, 0, sizeof(attributes));
+    attributes.bitmapcount = ATTR_BIT_MAP_COUNT;
+    attributes.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME |
+                            ATTR_CMN_ERROR | ATTR_CMN_OBJTYPE;
+
+    NSMutableArray<NSURL *> *children = [NSMutableArray array];
+    size_t bufferSize = 32 * 1024;
+    uint8_t *buffer = malloc(bufferSize);
+    if (!buffer) {
+        close(directoryFD);
+        if (errorOut) *errorOut = [NSError errorWithDomain:NSPOSIXErrorDomain code:ENOMEM userInfo:nil];
+        return nil;
+    }
+    NSError *enumerationError = nil;
+    for (;;) {
+        int count = getattrlistbulk(directoryFD, &attributes, buffer, bufferSize, FSOPT_PACK_INVAL_ATTRS);
+        if (count == 0) break;
+        if (count < 0) {
+            enumerationError = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];
+            break;
+        }
+
+        uint8_t *entry = buffer;
+        uint8_t *bufferEnd = buffer + bufferSize;
+        for (int index = 0; index < count; index++) {
+            if (entry + sizeof(uint32_t) > bufferEnd) {
+                enumerationError = [NSError errorWithDomain:@"Markerup" code:5 userInfo:@{
+                    NSLocalizedDescriptionKey: @"Malformed getattrlistbulk directory entry"
+                }];
+                break;
+            }
+
+            uint32_t entryLength = 0;
+            memcpy(&entryLength, entry, sizeof(entryLength));
+            if (entryLength < sizeof(uint32_t) + sizeof(attribute_set_t) || entry + entryLength > bufferEnd) {
+                enumerationError = [NSError errorWithDomain:@"Markerup" code:5 userInfo:@{
+                    NSLocalizedDescriptionKey: @"Malformed getattrlistbulk directory entry length"
+                }];
+                break;
+            }
+
+            uint8_t *entryEnd = entry + entryLength;
+            uint8_t *field = entry + sizeof(uint32_t);
+            attribute_set_t returned;
+            memcpy(&returned, field, sizeof(returned));
+            field += sizeof(returned);
+
+            uint32_t itemError = 0;
+            if (returned.commonattr & ATTR_CMN_ERROR) {
+                if (field + sizeof(itemError) > entryEnd) { enumerationError = [NSError errorWithDomain:@"Markerup" code:5 userInfo:nil]; break; }
+                memcpy(&itemError, field, sizeof(itemError));
+                field += sizeof(itemError);
+            }
+
+            attrreference_t nameReference;
+            if (!(returned.commonattr & ATTR_CMN_NAME) || field + sizeof(nameReference) > entryEnd) {
+                entry = entryEnd;
+                continue;
+            }
+            memcpy(&nameReference, field, sizeof(nameReference));
+            if (nameReference.attr_dataoffset < 0 || nameReference.attr_length == 0 ||
+                (size_t)nameReference.attr_dataoffset > (size_t)(entryEnd - field) ||
+                (size_t)nameReference.attr_length > (size_t)(entryEnd - field - nameReference.attr_dataoffset)) {
+                entry = entryEnd;
+                continue;
+            }
+            uint8_t *nameBytes = field + nameReference.attr_dataoffset;
+            field += sizeof(nameReference);
+            if (itemError) {
+                entry = entryEnd;
+                continue;
+            }
+
+            uint32_t objectType = MarkerupVnodeRegularFile;
+            if (returned.commonattr & ATTR_CMN_OBJTYPE) {
+                if (field + sizeof(objectType) > entryEnd) { enumerationError = [NSError errorWithDomain:@"Markerup" code:5 userInfo:nil]; break; }
+                memcpy(&objectType, field, sizeof(objectType));
+            }
+
+            size_t nameLength = (size_t)nameReference.attr_length;
+            if (nameLength > 0 && nameBytes[nameLength - 1] == '\0') nameLength--;
+            NSString *name = [[NSString alloc] initWithBytes:nameBytes length:nameLength encoding:NSUTF8StringEncoding];
+            if (name.length > 0) {
+                [children addObject:[directory URLByAppendingPathComponent:name isDirectory:(objectType == MarkerupVnodeDirectory)]];
+            }
+            entry = entryEnd;
+        }
+        if (enumerationError) break;
+    }
+    close(directoryFD);
+    free(buffer);
+
+    if (enumerationError) {
+        if (errorOut) *errorOut = enumerationError;
+        return nil;
+    }
+    return children;
+}
+
 bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_t *length_out) {
     if (!path || !data_out || !length_out) return false;
     NSURL *root = MarkerupURLForPath(path, YES);
@@ -224,23 +354,28 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
             [directories removeLastObject];
             [relativeDirectories removeLastObject];
             BOOL directoryScope = [directory startAccessingSecurityScopedResource];
-            NSArray<NSURL *> *children = nil;
-            // iOS has a known File Provider bug where the first enumeration
-            // of a remote SMB directory can report an empty result without
-            // an error. Apple DTS documents that an immediate second
-            // enumeration returns the actual contents (r.150542999).
-            for (NSUInteger attempt = 0; attempt < 3; attempt++) {
-                NSError *directoryError = nil;
-                children = [manager contentsOfDirectoryAtURL:directory
-                                      includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey, NSURLFileResourceTypeKey]
-                                                         options:NSDirectoryEnumerationSkipsHiddenFiles
-                                                           error:&directoryError];
-                if (!children || children.count > 0 || attempt == 2) {
-                    error = directoryError;
-                    break;
+            NSError *bulkError = nil;
+            NSArray<NSURL *> *children = MarkerupBulkDirectoryContents(directory, &bulkError);
+            // File Provider APIs remain the fallback for providers that do
+            // not support getattrlistbulk. Also consult them after an empty
+            // direct enumeration because Apple's r.150542999 can make the
+            // first File Provider result falsely empty.
+            if (!children || children.count == 0) {
+                NSArray<NSURL *> *providerChildren = nil;
+                NSError *providerError = nil;
+                for (NSUInteger attempt = 0; attempt < 3; attempt++) {
+                    providerError = nil;
+                    providerChildren = [manager contentsOfDirectoryAtURL:directory
+                                            includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey, NSURLFileResourceTypeKey]
+                                                               options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                                 error:&providerError];
+                    if (!providerChildren || providerChildren.count > 0 || attempt == 2) break;
+                    NSLog(@"Markerup: empty provider enumeration for %@; retrying (%lu)",
+                          directory, (unsigned long)(attempt + 1));
                 }
-                NSLog(@"Markerup: empty provider enumeration for %@; retrying (%lu)",
-                      directory, (unsigned long)(attempt + 1));
+                if (providerChildren.count > 0 || !children) children = providerChildren;
+                if (!children && providerError) error = providerError;
+                if (!children && !error) error = bulkError;
             }
             if (!children) {
                 if (directoryScope) [directory stopAccessingSecurityScopedResource];
