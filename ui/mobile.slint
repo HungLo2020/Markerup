@@ -308,7 +308,7 @@ export component MobileWindow inherits Window {
         if root.view-mode == 2 : ScrollView {
             vertical-stretch: 1; mouse-drag-pan-enabled: true;
             VerticalBox {
-                spacing: 16px; padding: 8px;
+                spacing: 8px; padding: 8px;
                 Text { text: root.current-path; font-size: 22px; font-weight: 700; color: #f2f2f7; width: root.width - 32px; }
                 for block[index] in root.preview-block-texts : VerticalBox {
                     width: root.width - 32px;

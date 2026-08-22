@@ -94,6 +94,8 @@ export component DesktopWindow inherits Window {
         }
 
         VerticalBox {
+            width: parent.width;
+            height: parent.height;
             padding: 10px;
             spacing: 7px;
 
@@ -190,6 +192,7 @@ export component DesktopWindow inherits Window {
 
                     VerticalBox {
                         width: 300px;
+                        vertical-stretch: 1;
                         spacing: 5px;
                         Text { text: "Workspace"; font-weight: 700; }
                         Text { text: root.selected-path == "" ? "Nothing selected" : root.selected-path; overflow: elide; }
@@ -232,6 +235,8 @@ export component DesktopWindow inherits Window {
                     Rectangle { width: 1px; background: #80808040; }
 
                     VerticalBox {
+                        horizontal-stretch: 1;
+                        vertical-stretch: 1;
                         spacing: 5px;
                         HorizontalBox {
                             Text { text: (root.dirty ? "● " : "") + root.current-path; font-weight: 700; overflow: elide; }
@@ -250,15 +255,17 @@ export component DesktopWindow inherits Window {
                         }
 
                         editor-preview-row := HorizontalBox {
-                            vertical-stretch: 1;
+                            height: max(120px, root.height - 160px);
                             spacing: 7px;
 
                             source-pane := VerticalBox {
                                 visible: root.view-mode != 2;
                                 horizontal-stretch: 1;
+                                vertical-stretch: 1;
+                                height: parent.height;
                                 Text { text: "Markdown source"; font-weight: 600; }
                                 editor := TextEdit {
-                                    vertical-stretch: 1;
+                                    height: max(60px, source-pane.height - 24px);
                                     text <=> root.editor-text;
                                     wrap: word-wrap;
                                     font-family: "monospace";
@@ -269,11 +276,13 @@ export component DesktopWindow inherits Window {
                             preview-pane := VerticalBox {
                                 visible: root.view-mode != 0;
                                 horizontal-stretch: 1;
+                                vertical-stretch: 1;
+                                height: parent.height;
                                 Text { text: "Preview"; font-weight: 600; }
                                 ScrollView {
-                                    vertical-stretch: 1;
+                                    height: max(60px, preview-pane.height - 24px);
                                     VerticalBox {
-                                        spacing: 16px;
+                                        spacing: 10px;
                                         padding: 8px;
 
                                         for block[index] in root.preview-block-texts : VerticalBox {
