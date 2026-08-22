@@ -28,6 +28,34 @@ component Button inherits Rectangle {
     }
 }
 
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked;
+    width: 42px;
+    height: 42px;
+    background: root.enabled ? #3a3a3c : #29292b;
+    border-radius: 9px;
+    opacity: root.enabled ? 1 : 0.55;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    Image {
+        source: root.icon;
+        width: 24px;
+        height: 24px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+        accessible-role: none;
+    }
+}
+
 component TreeRow inherits Rectangle {
     in property <string> text;
     callback activated;
@@ -182,8 +210,23 @@ export component MobileWindow inherits Window {
                 height: 42px;
                 Button { text: "‹"; enabled: root.can-go-back; clicked => { root.back-requested(); } }
                 Text { text: root.current-path; horizontal-stretch: 1; font-weight: 700; color: #f2f2f7; overflow: elide; vertical-alignment: center; }
-                Button { text: "Hide Keyboard"; clicked => { root.smb-keyboard-dismiss-requested(); } }
-                Button { text: root.dirty ? "Save" : "Reload"; enabled: root.workspace-open; clicked => { if root.dirty { root.save-requested(root.editor-text); } else { root.reload-requested(); } } }
+                IconButton {
+                    icon: @image-url("../resources/icon_preview_keyboard_hide.svg");
+                    label: "Hide Keyboard";
+                    clicked => { root.smb-keyboard-dismiss-requested(); }
+                }
+                if root.dirty : IconButton {
+                    icon: @image-url("../resources/icon_preview_save.svg");
+                    label: "Save";
+                    enabled: root.workspace-open;
+                    clicked => { root.save-requested(root.editor-text); }
+                }
+                if !root.dirty : IconButton {
+                    icon: @image-url("../resources/icon_preview_refresh.svg");
+                    label: "Reload";
+                    enabled: root.workspace-open;
+                    clicked => { root.reload-requested(); }
+                }
             }
             ScrollView {
                 vertical-stretch: 1; mouse-drag-pan-enabled: true;
