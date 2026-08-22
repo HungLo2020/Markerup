@@ -204,7 +204,12 @@ export component MobileWindow inherits Window {
             HorizontalBox {
                 height: 42px;
                 Text { text: "Notes"; horizontal-stretch: 1; font-size: 30px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
-                Button { text: "↻"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
+                IconButton {
+                    icon: @image-url("../resources/icon_preview_refresh.svg");
+                    label: "Refresh Workspace";
+                    enabled: root.workspace-open;
+                    clicked => { root.refresh-requested(); }
+                }
             }
             ScrollView {
                 vertical-stretch: 1; mouse-drag-pan-enabled: true;
@@ -248,12 +253,12 @@ export component MobileWindow inherits Window {
                     clicked => { root.reload-requested(); }
                 }
             }
-            ScrollView {
-                vertical-stretch: 1; mouse-drag-pan-enabled: true;
-                TextEdit {
-                    width: parent.width; height: max(parent.height, root.editor-content-height);
-                    text <=> root.editor-text; edited => { root.editor-changed(self.text); }
-                }
+            TextEdit {
+                vertical-stretch: 1;
+                width: parent.width;
+                height: parent.height;
+                text <=> root.editor-text;
+                edited => { root.editor-changed(self.text); }
             }
             HorizontalBox {
                 height: 42px;
