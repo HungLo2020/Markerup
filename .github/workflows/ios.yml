@@ -104,10 +104,12 @@ jobs:
       - name: Find built application
         id: app
         run: |
-          app_path="$(xcodebuild -project ios/Markerup.xcodeproj -scheme Markerup -configuration Release -sdk iphonesimulator -showBuildSettings | awk -F ' = ' '/TARGET_BUILD_DIR/ {dir=$2} /WRAPPER_NAME/ {name=$2} END {gsub(/^[[:space:]]+|[[:space:]]+$/, "", dir); gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); print dir "/" name}')"
+          app_path="$(find "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME/Library/Developer/Xcode/DerivedData" \
+            -type d -path '*/Release-iphonesimulator/*.app' -print -quit 2>/dev/null || true)"
           if [[ ! -d "$app_path" ]]; then
             echo "Could not find built app at: $app_path"
-            find "$RUNNER_TEMP" -name '*.app' -maxdepth 8 -print
+            find "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME/Library/Developer/Xcode/DerivedData" \
+              -type d -name '*.app' -print 2>/dev/null || true
             exit 1
           fi
           test -f "$app_path/PrivacyInfo.xcprivacy"
