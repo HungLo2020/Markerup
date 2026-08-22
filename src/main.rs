@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 mod app;
 mod handlers_editor;
 mod handlers_workspace;
