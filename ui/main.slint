@@ -223,7 +223,7 @@ export component DesktopWindow inherits Window {
                             text <=> root.search-query;
                             edited => { root.search-requested(self.text); }
                         }
-                        ListView {
+                        if root.search-results.length > 0 : ListView {
                             height: 150px;
                             for result[index] in root.search-results : Button {
                                 text: result;
@@ -393,8 +393,7 @@ export component DesktopWindow inherits Window {
                 }
             }
 
-            Rectangle {
-                visible: root.view-mode == 5;
+            if root.view-mode == 5 : Rectangle {
                 vertical-stretch: 1;
                 HorizontalBox {
                     Rectangle { horizontal-stretch: 1; }

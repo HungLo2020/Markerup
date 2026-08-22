@@ -52,10 +52,14 @@ pub fn preview_document(source: &str) -> PreviewDocument {
             position: None,
         })
     });
-    let blocks = match tree {
+    let parsed_blocks: Vec<PreviewBlock> = match tree {
         Node::Root(root) => root.children.iter().flat_map(block_from_node).collect(),
         node => block_from_node(&node).collect(),
     };
+    let blocks = parsed_blocks
+        .into_iter()
+        .flat_map(expand_task_list_block)
+        .collect();
     PreviewDocument { blocks }
 }
 
@@ -171,6 +175,50 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
         _ => None,
     };
     block.into_iter().collect::<Vec<_>>().into_iter()
+}
+
+fn expand_task_list_block(block: PreviewBlock) -> Vec<PreviewBlock> {
+    if !matches!(block.kind, PreviewBlockKind::List(_)) {
+        return vec![block];
+    }
+
+    let tasks = block
+        .markdown
+        .lines()
+        .map(parse_task_line)
+        .collect::<Option<Vec<_>>>();
+    let Some(tasks) = tasks.filter(|tasks| !tasks.is_empty()) else {
+        return vec![block];
+    };
+
+    tasks
+        .into_iter()
+        .map(|(checked, markdown)| PreviewBlock {
+            kind: PreviewBlockKind::Task(checked),
+            markdown,
+            image: None,
+        })
+        .collect()
+}
+
+fn parse_task_line(line: &str) -> Option<(bool, String)> {
+    let trimmed = line.trim_start();
+    for prefix in ["-", "*", "+"] {
+        for (marker, checked) in [("[ ] ", false), ("[x] ", true), ("[X] ", true)] {
+            if let Some(text) = trimmed.strip_prefix(&format!("{prefix} {marker}")) {
+                return Some((checked, text.to_string()));
+            }
+        }
+    }
+    let dot = trimmed.find(". ")?;
+    if dot > 0 && trimmed[..dot].chars().all(|ch| ch.is_ascii_digit()) {
+        for (marker, checked) in [("[ ] ", false), ("[x] ", true), ("[X] ", true)] {
+            if let Some(text) = trimmed[dot + 2..].strip_prefix(marker) {
+                return Some((checked, text.to_string()));
+            }
+        }
+    }
+    None
 }
 
 fn list_markdown(list: &markdown::mdast::List) -> String {
@@ -365,10 +413,12 @@ mod tests {
 
     #[test]
     fn parses_tasks_and_mermaid_without_line_scanning() {
-        let blocks = preview_blocks("- [x] done\n\n```mermaid\nflowchart TD\n A --> B\n```");
-        assert_eq!(blocks[0].kind, PreviewBlockKind::Task(true));
-        assert_eq!(blocks[1].kind, PreviewBlockKind::Mermaid);
-        assert!(blocks[1].markdown.contains("flowchart"));
+        let blocks =
+            preview_blocks("- [ ] todo\n- [x] done\n\n```mermaid\nflowchart TD\n A --> B\n```");
+        assert_eq!(blocks[0].kind, PreviewBlockKind::Task(false));
+        assert_eq!(blocks[1].kind, PreviewBlockKind::Task(true));
+        assert_eq!(blocks[2].kind, PreviewBlockKind::Mermaid);
+        assert!(blocks[2].markdown.contains("flowchart"));
     }
 
     #[test]
