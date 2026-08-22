@@ -86,6 +86,7 @@ export component DesktopWindow inherits Window {
     in-out property <bool> external-conflict: false;
     in-out property <bool> can-go-back: false;
     in-out property <bool> can-go-forward: false;
+    in-out property <bool> sidebar-visible: true;
     in-out property <int> view-mode: 1;
 
     callback choose-workspace-requested();
@@ -142,6 +143,11 @@ export component DesktopWindow inherits Window {
             HorizontalBox {
                 height: 36px;
                 spacing: 6px;
+                if root.view-mode < 5 : DesktopIconButton {
+                    icon: @image-url("../resources/icon_menu.svg");
+                    label: "Toggle workspace sidebar";
+                    clicked => { root.sidebar-visible = !root.sidebar-visible; }
+                }
                 Text {
                     text: root.workspace-open ? "Markerup  •  " + root.workspace-path : "Markerup  •  No workspace selected";
                     vertical-alignment: center;
@@ -180,6 +186,7 @@ export component DesktopWindow inherits Window {
             Rectangle { height: 1px; background: #80808040; }
 
             content := Rectangle {
+                horizontal-stretch: 1;
                 vertical-stretch: 1;
 
             Rectangle {
@@ -341,8 +348,10 @@ export component DesktopWindow inherits Window {
                     spacing: 8px;
 
                     VerticalBox {
-                        width: 300px;
+                        width: root.sidebar-visible ? 300px : 0px;
+                        horizontal-stretch: 0;
                         vertical-stretch: 1;
+                        visible: root.sidebar-visible;
                         spacing: 5px;
                         Text { text: "Workspace"; font-weight: 700; }
                         Text { text: root.selected-path == "" ? "Nothing selected" : root.selected-path; overflow: elide; }
@@ -382,7 +391,10 @@ export component DesktopWindow inherits Window {
                         }
                     }
 
-                    Rectangle { width: 1px; background: #80808040; }
+                    Rectangle {
+                        width: root.sidebar-visible ? 1px : 0px;
+                        background: #80808040;
+                    }
 
                     VerticalBox {
                         horizontal-stretch: 1;
