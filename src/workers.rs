@@ -1,4 +1,4 @@
-use crate::markdown::{ImageReference, PreviewBlock, image_references, preview_blocks};
+use crate::markdown::{ImageReference, PreviewBlock, preview_document};
 use crate::workspace::{EntryId, Workspace, WorkspaceEntry, WorkspaceRef};
 use merman::MermaidConfig;
 use merman::render::HeadlessRenderer;
@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub static LATEST_SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
+pub static LATEST_PREVIEW_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
@@ -333,37 +334,50 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
             .name("markerup-preview".into())
             .spawn(move || {
                 let mut mermaid_renderer: Option<HeadlessRenderer> = None;
-                while let Ok(request) = preview_rx.recv() {
+                while let Ok(mut request) = preview_rx.recv() {
+                    // Text edits can enqueue several previews while an older
+                    // parse or Mermaid render is still running. Only the
+                    // newest request can be displayed, so discard queued
+                    // superseded work before starting the next parse.
+                    while let Ok(next) = preview_rx.try_recv() {
+                        request = next;
+                    }
                     let WorkerRequest::Preview { generation, source } = request else {
                         continue;
                     };
                     let started = Instant::now();
-                    let blocks = preview_blocks(&source);
-                    let mermaid_svgs = blocks
-                        .iter()
-                        .enumerate()
-                        .map(|(index, block)| {
-                            if !matches!(block.kind, crate::markdown::PreviewBlockKind::Mermaid) {
-                                return None;
-                            }
-                            let diagram_id = format!("markerup-{generation}-{index}");
-                            let renderer =
-                                mermaid_renderer.get_or_insert_with(dark_mermaid_renderer);
-                            let normalized_source = normalize_mermaid_source(&block.markdown);
-                            Some(
-                                renderer
-                                    .render_svg_resvg_safe_sync_with_diagram_id(
-                                        &normalized_source,
-                                        &diagram_id,
-                                    )
-                                    .map_err(|error| error.to_string())
-                                    .and_then(|svg| {
-                                        svg.ok_or_else(|| "no Mermaid diagram found".to_string())
-                                    }),
-                            )
-                        })
-                        .collect();
-                    let images = image_references(&source);
+                    let document = preview_document(&source);
+                    let blocks = document.blocks;
+                    let images = document.images;
+                    let mut mermaid_svgs = Vec::with_capacity(blocks.len());
+                    let mut cancelled = false;
+                    for (index, block) in blocks.iter().enumerate() {
+                        if LATEST_PREVIEW_GENERATION.load(Ordering::Relaxed) != generation {
+                            cancelled = true;
+                            break;
+                        }
+                        if !matches!(block.kind, crate::markdown::PreviewBlockKind::Mermaid) {
+                            mermaid_svgs.push(None);
+                            continue;
+                        }
+                        let diagram_id = format!("markerup-{generation}-{index}");
+                        let renderer = mermaid_renderer.get_or_insert_with(dark_mermaid_renderer);
+                        let normalized_source = normalize_mermaid_source(&block.markdown);
+                        mermaid_svgs.push(Some(
+                            renderer
+                                .render_svg_resvg_safe_sync_with_diagram_id(
+                                    &normalized_source,
+                                    &diagram_id,
+                                )
+                                .map_err(|error| error.to_string())
+                                .and_then(|svg| {
+                                    svg.ok_or_else(|| "no Mermaid diagram found".to_string())
+                                }),
+                        ));
+                    }
+                    if cancelled {
+                        continue;
+                    }
                     let result = WorkerResult::Preview(PreviewResult {
                         generation,
                         source_hash: hash_text(&source),

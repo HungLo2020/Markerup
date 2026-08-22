@@ -30,6 +30,7 @@ pub struct PreviewBlock {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewDocument {
     pub blocks: Vec<PreviewBlock>,
+    pub images: Vec<ImageReference>,
 }
 
 fn parse_options() -> ParseOptions {
@@ -52,15 +53,19 @@ pub fn preview_document(source: &str) -> PreviewDocument {
             position: None,
         })
     });
-    let parsed_blocks: Vec<PreviewBlock> = match tree {
+    let mut definitions = std::collections::HashMap::new();
+    collect_definitions(&tree, &mut definitions);
+    let mut images = Vec::new();
+    collect_images(&tree, &definitions, &mut images);
+    let parsed_blocks: Vec<PreviewBlock> = match &tree {
         Node::Root(root) => root.children.iter().flat_map(block_from_node).collect(),
-        node => block_from_node(&node).collect(),
+        node => block_from_node(node).collect(),
     };
     let blocks = parsed_blocks
         .into_iter()
         .flat_map(expand_task_list_block)
         .collect();
-    PreviewDocument { blocks }
+    PreviewDocument { blocks, images }
 }
 
 pub fn preview_blocks(source: &str) -> Vec<PreviewBlock> {
@@ -175,6 +180,44 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
         _ => None,
     };
     block.into_iter().collect::<Vec<_>>().into_iter()
+}
+
+fn collect_definitions(node: &Node, definitions: &mut std::collections::HashMap<String, String>) {
+    if let Node::Definition(definition) = node {
+        definitions.insert(definition.identifier.clone(), definition.url.clone());
+    }
+    if let Some(children) = node.children() {
+        for child in children {
+            collect_definitions(child, definitions);
+        }
+    }
+}
+
+fn collect_images(
+    node: &Node,
+    definitions: &std::collections::HashMap<String, String>,
+    images: &mut Vec<ImageReference>,
+) {
+    match node {
+        Node::Image(image) => images.push(ImageReference {
+            alt: image.alt.clone(),
+            destination: image.url.clone(),
+        }),
+        Node::ImageReference(image) => {
+            if let Some(destination) = definitions.get(&image.identifier) {
+                images.push(ImageReference {
+                    alt: image.alt.clone(),
+                    destination: destination.clone(),
+                });
+            }
+        }
+        _ => {}
+    }
+    if let Some(children) = node.children() {
+        for child in children {
+            collect_images(child, definitions, images);
+        }
+    }
 }
 
 fn expand_task_list_block(block: PreviewBlock) -> Vec<PreviewBlock> {
@@ -313,27 +356,7 @@ fn escape_styled_text(value: &str) -> String {
 }
 
 pub fn image_references(source: &str) -> Vec<ImageReference> {
-    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-    let mut references = Vec::new();
-    let mut current = None;
-    for event in Parser::new_ext(source, Options::all()) {
-        match event {
-            Event::Start(Tag::Image { dest_url, .. }) => {
-                current = Some(ImageReference {
-                    alt: String::new(),
-                    destination: dest_url.into_string(),
-                })
-            }
-            Event::Text(text) if current.is_some() => current.as_mut().unwrap().alt.push_str(&text),
-            Event::End(TagEnd::Image) => {
-                if let Some(reference) = current.take() {
-                    references.push(reference)
-                }
-            }
-            _ => {}
-        }
-    }
-    references
+    preview_document(source).images
 }
 
 pub fn find_matches(source: &str, query: &str) -> Vec<(usize, usize)> {

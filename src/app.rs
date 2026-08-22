@@ -2,7 +2,8 @@ use crate::MainWindow;
 use crate::markdown::PreviewBlockKind;
 use crate::persistence::{SavedSmbConfig, clear_session, save_session};
 use crate::workers::{
-    LATEST_SEARCH_GENERATION, PreviewResult, ScanResult, SearchResult, hash_text,
+    LATEST_PREVIEW_GENERATION, LATEST_SEARCH_GENERATION, PreviewResult, ScanResult, SearchResult,
+    hash_text,
 };
 use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
@@ -139,6 +140,10 @@ impl AppState {
 
     pub fn schedule_preview(&mut self, source: String, delay: Duration) {
         self.preview_generation = self.preview_generation.wrapping_add(1);
+        LATEST_PREVIEW_GENERATION.store(
+            self.preview_generation,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.pending_preview = Some(PendingPreview {
             generation: self.preview_generation,
             due: Instant::now() + delay,

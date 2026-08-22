@@ -11,7 +11,6 @@ mobile-preview = []
 [dependencies]
 notify = "8.2.0"
 percent-encoding = "2.3.2"
-pulldown-cmark = "0.13.4"
 slint = "1.17.1"
 merman = { version = "0.7.0-alpha.1", default-features = false, features = ["render"] }
 smb2 = "0.18.1"

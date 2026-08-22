@@ -3424,7 +3424,6 @@ dependencies = [
  "merman",
  "notify",
  "percent-encoding",
- "pulldown-cmark 0.13.4",
  "rfd",
  "serde_json",
  "slint",
