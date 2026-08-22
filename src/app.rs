@@ -266,6 +266,7 @@ pub fn set_status(ui: &MainWindow, text: impl Into<SharedString>) {
 
 pub fn sync_flags(ui: &MainWindow, state: &AppState) {
     ui.set_workspace_open(state.workspace.is_open());
+    ui.set_workspace_is_smb(state.workspace.smb_config().is_some());
     ui.set_workspace_pinned(state.pinned);
     ui.set_workspace_path(state.workspace.display_name().into());
     ui.set_dirty(state.dirty);
