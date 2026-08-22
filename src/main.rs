@@ -221,6 +221,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     handlers_workspace::wire(&ui, state.clone());
     handlers_editor::wire(&ui, state.clone());
 
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_privacy_policy_requested(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                set_status(
+                    &ui,
+                    "Privacy policy placeholder: https://example.com/markerup/privacy",
+                );
+            }
+        });
+    }
+
     #[cfg(target_os = "ios")]
     {
         let ui_weak = ui.as_weak();

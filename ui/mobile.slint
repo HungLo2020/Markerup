@@ -89,6 +89,7 @@ export component MobileWindow inherits Window {
     in-out property <string> workspace-path: "";
     in-out property <string> selected-path: "";
     in-out property <string> current-path: "No note selected";
+    in-out property <string> app-version: "";
     in-out property <string> editor-text: "";
     in-out property <length> editor-content-height: 480px;
     in-out property <string> status: "Choose a folder to use as a Markerup workspace";
@@ -118,7 +119,7 @@ export component MobileWindow inherits Window {
     callback delete-requested(); callback search-requested(string); callback search-result-selected(int);
     callback find-next-requested(string); callback back-requested(); callback forward-requested();
     callback select-editor-range(int, int); callback diagnostic-requested(); callback copy-diagnostic-requested();
-    callback connect-smb-requested(); callback smb-keyboard-dismiss-requested();
+    callback connect-smb-requested(); callback smb-keyboard-dismiss-requested(); callback privacy-policy-requested();
     callback smb-connect-submitted(string, string, string, string, string); callback smb-connect-cancelled();
 
     VerticalBox {
@@ -128,12 +129,28 @@ export component MobileWindow inherits Window {
         if root.view-mode == 6 : VerticalBox {
             vertical-stretch: 1; spacing: 12px;
             HorizontalBox {
-                height: 42px;
+                height: 44px; alignment: center;
                 Text { text: "Settings"; horizontal-stretch: 1; font-size: 30px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
             }
             Text { text: "Manage Markerup"; color: #6c6c70; }
             Button { text: "Location"; clicked => { root.view-mode = 7; } }
             Button { text: "SMB Diagnostics"; clicked => { root.diagnostic-requested(); } }
+            Button { text: "About"; clicked => { root.view-mode = 8; } }
+            Rectangle { vertical-stretch: 1; background: transparent; }
+        }
+
+        if root.view-mode == 8 : VerticalBox {
+            vertical-stretch: 1; spacing: 12px;
+            HorizontalBox {
+                height: 44px; alignment: center;
+                Button { text: "Back"; width: 72px; height: 36px; horizontal-stretch: 0; clicked => { root.view-mode = 6; } }
+                Text { text: "About"; horizontal-stretch: 1; font-size: 24px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; horizontal-alignment: center; }
+                Rectangle { width: 72px; height: 36px; background: transparent; }
+            }
+            Text { text: "Markerup"; font-size: 28px; font-weight: 700; color: #f2f2f7; }
+            Text { text: "Version " + root.app-version; color: #aeaeb2; }
+            Button { text: "Privacy Policy"; clicked => { root.privacy-policy-requested(); } }
+            Text { text: "Privacy policy URL (placeholder): https://example.com/markerup/privacy"; color: #6c6c70; wrap: word-wrap; }
             Rectangle { vertical-stretch: 1; background: transparent; }
         }
 
@@ -202,7 +219,7 @@ export component MobileWindow inherits Window {
         if root.view-mode == 0 : VerticalBox {
             vertical-stretch: 1; spacing: 0px;
             HorizontalBox {
-                height: 36px;
+                height: 44px; spacing: 8px; alignment: center;
                 Text { text: "Notes"; horizontal-stretch: 1; font-size: 30px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
                 IconButton {
                     width: 36px;
@@ -234,7 +251,7 @@ export component MobileWindow inherits Window {
         if root.view-mode == 1 : VerticalBox {
             vertical-stretch: 1; spacing: 8px;
             HorizontalBox {
-                height: 36px;
+                height: 44px; spacing: 8px; alignment: center;
                 Button {
                     width: 36px;
                     height: 36px;

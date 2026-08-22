@@ -24,6 +24,7 @@ export component DesktopWindow inherits Window {
     in-out property <string> workspace-path: "";
     in-out property <string> selected-path: "";
     in-out property <string> current-path: "No note selected";
+    in-out property <string> app-version: "";
     in-out property <string> editor-text: "";
     in-out property <length> editor-content-height: 480px;
     in-out property <string> status: "Choose a folder to use as a Markerup workspace";
@@ -63,6 +64,7 @@ export component DesktopWindow inherits Window {
     callback search-result-selected(int);
     callback find-next-requested(string);
     callback back-requested();
+    callback privacy-policy-requested();
     callback forward-requested();
     callback select-editor-range(int, int);
     callback diagnostic-requested();
