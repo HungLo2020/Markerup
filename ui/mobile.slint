@@ -182,6 +182,7 @@ export component MobileWindow inherits Window {
                 height: 42px;
                 Button { text: "‹"; enabled: root.can-go-back; clicked => { root.back-requested(); } }
                 Text { text: root.current-path; horizontal-stretch: 1; font-weight: 700; color: #f2f2f7; overflow: elide; vertical-alignment: center; }
+                Button { text: "Hide Keyboard"; clicked => { root.smb-keyboard-dismiss-requested(); } }
                 Button { text: root.dirty ? "Save" : "Reload"; enabled: root.workspace-open; clicked => { if root.dirty { root.save-requested(root.editor-text); } else { root.reload-requested(); } } }
             }
             ScrollView {
