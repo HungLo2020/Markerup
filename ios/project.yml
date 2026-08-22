@@ -47,3 +47,9 @@ targets:
       - name: Build Rust executable
         script: ./build_for_ios_with_cargo.sh markerup
         basedOnDependencyAnalysis: false
+      - name: Include privacy manifest in app bundle
+        script: |
+          set -euo pipefail
+          cp "$SRCROOT/PrivacyInfo.xcprivacy" \
+            "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/PrivacyInfo.xcprivacy"
+        basedOnDependencyAnalysis: false
