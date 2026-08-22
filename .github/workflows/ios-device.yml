@@ -111,7 +111,7 @@ jobs:
           xcodebuild
           -project ios/Markerup.xcodeproj
           -scheme Markerup
-          -configuration Debug
+          -configuration Release
           -sdk iphoneos
           -archivePath "$RUNNER_TEMP/Markerup.xcarchive"
           DEVELOPMENT_TEAM="$IOS_TEAM_ID"

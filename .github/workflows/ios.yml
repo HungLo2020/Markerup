@@ -46,10 +46,14 @@ jobs:
         run: cargo test
 
       - name: Build device Rust target
-        run: cargo build --target aarch64-apple-ios --bin markerup
+        run: |
+          cargo build --target aarch64-apple-ios --bin markerup --release
+          test -x target/aarch64-apple-ios/release/markerup
 
       - name: Build simulator Rust target
-        run: cargo build --target aarch64-apple-ios-sim --bin markerup
+        run: |
+          cargo build --target aarch64-apple-ios-sim --bin markerup --release
+          test -x target/aarch64-apple-ios-sim/release/markerup
 
       - name: Select available iPhone simulator
         id: simulator
@@ -89,7 +93,7 @@ jobs:
           xcodebuild
           -project ios/Markerup.xcodeproj
           -scheme Markerup
-          -configuration Debug
+          -configuration Release
           -sdk iphonesimulator
           -destination 'id=${{ steps.simulator.outputs.device_id }}'
           PRODUCT_BUNDLE_IDENTIFIER=com.matt.markerup
@@ -100,7 +104,7 @@ jobs:
       - name: Find built application
         id: app
         run: |
-          app_path="$(xcodebuild -project ios/Markerup.xcodeproj -scheme Markerup -configuration Debug -sdk iphonesimulator -showBuildSettings | awk -F ' = ' '/TARGET_BUILD_DIR/ {dir=$2} /WRAPPER_NAME/ {name=$2} END {gsub(/^[[:space:]]+|[[:space:]]+$/, "", dir); gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); print dir "/" name}')"
+          app_path="$(xcodebuild -project ios/Markerup.xcodeproj -scheme Markerup -configuration Release -sdk iphonesimulator -showBuildSettings | awk -F ' = ' '/TARGET_BUILD_DIR/ {dir=$2} /WRAPPER_NAME/ {name=$2} END {gsub(/^[[:space:]]+|[[:space:]]+$/, "", dir); gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); print dir "/" name}')"
           if [[ ! -d "$app_path" ]]; then
             echo "Could not find built app at: $app_path"
             find "$RUNNER_TEMP" -name '*.app' -maxdepth 8 -print
@@ -132,7 +136,7 @@ jobs:
       - name: Upload iOS app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: markerup-ios-debug-simulator
+          name: markerup-ios-release-simulator
           path: ${{ steps.app.outputs.app_path }}
           if-no-files-found: error
 
