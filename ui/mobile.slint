@@ -202,9 +202,11 @@ export component MobileWindow inherits Window {
         if root.view-mode == 0 : VerticalBox {
             vertical-stretch: 1; spacing: 0px;
             HorizontalBox {
-                height: 42px;
+                height: 36px;
                 Text { text: "Notes"; horizontal-stretch: 1; font-size: 30px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
                 IconButton {
+                    width: 36px;
+                    height: 36px;
                     icon: @image-url("../resources/icon_preview_refresh.svg");
                     label: "Refresh Workspace";
                     enabled: root.workspace-open;
@@ -232,32 +234,51 @@ export component MobileWindow inherits Window {
         if root.view-mode == 1 : VerticalBox {
             vertical-stretch: 1; spacing: 8px;
             HorizontalBox {
-                height: 42px;
-                Button { text: "‹"; enabled: root.can-go-back; clicked => { root.back-requested(); } }
+                height: 36px;
+                Button {
+                    width: 36px;
+                    height: 36px;
+                    horizontal-stretch: 0;
+                    text: "‹";
+                    enabled: root.can-go-back;
+                    clicked => { root.back-requested(); }
+                }
                 Text { text: root.current-path; horizontal-stretch: 1; font-weight: 700; color: #f2f2f7; overflow: elide; vertical-alignment: center; }
                 IconButton {
+                    width: 36px;
+                    height: 36px;
                     icon: @image-url("../resources/icon_preview_keyboard_hide.svg");
                     label: "Hide Keyboard";
                     clicked => { root.smb-keyboard-dismiss-requested(); }
                 }
                 if root.dirty : IconButton {
+                    width: 36px;
+                    height: 36px;
                     icon: @image-url("../resources/icon_preview_save.svg");
                     label: "Save";
                     enabled: root.workspace-open;
                     clicked => { root.save-requested(root.editor-text); }
                 }
                 if !root.dirty : IconButton {
+                    width: 36px;
+                    height: 36px;
                     icon: @image-url("../resources/icon_preview_refresh.svg");
                     label: "Reload";
                     enabled: root.workspace-open;
                     clicked => { root.reload-requested(); }
                 }
             }
-            TextEdit {
+            Flickable {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
-                text <=> root.editor-text;
-                edited => { root.editor-changed(self.text); }
+                interactive: true;
+                viewport-height: root.editor-content-height;
+                TextEdit {
+                    width: parent.width;
+                    height: root.editor-content-height;
+                    text <=> root.editor-text;
+                    edited => { root.editor-changed(self.text); }
+                }
             }
             HorizontalBox {
                 height: 42px;
