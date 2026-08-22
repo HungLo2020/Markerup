@@ -58,13 +58,25 @@ component IconButton inherits Rectangle {
 
 component TreeRow inherits Rectangle {
     in property <string> text;
+    in property <int> entry-kind;
+    in property <int> depth;
     callback activated;
     height: 42px;
     horizontal-stretch: 1;
     background: #2c2c2e;
     TouchArea { clicked => { root.activated(); } }
+    Image {
+        visible: root.entry-kind > 0;
+        source: @image-url("../resources/icon_folder.svg");
+        x: root.depth * 18px + 8px;
+        y: (parent.height - 22px) / 2;
+        width: 22px;
+        height: 22px;
+        image-fit: contain;
+    }
     Text {
-        x: 12px; width: parent.width - 24px; height: parent.height;
+        x: root.depth * 18px + (root.entry-kind > 0 ? 38px : 12px);
+        width: parent.width - self.x - 12px; height: parent.height;
         text: root.text; font-size: 17px; color: #f2f2f7;
         vertical-alignment: center; horizontal-alignment: left; overflow: elide;
     }
@@ -76,6 +88,8 @@ export component MobileWindow inherits Window {
     background: #1c1c1e;
 
     in-out property <[string]> tree-labels;
+    in-out property <[int]> tree-entry-kinds;
+    in-out property <[int]> tree-entry-depths;
     in-out property <[string]> search-results;
     in-out property <[styled-text]> preview-block-texts;
     in-out property <[string]> preview-block-plain-texts;
@@ -244,7 +258,12 @@ export component MobileWindow inherits Window {
                     }
                     if root.search-query == "" : VerticalBox {
                         if !root.workspace-open : Button { text: "Choose Workspace"; clicked => { root.view-mode = 7; } }
-                        for label[index] in root.tree-labels : TreeRow { text: label; activated => { root.tree-selected(index); } }
+                        for label[index] in root.tree-labels : TreeRow {
+                            text: label;
+                            entry-kind: root.tree-entry-kinds[index];
+                            depth: root.tree-entry-depths[index];
+                            activated => { root.tree-selected(index); }
+                        }
                     }
                 }
             }

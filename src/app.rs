@@ -288,6 +288,8 @@ pub fn sync_flags(ui: &MainWindow, state: &AppState) {
 
 pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
     let mut labels = Vec::new();
+    let mut kinds = Vec::new();
+    let mut depths = Vec::new();
     let mut ids = Vec::new();
     // `entries` is emitted in depth-first order. Keep the currently visited
     // directory path instead of rebuilding every ancestor path for every row.
@@ -296,18 +298,13 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
         ancestors.truncate(entry.depth);
         let visible = ancestors.iter().all(|id| state.expanded.contains(id));
         if visible {
-            let indent = "    ".repeat(entry.depth);
-            let marker = if state.selected.as_deref() == Some(entry.id.as_str()) {
-                "• "
+            labels.push(entry.name.clone());
+            kinds.push(if entry.kind == EntryKind::Directory {
+                1
             } else {
-                "  "
-            };
-            let kind = match entry.kind {
-                EntryKind::Directory if state.expanded.contains(&entry.id) => "▼ ",
-                EntryKind::Directory => "▶ ",
-                EntryKind::File => "  ",
-            };
-            labels.push(format!("{marker}{indent}{kind}{}", entry.name));
+                0
+            });
+            depths.push(entry.depth as i32);
             ids.push(entry.id.clone());
         }
         if entry.kind == EntryKind::Directory {
@@ -322,6 +319,8 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
             .collect::<Vec<_>>(),
     );
     ui.set_tree_labels(ModelRc::from(state.tree_model.clone()));
+    ui.set_tree_entry_kinds(ModelRc::from(Rc::new(VecModel::from(kinds))));
+    ui.set_tree_entry_depths(ModelRc::from(Rc::new(VecModel::from(depths))));
     ui.set_selected_path(state.selected.clone().unwrap_or_default().into());
 }
 
@@ -676,6 +675,8 @@ pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
 pub fn reset_workspace_ui(ui: &MainWindow, state: &mut AppState) {
     ui.set_selected_path("".into());
     ui.set_tree_labels(string_model(Vec::new()));
+    ui.set_tree_entry_kinds(ModelRc::from(Rc::new(VecModel::from(Vec::<i32>::new()))));
+    ui.set_tree_entry_depths(ModelRc::from(Rc::new(VecModel::from(Vec::<i32>::new()))));
     ui.set_search_results(string_model(Vec::new()));
     ui.set_action_name("".into());
     ui.set_search_query("".into());
