@@ -68,10 +68,6 @@ pub fn preview_document(source: &str) -> PreviewDocument {
     PreviewDocument { blocks, images }
 }
 
-pub fn preview_blocks(source: &str) -> Vec<PreviewBlock> {
-    preview_document(source).blocks
-}
-
 fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
     let block = match node {
         Node::Heading(value) => Some(PreviewBlock {
@@ -355,10 +351,6 @@ fn escape_styled_text(value: &str) -> String {
     value.replace('<', "&lt;").replace('>', "&gt;")
 }
 
-pub fn image_references(source: &str) -> Vec<ImageReference> {
-    preview_document(source).images
-}
-
 pub fn find_matches(source: &str, query: &str) -> Vec<(usize, usize)> {
     if query.is_empty() {
         return Vec::new();
@@ -408,10 +400,7 @@ fn slugify(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PreviewBlockKind, find_heading_range, find_matches, image_references, preview_blocks,
-        preview_document,
-    };
+    use super::{PreviewBlockKind, find_heading_range, find_matches, preview_document};
 
     #[test]
     fn parses_commonmark_and_gfm_blocks() {
@@ -437,7 +426,8 @@ mod tests {
     #[test]
     fn parses_tasks_and_mermaid_without_line_scanning() {
         let blocks =
-            preview_blocks("- [ ] todo\n- [x] done\n\n```mermaid\nflowchart TD\n A --> B\n```");
+            preview_document("- [ ] todo\n- [x] done\n\n```mermaid\nflowchart TD\n A --> B\n```")
+                .blocks;
         assert_eq!(blocks[0].kind, PreviewBlockKind::Task(false));
         assert_eq!(blocks[1].kind, PreviewBlockKind::Task(true));
         assert_eq!(blocks[2].kind, PreviewBlockKind::Mermaid);
@@ -446,7 +436,7 @@ mod tests {
 
     #[test]
     fn collects_images_in_document_order() {
-        let refs = image_references("![one](one.png)\n\n![two](two.png)");
+        let refs = preview_document("![one](one.png)\n\n![two](two.png)").images;
         assert_eq!(
             refs.iter().map(|r| r.alt.as_str()).collect::<Vec<_>>(),
             vec!["one", "two"]
