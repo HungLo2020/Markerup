@@ -1,32 +1,51 @@
-import { Button, LineEdit, ListView, ScrollView, TextEdit, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { LineEdit, ListView, ScrollView, TextEdit, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+component Button inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 42px;
+    min-width: 42px;
+    horizontal-stretch: 1;
+    background: root.enabled ? #3a3a3c : #29292b;
+    border-radius: 9px;
+    opacity: root.enabled ? 1 : 0.55;
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    Text {
+        width: parent.width - 12px;
+        x: 6px;
+        height: parent.height;
+        text: root.text;
+        color: #f2f2f7;
+        font-size: 16px;
+        font-weight: 600;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+}
 
 component TreeRow inherits Rectangle {
     in property <string> text;
     callback activated;
     height: 42px;
     horizontal-stretch: 1;
-
-    TouchArea {
-        clicked => { root.activated(); }
-    }
+    background: #2c2c2e;
+    TouchArea { clicked => { root.activated(); } }
     Text {
-        x: 8px;
-        width: parent.width - 16px;
-        height: parent.height;
-        text: root.text;
-        font-size: 18px;
-        vertical-alignment: center;
-        horizontal-alignment: left;
-        overflow: elide;
+        x: 12px; width: parent.width - 24px; height: parent.height;
+        text: root.text; font-size: 17px; color: #f2f2f7;
+        vertical-alignment: center; horizontal-alignment: left; overflow: elide;
     }
 }
 
 export component MobileWindow inherits Window {
     title: root.dirty ? "Markerup *" : "Markerup";
-    preferred-width: 390px;
-    preferred-height: 844px;
-    min-width: 320px;
-    min-height: 480px;
+    preferred-width: 390px; preferred-height: 844px; min-width: 320px; min-height: 480px;
+    background: #1c1c1e;
 
     in-out property <[string]> tree-labels;
     in-out property <[string]> search-results;
@@ -63,167 +82,145 @@ export component MobileWindow inherits Window {
     in-out property <bool> can-go-forward: false;
     in-out property <int> view-mode: 0;
 
-    callback choose-workspace-requested();
-    callback pin-workspace-requested();
-    callback tree-selected(int);
-    callback save-requested(string);
-    callback overwrite-requested(string);
-    callback reload-requested();
-    callback editor-changed(string);
-    callback preview-link-clicked(string);
-    callback refresh-requested();
-    callback new-note-requested(string);
-    callback new-folder-requested(string);
-    callback rename-requested(string);
-    callback delete-requested();
-    callback search-requested(string);
-    callback search-result-selected(int);
-    callback find-next-requested(string);
-    callback back-requested();
-    callback forward-requested();
-    callback select-editor-range(int, int);
-    callback diagnostic-requested();
-    callback copy-diagnostic-requested();
-    callback connect-smb-requested();
-    callback smb-keyboard-dismiss-requested();
-    callback smb-connect-submitted(string, string, string, string, string);
-    callback smb-connect-cancelled();
+    callback choose-workspace-requested(); callback pin-workspace-requested(); callback tree-selected(int);
+    callback save-requested(string); callback overwrite-requested(string); callback reload-requested();
+    callback editor-changed(string); callback preview-link-clicked(string); callback refresh-requested();
+    callback new-note-requested(string); callback new-folder-requested(string); callback rename-requested(string);
+    callback delete-requested(); callback search-requested(string); callback search-result-selected(int);
+    callback find-next-requested(string); callback back-requested(); callback forward-requested();
+    callback select-editor-range(int, int); callback diagnostic-requested(); callback copy-diagnostic-requested();
+    callback connect-smb-requested(); callback smb-keyboard-dismiss-requested();
+    callback smb-connect-submitted(string, string, string, string, string); callback smb-connect-cancelled();
 
     VerticalBox {
-        // Keep controls out of the iOS status-bar and home-indicator regions.
-        padding: 12px;
-        padding-top: 52px;
-        padding-bottom: 30px;
-        spacing: 8px;
-
-        HorizontalBox {
-            height: 42px;
-            Button { text: "☰"; clicked => { root.view-mode = 3; } }
-            Text { text: root.workspace-open ? root.current-path : "Markerup"; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
-            Button { text: "↻"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
-            Button { text: "Save"; enabled: root.workspace-open && root.dirty && !root.external-conflict; clicked => { root.save-requested(root.editor-text); } }
-        }
-
-        Rectangle {
-            height: 30px;
-            background: #7d2b2b;
-            visible: root.external-conflict;
-            Text { text: "External change conflict"; color: white; vertical-alignment: center; horizontal-alignment: center; }
-        }
+        // Keep the shell inside the iPhone safe areas.
+        padding: 16px; padding-top: 52px; padding-bottom: 30px; spacing: 0px;
 
         if root.view-mode == 3 : VerticalBox {
-            vertical-stretch: 1;
-            Text { text: root.workspace-open ? root.workspace-path : "No workspace selected"; wrap: word-wrap; }
-            Button { text: "Choose Workspace"; clicked => { root.choose-workspace-requested(); } }
-            Button { text: root.workspace-pinned ? "Unpin Workspace" : "Pin Workspace"; enabled: root.workspace-open; clicked => { root.pin-workspace-requested(); } }
-            LineEdit { text <=> root.search-query; edited => { root.search-requested(self.text); } }
-            ListView {
-                vertical-stretch: 1;
-                mouse-drag-pan-enabled: true;
-                for result[index] in root.search-results : TreeRow { text: result; activated => { root.search-result-selected(index); root.view-mode = 0; } }
+            vertical-stretch: 1; spacing: 12px;
+            Text { text: "Browse"; font-size: 30px; font-weight: 700; color: #f2f2f7; }
+            Text { text: root.workspace-open ? root.workspace-path : "No workspace selected"; color: #6c6c70; overflow: elide; }
+            HorizontalBox {
+                height: 42px; spacing: 8px;
+                Button { text: "Choose Workspace"; clicked => { root.choose-workspace-requested(); } }
+                Button { text: root.workspace-pinned ? "Unpin" : "Pin"; enabled: root.workspace-open; clicked => { root.pin-workspace-requested(); } }
             }
-            Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
-            Button { text: "SMB Diagnostics"; clicked => { root.diagnostic-requested(); } }
-            Button { text: "Connect to SMB"; clicked => { root.connect-smb-requested(); } }
+            LineEdit { text <=> root.search-query; placeholder-text: "Search notes"; edited => { root.search-requested(self.text); } }
+            Text { text: "Search Results"; visible: root.search-query != ""; font-weight: 700; color: #f2f2f7; }
+            ListView {
+                vertical-stretch: 1; mouse-drag-pan-enabled: true;
+                for result[index] in root.search-results : TreeRow {
+                    text: result; activated => { root.search-result-selected(index); root.view-mode = 0; }
+                }
+            }
+            HorizontalBox {
+                height: 42px; spacing: 8px;
+                Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
+                Button { text: "Connect to SMB"; clicked => { root.connect-smb-requested(); } }
+                Button { text: "Diagnostics"; clicked => { root.diagnostic-requested(); } }
+            }
         }
 
         if root.view-mode == 5 : VerticalBox {
-            vertical-stretch: 1;
+            vertical-stretch: 1; spacing: 10px;
+            HorizontalBox {
+                height: 42px;
+                Button { text: "Cancel"; clicked => { root.smb-connect-cancelled(); } }
+                Text { text: "Connect to SMB"; horizontal-stretch: 1; font-size: 20px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; horizontal-alignment: center; }
+                Button { text: "Done"; clicked => { root.smb-keyboard-dismiss-requested(); } }
+            }
+            Text { text: "Connect directly to an SMB2/3 server."; color: #6c6c70; }
             ScrollView {
-                vertical-stretch: 1;
-                mouse-drag-pan-enabled: true;
+                vertical-stretch: 1; mouse-drag-pan-enabled: true;
                 VerticalBox {
-                    spacing: 8px;
-                    Text { text: "Connect to SMB"; font-weight: 700; }
-                    Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
-                    // This stays above the keyboard so the user can always
-                    // dismiss it before reaching the action buttons.
-                    Button { text: "Done / Hide Keyboard"; clicked => { root.smb-keyboard-dismiss-requested(); } }
+                    spacing: 10px;
+                    Text { text: "Server"; font-weight: 700; color: #f2f2f7; }
                     LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
+                    Text { text: "Share"; font-weight: 700; color: #f2f2f7; }
                     LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
+                    Text { text: "Credentials"; font-weight: 700; color: #f2f2f7; }
                     LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }
                     LineEdit { text <=> root.smb-password; placeholder-text: "Password"; input-type: password; }
-                    LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share (optional)"; }
+                    Text { text: "Folder (optional)"; font-weight: 700; color: #f2f2f7; }
+                    LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share"; }
                     Button { text: "Connect"; clicked => { root.smb-connect-submitted(root.smb-server, root.smb-share, root.smb-username, root.smb-password, root.smb-remote-path); } }
-                    Button { text: "Cancel"; clicked => { root.smb-connect-cancelled(); } }
                 }
             }
         }
 
         if root.view-mode == 4 : VerticalBox {
-            vertical-stretch: 1;
-            Text { text: "SMB Diagnostics"; font-weight: 700; }
-            Text { text: "Select the SMB workspace, wait for loading to finish, then open this screen and photograph the report."; wrap: word-wrap; }
-            ScrollView {
-                vertical-stretch: 1;
-                mouse-drag-pan-enabled: true;
-                Text { text: root.diagnostic-report; wrap: word-wrap; font-family: "monospace"; }
+            vertical-stretch: 1; spacing: 10px;
+            HorizontalBox {
+                height: 42px;
+                Button { text: "Back"; clicked => { root.view-mode = 3; } }
+                Text { text: "SMB Diagnostics"; horizontal-stretch: 1; font-size: 20px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; horizontal-alignment: center; }
+                Button { text: "Copy"; clicked => { root.copy-diagnostic-requested(); } }
             }
-            Button { text: "Copy Report"; clicked => { root.copy-diagnostic-requested(); } }
-            Button { text: "Back"; clicked => { root.view-mode = 3; } }
+            ScrollView {
+                vertical-stretch: 1; mouse-drag-pan-enabled: true;
+                Text { text: root.diagnostic-report; wrap: word-wrap; font-family: "monospace"; color: #f2f2f7; }
+            }
         }
 
         if root.view-mode == 0 : VerticalBox {
-            vertical-stretch: 1;
-            Text { text: root.workspace-open ? "Notes" : "Choose a workspace to begin"; font-weight: 700; }
+            vertical-stretch: 1; spacing: 10px;
+            HorizontalBox {
+                height: 42px;
+                Text { text: "Notes"; horizontal-stretch: 1; font-size: 30px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
+                Button { text: "↻"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
+            }
             if !root.workspace-open : Button { text: "Choose Workspace"; clicked => { root.choose-workspace-requested(); } }
             ListView {
-                vertical-stretch: 1;
-                mouse-drag-pan-enabled: true;
+                vertical-stretch: 1; mouse-drag-pan-enabled: true;
                 for label[index] in root.tree-labels : TreeRow { text: label; activated => { root.tree-selected(index); } }
             }
         }
 
         if root.view-mode == 1 : VerticalBox {
-            vertical-stretch: 1;
-            Text { text: root.current-path; font-weight: 700; overflow: elide; }
-            // TextEdit's built-in Cupertino scroll view does not enable
-            // finger panning. Put it in a touch-enabled outer scroll view and
-            // give the editor an intrinsic content-sized surface so long
-            // notes can be dragged on iOS as well as edited.
+            vertical-stretch: 1; spacing: 8px;
+            HorizontalBox {
+                height: 42px;
+                Button { text: "‹"; enabled: root.can-go-back; clicked => { root.back-requested(); } }
+                Text { text: root.current-path; horizontal-stretch: 1; font-weight: 700; color: #f2f2f7; overflow: elide; vertical-alignment: center; }
+                Button { text: root.dirty ? "Save" : "Reload"; enabled: root.workspace-open; clicked => { if root.dirty { root.save-requested(root.editor-text); } else { root.reload-requested(); } } }
+            }
             ScrollView {
-                vertical-stretch: 1;
-                mouse-drag-pan-enabled: true;
+                vertical-stretch: 1; mouse-drag-pan-enabled: true;
                 TextEdit {
-                    width: parent.width;
-                    height: max(parent.height, root.editor-content-height);
-                    text <=> root.editor-text;
-                    edited => { root.editor-changed(self.text); }
+                    width: parent.width; height: max(parent.height, root.editor-content-height);
+                    text <=> root.editor-text; edited => { root.editor-changed(self.text); }
                 }
             }
             HorizontalBox {
+                height: 42px;
+                LineEdit { text <=> root.find-query; placeholder-text: "Find in note"; horizontal-stretch: 1; }
                 Button { text: "Find"; clicked => { root.find-next-requested(root.find-query); } }
-                LineEdit { text <=> root.find-query; horizontal-stretch: 1; }
-                Button { text: "Reload"; enabled: root.workspace-open && root.current-path != "No note selected"; clicked => { root.reload-requested(); } }
             }
         }
 
         if root.view-mode == 2 : ScrollView {
-            vertical-stretch: 1;
-            mouse-drag-pan-enabled: true;
+            vertical-stretch: 1; mouse-drag-pan-enabled: true;
             VerticalBox {
+                spacing: 12px;
+                Text { text: root.current-path; font-size: 22px; font-weight: 700; color: #f2f2f7; }
                 for block[index] in root.preview-block-texts : VerticalBox {
                     if root.preview-block-kinds[index] == 3 : Image {
-                        source: root.preview-block-mermaid-images[index];
-                        width: root.width - 24px;
-                        height: 260px;
-                        image-fit: contain;
+                        source: root.preview-block-mermaid-images[index]; width: root.width - 32px; height: 260px; image-fit: contain;
                     }
                     if root.preview-block-kinds[index] != 3 : StyledText {
-                        text: block;
-                        width: root.width - 24px;
-                        link-clicked(link) => { root.preview-link-clicked(link); }
+                        text: block; width: root.width - 32px; link-clicked(link) => { root.preview-link-clicked(link); }
                     }
                 }
             }
         }
 
-        Text { text: root.status; wrap: word-wrap; max-height: 42px; }
+        Text { text: root.status; color: root.external-conflict ? #a22b2b : #6c6c70; wrap: word-wrap; max-height: 38px; }
         HorizontalBox {
-            height: 46px;
-            Button { text: "Notes"; clicked => { root.view-mode = 0; } }
-            Button { text: "Edit"; enabled: root.workspace-open; clicked => { root.view-mode = 1; } }
-            Button { text: "Preview"; enabled: root.workspace-open; clicked => { root.view-mode = 2; } }
+            height: 50px; spacing: 6px;
+            Button { text: "Notes"; horizontal-stretch: 1; clicked => { root.view-mode = 0; } }
+            Button { text: "Edit"; enabled: root.workspace-open; horizontal-stretch: 1; clicked => { root.view-mode = 1; } }
+            Button { text: "Preview"; enabled: root.workspace-open; horizontal-stretch: 1; clicked => { root.view-mode = 2; } }
+            Button { text: "Browse"; horizontal-stretch: 1; clicked => { root.view-mode = 3; } }
         }
     }
 }
