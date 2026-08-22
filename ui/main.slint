@@ -463,6 +463,8 @@ export component DesktopWindow inherits Window {
                                         padding: 8px;
 
                                         for block[index] in root.preview-block-texts : VerticalBox {
+                                            padding: 0px;
+                                            spacing: 0px;
                                             if root.preview-block-kinds[index] == 1 : Text {
                                                 width: preview-pane.width - 30px;
                                                 text: root.preview-block-plain-texts[index];
@@ -497,6 +499,8 @@ export component DesktopWindow inherits Window {
 
                                             if root.preview-block-kinds[index] == 3 : VerticalBox {
                                                 width: preview-pane.width - 30px;
+                                                padding: 0px;
+                                                spacing: 0px;
                                                 if root.preview-block-mermaid-errors[index] != "" : Text {
                                                     text: root.preview-block-mermaid-errors[index];
                                                     color: #d06060;
@@ -523,6 +527,7 @@ export component DesktopWindow inherits Window {
                                                 background: #252b35;
                                                 VerticalBox {
                                                     padding: 12px;
+                                                    spacing: 0px;
                                                     Text {
                                                         text: root.preview-block-plain-texts[index];
                                                         wrap: word-wrap;
@@ -539,6 +544,7 @@ export component DesktopWindow inherits Window {
                                                 border-width: 3px;
                                                 VerticalBox {
                                                     padding: 10px;
+                                                    spacing: 0px;
                                                     StyledText {
                                                         text: block;
                                                         default-color: #d1d5db;
@@ -553,6 +559,8 @@ export component DesktopWindow inherits Window {
                                             }
                                             if root.preview-block-kinds[index] == 8 : VerticalBox {
                                                 width: preview-pane.width - 30px;
+                                                padding: 0px;
+                                                spacing: 0px;
                                                 Image {
                                                     width: preview-pane.width - 30px;
                                                     height: min(360px, max(80px, self.preferred-height));

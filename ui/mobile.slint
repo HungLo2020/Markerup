@@ -332,6 +332,8 @@ export component MobileWindow inherits Window {
                 Text { text: root.current-path; font-size: 22px; font-weight: 700; color: #f2f2f7; width: root.width - 32px; }
                 for block[index] in root.preview-block-texts : VerticalBox {
                     width: root.width - 32px;
+                    padding: 0px;
+                    spacing: 0px;
                     if root.preview-block-kinds[index] == 1 : Text {
                         text: root.preview-block-plain-texts[index]; width: root.width - 32px;
                         wrap: word-wrap; color: #f2f2f7; font-weight: 700;
@@ -343,6 +345,8 @@ export component MobileWindow inherits Window {
                     }
                     if root.preview-block-kinds[index] == 3 : VerticalBox {
                         width: root.width - 32px;
+                        padding: 0px;
+                        spacing: 0px;
                         if root.preview-block-mermaid-errors[index] != "" : Text {
                             text: root.preview-block-mermaid-errors[index]; color: #ff8b8b; wrap: word-wrap;
                         }
@@ -373,7 +377,7 @@ export component MobileWindow inherits Window {
                         width: root.width - 32px; background: #242832;
                         border-color: #64748b; border-width: 3px;
                         VerticalBox {
-                            padding: 10px;
+                            padding: 10px; spacing: 0px;
                             StyledText { text: block; default-color: #d1d5db; default-font-size: 16px; }
                         }
                     }
@@ -382,6 +386,8 @@ export component MobileWindow inherits Window {
                     }
                     if root.preview-block-kinds[index] == 8 : VerticalBox {
                         width: root.width - 32px;
+                        padding: 0px;
+                        spacing: 0px;
                         Image { source: root.preview-block-images[index]; width: root.width - 32px; height: min(360px, max(80px, self.preferred-height)); image-fit: contain; }
                         Text { text: root.preview-block-plain-texts[index]; color: #9ca3af; wrap: word-wrap; }
                     }
