@@ -15,7 +15,7 @@ targets:
       properties:
         CFBundleDisplayName: Markerup
         CFBundleName: Markerup
-        CFBundleShortVersionString: "0.3.0"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleIconName: AppIcon
         # Markerup does not implement non-exempt cryptography. This lets

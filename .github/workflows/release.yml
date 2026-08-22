@@ -61,6 +61,8 @@ jobs:
           toolchain: stable
 
       - name: Build Debian package
+        env:
+          MARKERUP_BUILD_NUMBER: ${{ github.run_id }}
         run: |
           set -euo pipefail
           cargo build --locked --release

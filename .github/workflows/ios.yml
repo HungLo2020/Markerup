@@ -42,6 +42,13 @@ jobs:
       - name: Install XcodeGen and icon tooling
         run: brew install xcodegen librsvg imagemagick
 
+      - name: Read application version
+        id: version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "markerup") | .version')"
+          test -n "$version"
+          echo "marketing_version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Run Rust tests
         run: cargo test
 
@@ -97,6 +104,8 @@ jobs:
           -sdk iphonesimulator
           -destination 'id=${{ steps.simulator.outputs.device_id }}'
           PRODUCT_BUNDLE_IDENTIFIER=com.matt.markerup
+          MARKETING_VERSION=${{ steps.version.outputs.marketing_version }}
+          MARKERUP_BUILD_NUMBER=${{ github.run_id }}
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
           build

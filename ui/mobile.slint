@@ -91,6 +91,7 @@ export component MobileWindow inherits Window {
     in-out property <string> selected-path: "";
     in-out property <string> current-path: "No note selected";
     in-out property <string> app-version: "";
+    in-out property <string> app-build-number: "development";
     in-out property <string> editor-text: "";
     in-out property <length> editor-content-height: 480px;
     in-out property <string> status: "Choose a folder to use as a Markerup workspace";
@@ -149,7 +150,7 @@ export component MobileWindow inherits Window {
                 Rectangle { width: 72px; height: 36px; background: transparent; }
             }
             Text { text: "Markerup"; font-size: 28px; font-weight: 700; color: #f2f2f7; }
-            Text { text: "Version " + root.app-version; color: #aeaeb2; }
+            Text { text: "Version " + root.app-version + " (build " + root.app-build-number + ")"; color: #aeaeb2; }
             Button { text: "Privacy Policy"; clicked => { root.privacy-policy-requested(); } }
             Text { text: "https://hunglo2020.github.io/Markerup/privacy-policy/"; color: #6c6c70; wrap: word-wrap; }
             Rectangle { vertical-stretch: 1; background: transparent; }

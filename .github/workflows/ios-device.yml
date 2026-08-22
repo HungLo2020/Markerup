@@ -46,6 +46,13 @@ jobs:
       - name: Install XcodeGen and icon tooling
         run: brew install xcodegen librsvg imagemagick
 
+      - name: Read application version
+        id: version
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "markerup") | .version')"
+          test -n "$version"
+          echo "marketing_version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Validate signing configuration
         env:
           IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
@@ -117,7 +124,8 @@ jobs:
           DEVELOPMENT_TEAM="$IOS_TEAM_ID"
           PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID"
           CURRENT_PROJECT_VERSION="${{ github.run_id }}"
-          MARKETING_VERSION="0.3.0"
+          MARKETING_VERSION="${{ steps.version.outputs.marketing_version }}"
+          MARKERUP_BUILD_NUMBER="${{ github.run_id }}"
           CODE_SIGN_STYLE=Manual
           CODE_SIGN_IDENTITY="Apple Distribution"
           PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME"

@@ -271,6 +271,11 @@ pub fn set_status(ui: &MainWindow, text: impl Into<SharedString>) {
 
 pub fn sync_flags(ui: &MainWindow, state: &AppState) {
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
+    ui.set_app_build_number(
+        option_env!("MARKERUP_BUILD_NUMBER")
+            .unwrap_or("development")
+            .into(),
+    );
     ui.set_workspace_open(state.workspace.is_open());
     ui.set_workspace_is_smb(state.workspace.smb_config().is_some());
     ui.set_workspace_pinned(state.pinned);
