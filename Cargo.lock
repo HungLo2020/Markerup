@@ -3430,6 +3430,7 @@ dependencies = [
  "slint-build",
  "smb2",
  "tokio",
+ "webbrowser",
 ]
 
 [[package]]

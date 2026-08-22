@@ -45,6 +45,7 @@ const UI_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const ACTIVE_POLL_WINDOW: Duration = Duration::from_secs(1);
 const FULL_RECONCILE_INTERVAL_TICKS: u16 = 600; // 30 seconds at 50 ms/tick.
+const PRIVACY_POLICY_URL: &str = "https://hunglo2020.github.io/Markerup/privacy-policy/";
 
 type PollCallback = Rc<RefCell<Option<Box<dyn FnMut()>>>>;
 
@@ -225,10 +226,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         ui.on_privacy_policy_requested(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                set_status(
-                    &ui,
-                    "Privacy policy placeholder: https://example.com/markerup/privacy",
-                );
+                match webbrowser::open(PRIVACY_POLICY_URL) {
+                    Ok(()) => set_status(&ui, "Opened the Markerup privacy policy."),
+                    Err(error) => {
+                        set_status(&ui, format!("Could not open the privacy policy: {error}"))
+                    }
+                }
             }
         });
     }
