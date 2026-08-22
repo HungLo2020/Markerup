@@ -3,6 +3,7 @@ use crate::app::{
     AppState, PREVIEW_DEBOUNCE, open_file, refresh_workspace, reload_current, save_current,
     set_status, string_model, sync_flags,
 };
+use crate::markdown::toggle_task_at_offset;
 use crate::markdown::{find_heading_range, find_matches};
 use crate::workspace::Workspace;
 use slint::ComponentHandle;
@@ -17,6 +18,32 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
             if let Some(ui) = ui_weak.upgrade() {
                 save_current(&ui, &mut state.borrow_mut(), &contents, false);
             }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let state = state.clone();
+        ui.on_preview_task_toggled(move |index| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let mut state = state.borrow_mut();
+            if state.current_file.is_none() || state.external_conflict {
+                return;
+            }
+            let source = ui.get_editor_text().to_string();
+            if index < 0 {
+                set_status(&ui, "Could not locate the Markdown task");
+                return;
+            }
+            let Some(updated) = toggle_task_at_offset(&source, index as usize) else {
+                set_status(&ui, "Could not locate the Markdown task");
+                return;
+            };
+            ui.set_editor_text(updated.clone().into());
+            state.dirty = true;
+            state.schedule_preview(updated, PREVIEW_DEBOUNCE);
+            sync_flags(&ui, &state);
+            set_status(&ui, "Task changed (not saved)");
         });
     }
 

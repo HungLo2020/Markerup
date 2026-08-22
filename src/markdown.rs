@@ -25,6 +25,7 @@ pub struct PreviewBlock {
     pub kind: PreviewBlockKind,
     pub markdown: String,
     pub image: Option<ImageReference>,
+    pub task_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +75,7 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
             kind: PreviewBlockKind::Heading(value.depth),
             markdown: inline_markdown(&value.children),
             image: None,
+            task_offset: None,
         }),
         Node::Paragraph(value)
             if value.children.len() == 1 && matches!(value.children[0], Node::Image(_)) =>
@@ -88,12 +90,14 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                     alt: image.alt.clone(),
                     destination: image.url.clone(),
                 }),
+                task_offset: None,
             })
         }
         Node::Paragraph(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Body,
             markdown: inline_markdown(&value.children),
             image: None,
+            task_offset: None,
         }),
         Node::Code(value)
             if value
@@ -105,12 +109,14 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                 kind: PreviewBlockKind::Mermaid,
                 markdown: value.value.clone(),
                 image: None,
+                task_offset: None,
             })
         }
         Node::Code(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Code,
             markdown: value.value.clone(),
             image: None,
+            task_offset: None,
         }),
         Node::List(value) => {
             let all_tasks = value
@@ -123,6 +129,7 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                         kind: PreviewBlockKind::Task(item.checked.unwrap_or(false)),
                         markdown: item.children.iter().map(node_markdown).collect(),
                         image: None,
+                        task_offset: item.position.as_ref().map(|position| position.start.offset),
                     })
                 } else {
                     None
@@ -132,6 +139,7 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                     kind: PreviewBlockKind::List(value.ordered),
                     markdown: list_markdown(value),
                     image: None,
+                    task_offset: None,
                 })
             }
         }
@@ -144,11 +152,13 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                 .collect::<Vec<_>>()
                 .join("\n"),
             image: None,
+            task_offset: None,
         }),
         Node::ThematicBreak(_) => Some(PreviewBlock {
             kind: PreviewBlockKind::Rule,
             markdown: String::new(),
             image: None,
+            task_offset: None,
         }),
         Node::Image(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Image,
@@ -157,21 +167,25 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                 alt: value.alt.clone(),
                 destination: value.url.clone(),
             }),
+            task_offset: None,
         }),
         Node::Table(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Table,
             markdown: table_markdown(value),
             image: None,
+            task_offset: None,
         }),
         Node::Yaml(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Code,
             markdown: value.value.clone(),
             image: None,
+            task_offset: None,
         }),
         Node::Toml(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Code,
             markdown: value.value.clone(),
             image: None,
+            task_offset: None,
         }),
         _ => None,
     };
@@ -236,6 +250,7 @@ fn expand_task_list_block(block: PreviewBlock) -> Vec<PreviewBlock> {
             kind: PreviewBlockKind::Task(checked),
             markdown,
             image: None,
+            task_offset: block.task_offset,
         })
         .collect()
 }
@@ -258,6 +273,36 @@ fn parse_task_line(line: &str) -> Option<(bool, String)> {
         }
     }
     None
+}
+
+/// Toggle the task marker for the zero-based task item in source order.
+/// Fenced code blocks are ignored so examples containing task syntax remain code.
+pub fn toggle_task_at_offset(source: &str, task_offset: usize) -> Option<String> {
+    if task_offset >= source.len() {
+        return None;
+    }
+    let line_start = source[..task_offset]
+        .rfind('\n')
+        .map_or(0, |offset| offset + 1);
+    let line_end = source[task_offset..]
+        .find('\n')
+        .map_or(source.len(), |offset| task_offset + offset);
+    let line = &source[line_start..line_end];
+    parse_task_line(line)?;
+    let trimmed = line.trim_start();
+    let leading = line.len() - trimmed.len();
+    let (marker_offset, marker) = ["[ ]", "[x]", "[X]"]
+        .iter()
+        .find_map(|candidate| trimmed.find(candidate).map(|offset| (offset, *candidate)))?;
+    let absolute = line_start + leading + marker_offset;
+    let replacement = if marker == "[ ]" { "[x]" } else { "[ ]" };
+    Some(format!(
+        "{}{}{}{}",
+        &source[..absolute],
+        replacement,
+        &source[absolute + marker.len()..line_end],
+        &source[line_end..]
+    ))
 }
 
 fn list_markdown(list: &markdown::mdast::List) -> String {
@@ -400,7 +445,9 @@ fn slugify(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewBlockKind, find_heading_range, find_matches, preview_document};
+    use super::{
+        PreviewBlockKind, find_heading_range, find_matches, preview_document, toggle_task_at_offset,
+    };
 
     #[test]
     fn parses_commonmark_and_gfm_blocks() {
@@ -449,6 +496,19 @@ mod tests {
         assert_eq!(
             find_heading_range("# Hello World\n", "#hello-world"),
             Some((2, 13))
+        );
+    }
+
+    #[test]
+    fn toggles_tasks_without_modifying_fenced_examples() {
+        let source = "- [ ] first\n\n```markdown\n- [ ] example\n```\n\n- [x] second\n";
+        assert_eq!(
+            toggle_task_at_offset(source, 0).as_deref(),
+            Some("- [x] first\n\n```markdown\n- [ ] example\n```\n\n- [x] second\n")
+        );
+        assert_eq!(
+            toggle_task_at_offset(source, source.rfind("- [x]").unwrap()).as_deref(),
+            Some("- [ ] first\n\n```markdown\n- [ ] example\n```\n\n- [ ] second\n")
         );
     }
 }

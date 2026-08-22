@@ -96,6 +96,7 @@ export component MobileWindow inherits Window {
     in-out property <[int]> preview-block-kinds;
     in-out property <[int]> preview-heading-levels;
     in-out property <[bool]> preview-task-checked;
+    in-out property <[int]> preview-task-offsets;
     in-out property <[image]> preview-block-mermaid-images;
     in-out property <[string]> preview-block-mermaid-errors;
     in-out property <[image]> preview-block-images;
@@ -130,7 +131,7 @@ export component MobileWindow inherits Window {
 
     callback choose-workspace-requested(); callback pin-workspace-requested(); callback tree-selected(int);
     callback save-requested(string); callback overwrite-requested(string); callback reload-requested();
-    callback editor-changed(string); callback preview-link-clicked(string); callback refresh-requested();
+    callback editor-changed(string); callback preview-link-clicked(string); callback preview-task-toggled(int); callback refresh-requested();
     callback new-note-requested(string); callback new-folder-requested(string); callback rename-requested(string);
     callback delete-requested(); callback search-requested(string); callback search-result-selected(int);
     callback find-next-requested(string); callback back-requested(); callback forward-requested();
@@ -357,7 +358,7 @@ export component MobileWindow inherits Window {
                     }
                     if root.preview-block-kinds[index] == 2 : HorizontalBox {
                         width: root.width - 32px; spacing: 10px;
-                        CheckBox { width: 24px; checked: root.preview-task-checked[index]; enabled: false; }
+                        CheckBox { width: 24px; checked: root.preview-task-checked[index]; toggled => { root.preview-task-toggled(root.preview-task-offsets[index]); } }
                         StyledText {
                             horizontal-stretch: 1; text: block;
                             default-color: #f2f2f7; default-font-size: 16px; link-color: #72b7ff;

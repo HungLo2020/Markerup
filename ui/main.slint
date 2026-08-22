@@ -69,6 +69,7 @@ export component DesktopWindow inherits Window {
     in-out property <[int]> preview-block-kinds;
     in-out property <[int]> preview-heading-levels;
     in-out property <[bool]> preview-task-checked;
+    in-out property <[int]> preview-task-offsets;
     in-out property <[image]> preview-block-mermaid-images;
     in-out property <[string]> preview-block-mermaid-errors;
     in-out property <[image]> preview-block-images;
@@ -110,6 +111,7 @@ export component DesktopWindow inherits Window {
     callback reload-requested();
     callback editor-changed(string);
     callback preview-link-clicked(string);
+    callback preview-task-toggled(int);
     callback refresh-requested();
     callback new-note-requested(string);
     callback new-folder-requested(string);
@@ -485,7 +487,7 @@ export component DesktopWindow inherits Window {
                                                 CheckBox {
                                                     width: 24px;
                                                     checked: root.preview-task-checked[index];
-                                                    enabled: false;
+                                                    toggled => { root.preview-task-toggled(root.preview-task-offsets[index]); }
                                                 }
                                                 StyledText {
                                                     horizontal-stretch: 1;

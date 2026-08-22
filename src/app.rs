@@ -409,12 +409,18 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
             }
         }
     }
+    let task_offsets = result
+        .blocks
+        .iter()
+        .map(|block| block.task_offset.map_or(-1, |offset| offset as i32))
+        .collect();
 
     ui.set_preview_block_texts(styled_model(texts));
     ui.set_preview_block_plain_texts(string_model(plain_texts));
     ui.set_preview_block_kinds(int_model(kinds));
     ui.set_preview_heading_levels(int_model(heading_levels));
     ui.set_preview_task_checked(bool_model(task_checked));
+    ui.set_preview_task_offsets(int_model(task_offsets));
 
     let mut mermaid_images = Vec::with_capacity(result.blocks.len());
     let mut mermaid_errors = Vec::with_capacity(result.blocks.len());
