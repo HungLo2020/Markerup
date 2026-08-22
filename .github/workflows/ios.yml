@@ -72,6 +72,8 @@ jobs:
         run: |
           test -f resources/markerup_notepad_icon.svg
           test -f ios/Info.plist
+          test -f ios/PrivacyInfo.xcprivacy
+          plutil -lint ios/PrivacyInfo.xcprivacy
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-60@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-76@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png
@@ -104,6 +106,8 @@ jobs:
             find "$RUNNER_TEMP" -name '*.app' -maxdepth 8 -print
             exit 1
           fi
+          test -f "$app_path/PrivacyInfo.xcprivacy"
+          plutil -lint "$app_path/PrivacyInfo.xcprivacy"
           echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
 
       - name: Boot iOS simulator

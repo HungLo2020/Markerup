@@ -39,6 +39,8 @@ targets:
     sources:
       - Assets.xcassets
       - LaunchScreen.storyboard
+    resources:
+      - PrivacyInfo.xcprivacy
     settings:
       ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     postCompileScripts:

@@ -93,6 +93,8 @@ jobs:
         run: |
           test -f resources/markerup_notepad_icon.svg
           test -f ios/Info.plist
+          test -f ios/PrivacyInfo.xcprivacy
+          plutil -lint ios/PrivacyInfo.xcprivacy
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-60@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-76@2x.png
           test -f ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png
@@ -128,6 +130,8 @@ jobs:
           payload_path="$RUNNER_TEMP/Payload"
           ipa_path="$RUNNER_TEMP/Markerup.ipa"
           test -d "$app_path"
+          test -f "$app_path/PrivacyInfo.xcprivacy"
+          plutil -lint "$app_path/PrivacyInfo.xcprivacy"
           profile_path="$RUNNER_TEMP/markerup.mobileprovision"
           test -f "$profile_path"
           cp "$profile_path" "$app_path/embedded.mobileprovision"
