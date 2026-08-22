@@ -254,9 +254,8 @@ export component MobileWindow inherits Window {
                 }
             }
             TextEdit {
+                horizontal-stretch: 1;
                 vertical-stretch: 1;
-                width: parent.width;
-                height: parent.height;
                 text <=> root.editor-text;
                 edited => { root.editor-changed(self.text); }
             }
