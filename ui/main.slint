@@ -2,6 +2,45 @@ import { Button, CheckBox, HorizontalBox, LineEdit, ListView, ScrollView, TextEd
 import { MobileWindow } from "mobile.slint";
 export { MobileWindow } from "mobile.slint";
 
+component DesktopTreeRow inherits Rectangle {
+    in property <string> text;
+    callback clicked;
+    height: 28px;
+    horizontal-stretch: 1;
+    background: #2c2c2e;
+    TouchArea { clicked => { root.clicked(); } }
+    Text {
+        x: 8px;
+        width: parent.width - 16px;
+        height: parent.height;
+        text: root.text;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+        overflow: elide;
+    }
+}
+
+component DesktopIconButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    callback clicked;
+    width: 36px;
+    height: 36px;
+    background: #3a3a3c;
+    border-radius: 6px;
+    accessible-role: button;
+    accessible-label: root.label;
+    TouchArea { clicked => { root.clicked(); } }
+    Image {
+        source: root.icon;
+        width: 22px;
+        height: 22px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+    }
+}
+
 export component DesktopWindow inherits Window {
     title: root.dirty ? "Markerup *" : "Markerup";
     preferred-width: 1360px;
@@ -108,13 +147,6 @@ export component DesktopWindow inherits Window {
                     vertical-alignment: center;
                     overflow: elide;
                 }
-                Button { text: "Choose Folder"; clicked => { root.choose-workspace-requested(); } }
-                Button { text: "Connect SMB"; clicked => { root.connect-smb-requested(); } }
-                Button {
-                    text: root.workspace-pinned ? "Unpin Workspace" : "Pin Workspace";
-                    enabled: root.workspace-open;
-                    clicked => { root.pin-workspace-requested(); }
-                }
                 Button { text: "←"; enabled: root.workspace-open && root.can-go-back; clicked => { root.back-requested(); } }
                 Button { text: "→"; enabled: root.workspace-open && root.can-go-forward; clicked => { root.forward-requested(); } }
                 Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
@@ -123,6 +155,12 @@ export component DesktopWindow inherits Window {
                     text: "Save";
                     enabled: root.workspace-open && root.current-path != "No note selected" && root.dirty && !root.external-conflict;
                     clicked => { root.save-requested(root.editor-text); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                DesktopIconButton {
+                    icon: @image-url("../resources/icon_preview_settings.svg");
+                    label: "Settings";
+                    clicked => { root.view-mode = 6; }
                 }
             }
 
@@ -141,15 +179,126 @@ export component DesktopWindow inherits Window {
 
             Rectangle { height: 1px; background: #80808040; }
 
-            central-area := Rectangle {
+            content := Rectangle {
                 vertical-stretch: 1;
+
+            Rectangle {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                visible: root.view-mode == 6;
+                VerticalBox {
+                    width: parent.width; height: parent.height;
+                    spacing: 12px;
+                    HorizontalBox {
+                        height: 40px;
+                        Button { text: "Back"; width: 80px; horizontal-stretch: 0; clicked => { root.view-mode = 1; } }
+                        Text { text: "Settings"; horizontal-stretch: 1; font-size: 28px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        Rectangle { width: 80px; }
+                    }
+                    HorizontalBox {
+                        alignment: center;
+                        VerticalBox {
+                            width: 220px;
+                            horizontal-stretch: 0;
+                            spacing: 12px;
+                            Text { text: "Manage Markerup"; color: #9ca3af; horizontal-alignment: center; }
+                            Button { text: "Location"; width: 220px; horizontal-stretch: 0; clicked => { root.view-mode = 7; } }
+                            Button { text: "About"; width: 220px; horizontal-stretch: 0; clicked => { root.view-mode = 8; } }
+                        }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+
+            Rectangle {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                visible: root.view-mode == 7;
+                VerticalBox {
+                    width: parent.width; height: parent.height;
+                    spacing: 12px;
+                    HorizontalBox {
+                        height: 38px;
+                        Button { text: "Back"; width: 80px; horizontal-stretch: 0; clicked => { root.view-mode = 6; } }
+                        Text { text: "Location"; horizontal-stretch: 1; font-size: 24px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        Rectangle { width: 80px; }
+                    }
+                    Text { text: "Current Workspace"; font-weight: 700; }
+                    Text { text: root.workspace-open ? (root.workspace-is-smb ? "SMB" : "Local Files") : "None selected"; font-size: 20px; }
+                    Text { text: root.workspace-open ? root.workspace-path : "Choose a location to open your notes"; color: #9ca3af; overflow: elide; }
+                    HorizontalBox {
+                        height: 36px;
+                        spacing: 8px;
+                        Button { text: "Browse"; width: 140px; horizontal-stretch: 0; clicked => { root.choose-workspace-requested(); } }
+                        Button { text: "SMB"; width: 140px; horizontal-stretch: 0; clicked => { root.connect-smb-requested(); } }
+                    }
+                    Button { text: root.workspace-pinned ? "Unpin Workspace" : "Pin Workspace"; width: 220px; horizontal-stretch: 0; enabled: root.workspace-open; clicked => { root.pin-workspace-requested(); } }
+                    Text { text: root.workspace-pinned ? "This workspace will reopen when Markerup starts." : "This workspace is not pinned."; color: #9ca3af; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+
+            Rectangle {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                visible: root.view-mode == 8;
+                VerticalBox {
+                    width: parent.width; height: parent.height;
+                    spacing: 12px;
+                    HorizontalBox {
+                        height: 40px;
+                        Button { text: "Back"; width: 80px; horizontal-stretch: 0; clicked => { root.view-mode = 6; } }
+                        Text { text: "About"; horizontal-stretch: 1; font-size: 24px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                        Rectangle { width: 80px; }
+                    }
+                    Text { text: "Markerup"; font-size: 28px; font-weight: 700; }
+                    Text { text: "Version " + root.app-version + " (build " + root.app-build-number + ")"; color: #9ca3af; }
+                    Button { text: "Privacy Policy"; width: 220px; horizontal-stretch: 0; clicked => { root.privacy-policy-requested(); } }
+                    Text { text: "https://hunglo2020.github.io/Markerup/privacy-policy/"; color: #6b7280; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+
+            Rectangle {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                visible: root.view-mode == 5;
+                HorizontalBox {
+                    width: parent.width; height: parent.height;
+                    alignment: center;
+                    VerticalBox {
+                        width: 560px;
+                        horizontal-stretch: 0;
+                        spacing: 8px;
+                        HorizontalBox {
+                            height: 38px;
+                            Button { text: "Back"; width: 80px; horizontal-stretch: 0; clicked => { root.smb-connect-cancelled(); } }
+                            Text { text: "Connect to SMB"; horizontal-stretch: 1; font-size: 24px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                            Rectangle { width: 80px; }
+                        }
+                        Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
+                        Button { text: "Done / Hide Keyboard"; clicked => { root.smb-keyboard-dismiss-requested(); } }
+                        LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
+                        LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
+                        LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }
+                        LineEdit { text <=> root.smb-password; placeholder-text: "Password"; input-type: password; }
+                        LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share (optional)"; }
+                        HorizontalBox {
+                            Button { text: "Connect"; width: 180px; horizontal-stretch: 0; primary: true; clicked => { root.smb-connect-submitted(root.smb-server, root.smb-share, root.smb-username, root.smb-password, root.smb-remote-path); } }
+                            Button { text: "Cancel"; width: 180px; horizontal-stretch: 0; clicked => { root.smb-connect-cancelled(); } }
+                        }
+                    }
+                }
+            }
+
+            central-area := Rectangle {
+                x: 0px;
+                y: 0px;
+                width: parent.width;
+                height: parent.height;
 
                 empty-pane := Rectangle {
                     x: 0px;
                     y: 0px;
                     width: parent.width;
                     height: parent.height;
-                    visible: !root.workspace-open;
+                    visible: !root.workspace-open && root.view-mode < 5;
 
                     HorizontalBox {
                         Rectangle { horizontal-stretch: 1; }
@@ -188,7 +337,7 @@ export component DesktopWindow inherits Window {
                     y: 0px;
                     width: parent.width;
                     height: parent.height;
-                    visible: root.workspace-open && root.view-mode != 5;
+                    visible: root.workspace-open && root.view-mode < 5;
                     spacing: 8px;
 
                     VerticalBox {
@@ -212,7 +361,7 @@ export component DesktopWindow inherits Window {
 
                         ListView {
                             vertical-stretch: 1;
-                            for label[index] in root.tree-labels : Button {
+                            for label[index] in root.tree-labels : DesktopTreeRow {
                                 text: label;
                                 clicked => { root.tree-selected(index); }
                             }
@@ -393,29 +542,6 @@ export component DesktopWindow inherits Window {
                     }
                 }
             }
-
-            if root.view-mode == 5 : Rectangle {
-                vertical-stretch: 1;
-                HorizontalBox {
-                    Rectangle { horizontal-stretch: 1; }
-                    VerticalBox {
-                        width: 520px;
-                        spacing: 8px;
-                        Text { text: "Connect to SMB"; font-size: 24px; font-weight: 700; }
-                        Text { text: "Connect directly to an SMB2/3 server. Credentials are used for this session and are never written to workspace files."; wrap: word-wrap; }
-                        Button { text: "Done / Hide Keyboard"; clicked => { root.smb-keyboard-dismiss-requested(); } }
-                        LineEdit { text <=> root.smb-server; placeholder-text: "Server or IP address"; }
-                        LineEdit { text <=> root.smb-share; placeholder-text: "Share name"; }
-                        LineEdit { text <=> root.smb-username; placeholder-text: "Username (blank for guest)"; }
-                        LineEdit { text <=> root.smb-password; placeholder-text: "Password"; input-type: password; }
-                        LineEdit { text <=> root.smb-remote-path; placeholder-text: "Folder inside share (optional)"; }
-                        HorizontalBox {
-                            Button { text: "Connect"; primary: true; clicked => { root.smb-connect-submitted(root.smb-server, root.smb-share, root.smb-username, root.smb-password, root.smb-remote-path); } }
-                            Button { text: "Cancel"; clicked => { root.smb-connect-cancelled(); } }
-                        }
-                    }
-                    Rectangle { horizontal-stretch: 1; }
-                }
             }
 
             Rectangle { height: 1px; background: #80808040; }

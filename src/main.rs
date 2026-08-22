@@ -273,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         ui.on_smb_connect_cancelled(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_view_mode(if cfg!(target_os = "ios") { 7 } else { 1 });
+                ui.set_view_mode(7);
             }
         });
     }
@@ -342,6 +342,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 WorkspaceSlot::local(workspace),
                 false,
             );
+            ui.set_view_mode(7);
         });
     }
 
@@ -481,7 +482,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // The SMB form is view-mode 5. Leave it as soon as
                         // the connection succeeds so the workspace tree can
                         // display the scan result on mobile.
-                        ui.set_view_mode(if cfg!(target_os = "ios") { 7 } else { 1 });
+                        ui.set_view_mode(7);
                         set_status(&ui, "SMB workspace connected. Loading notes…");
                     }
                     Err(error) => {
