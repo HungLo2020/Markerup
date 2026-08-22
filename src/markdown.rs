@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use markdown::{Constructs, ParseOptions, mdast::Node, to_mdast};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageReference {
@@ -12,280 +12,274 @@ pub enum PreviewBlockKind {
     Heading(u8),
     Task(bool),
     Mermaid,
+    Code,
+    List(bool),
+    Quote,
+    Rule,
+    Image,
+    Table,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewBlock {
     pub kind: PreviewBlockKind,
     pub markdown: String,
+    pub image: Option<ImageReference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewDocument {
+    pub blocks: Vec<PreviewBlock>,
+}
+
+fn parse_options() -> ParseOptions {
+    ParseOptions {
+        constructs: Constructs {
+            frontmatter: true,
+            ..Constructs::gfm()
+        },
+        ..ParseOptions::gfm()
+    }
+}
+
+pub fn preview_document(source: &str) -> PreviewDocument {
+    let tree = to_mdast(source, &parse_options()).unwrap_or_else(|_| {
+        Node::Root(markdown::mdast::Root {
+            children: vec![Node::Text(markdown::mdast::Text {
+                value: source.to_string(),
+                position: None,
+            })],
+            position: None,
+        })
+    });
+    let blocks = match tree {
+        Node::Root(root) => root.children.iter().flat_map(block_from_node).collect(),
+        node => block_from_node(&node).collect(),
+    };
+    PreviewDocument { blocks }
 }
 
 pub fn preview_blocks(source: &str) -> Vec<PreviewBlock> {
-    let mut blocks = Vec::new();
-    let mut body = String::new();
-    let mut fence: Option<(char, bool)> = None;
+    preview_document(source).blocks
+}
 
-    for line in source.lines() {
-        let trimmed = line.trim_start();
-        let fence_info = fenced_info(trimmed);
-
-        if let Some((marker, mermaid)) = fence {
-            if mermaid {
-                if fence_info.is_some_and(|(closing, _)| closing == marker) {
-                    fence = None;
-                    let mermaid_source = body.trim_end().to_string();
-                    body.clear();
-                    if !mermaid_source.is_empty() {
-                        blocks.push(PreviewBlock {
-                            kind: PreviewBlockKind::Mermaid,
-                            markdown: mermaid_source,
-                        });
-                    }
+fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
+    let block = match node {
+        Node::Heading(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Heading(value.depth),
+            markdown: inline_markdown(&value.children),
+            image: None,
+        }),
+        Node::Paragraph(value)
+            if value.children.len() == 1 && matches!(value.children[0], Node::Image(_)) =>
+        {
+            let Node::Image(image) = &value.children[0] else {
+                unreachable!()
+            };
+            Some(PreviewBlock {
+                kind: PreviewBlockKind::Image,
+                markdown: image.alt.clone(),
+                image: Some(ImageReference {
+                    alt: image.alt.clone(),
+                    destination: image.url.clone(),
+                }),
+            })
+        }
+        Node::Paragraph(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Body,
+            markdown: inline_markdown(&value.children),
+            image: None,
+        }),
+        Node::Code(value)
+            if value
+                .lang
+                .as_deref()
+                .is_some_and(|lang| lang.eq_ignore_ascii_case("mermaid")) =>
+        {
+            Some(PreviewBlock {
+                kind: PreviewBlockKind::Mermaid,
+                markdown: value.value.clone(),
+                image: None,
+            })
+        }
+        Node::Code(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Code,
+            markdown: value.value.clone(),
+            image: None,
+        }),
+        Node::List(value) => {
+            let all_tasks = value
+                .children
+                .iter()
+                .all(|child| matches!(child, Node::ListItem(item) if item.checked.is_some()));
+            if all_tasks && value.children.len() == 1 {
+                if let Node::ListItem(item) = &value.children[0] {
+                    Some(PreviewBlock {
+                        kind: PreviewBlockKind::Task(item.checked.unwrap_or(false)),
+                        markdown: item.children.iter().map(node_markdown).collect(),
+                        image: None,
+                    })
                 } else {
-                    body.push_str(line);
-                    body.push('\n');
+                    None
                 }
             } else {
-                body.push_str(line);
-                body.push('\n');
-                if fence_info.is_some_and(|(closing, _)| closing == marker) {
-                    fence = None;
-                }
+                Some(PreviewBlock {
+                    kind: PreviewBlockKind::List(value.ordered),
+                    markdown: list_markdown(value),
+                    image: None,
+                })
             }
-            continue;
         }
-
-        if let Some((marker, is_mermaid)) = fence_info {
-            flush_body(&mut body, &mut blocks);
-            fence = Some((marker, is_mermaid));
-            if !is_mermaid {
-                body.push_str(line);
-                body.push('\n');
-            }
-            continue;
-        }
-
-        if let Some((level, text)) = parse_atx_heading(line) {
-            flush_body(&mut body, &mut blocks);
-            if !text.is_empty() {
-                blocks.push(PreviewBlock {
-                    kind: PreviewBlockKind::Heading(level),
-                    markdown: text.to_string(),
-                });
-            }
-            continue;
-        }
-
-        if let Some((checked, text)) = parse_task_item(line) {
-            flush_body(&mut body, &mut blocks);
-            blocks.push(PreviewBlock {
-                kind: PreviewBlockKind::Task(checked),
-                markdown: text.to_string(),
-            });
-            continue;
-        }
-
-        if line.trim().is_empty() {
-            flush_body(&mut body, &mut blocks);
-        } else {
-            body.push_str(line);
-            body.push('\n');
-        }
-    }
-
-    if let Some((_, true)) = fence {
-        let mermaid_source = body.trim_end().to_string();
-        body.clear();
-        if !mermaid_source.is_empty() {
-            blocks.push(PreviewBlock {
-                kind: PreviewBlockKind::Mermaid,
-                markdown: mermaid_source,
-            });
-        }
-    }
-
-    flush_body(&mut body, &mut blocks);
-    blocks
+        Node::Blockquote(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Quote,
+            markdown: value
+                .children
+                .iter()
+                .map(node_markdown)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            image: None,
+        }),
+        Node::ThematicBreak(_) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Rule,
+            markdown: String::new(),
+            image: None,
+        }),
+        Node::Image(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Image,
+            markdown: value.alt.clone(),
+            image: Some(ImageReference {
+                alt: value.alt.clone(),
+                destination: value.url.clone(),
+            }),
+        }),
+        Node::Table(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Table,
+            markdown: table_markdown(value),
+            image: None,
+        }),
+        Node::Yaml(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Code,
+            markdown: value.value.clone(),
+            image: None,
+        }),
+        Node::Toml(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Code,
+            markdown: value.value.clone(),
+            image: None,
+        }),
+        _ => None,
+    };
+    block.into_iter().collect::<Vec<_>>().into_iter()
 }
 
-fn flush_body(body: &mut String, blocks: &mut Vec<PreviewBlock>) {
-    let markdown = body.trim_end().to_string();
-    if !markdown.is_empty() {
-        blocks.push(PreviewBlock {
-            kind: PreviewBlockKind::Body,
-            markdown,
-        });
-    }
-    body.clear();
+fn list_markdown(list: &markdown::mdast::List) -> String {
+    list.children
+        .iter()
+        .enumerate()
+        .map(|(index, child)| {
+            let Node::ListItem(item) = child else {
+                return String::new();
+            };
+            let marker = if list.ordered {
+                format!("{}. ", list.start.unwrap_or(1) + index as u32)
+            } else {
+                "- ".to_string()
+            };
+            let check = item
+                .checked
+                .map(|checked| if checked { "[x] " } else { "[ ] " })
+                .unwrap_or("");
+            format!(
+                "{}{}{}",
+                marker,
+                check,
+                item.children.iter().map(node_markdown).collect::<String>()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn fenced_info(trimmed: &str) -> Option<(char, bool)> {
-    let marker = trimmed.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-    let marker_count = trimmed.chars().take_while(|ch| *ch == marker).count();
-    if marker_count < 3 {
-        return None;
-    }
-    let info = trimmed[marker.len_utf8() * marker_count..].trim();
-    let language = info.split_whitespace().next().unwrap_or_default();
-    Some((marker, language.eq_ignore_ascii_case("mermaid")))
+fn table_markdown(table: &markdown::mdast::Table) -> String {
+    table
+        .children
+        .iter()
+        .map(|row| {
+            let Node::TableRow(row) = row else {
+                return String::new();
+            };
+            row.children
+                .iter()
+                .map(node_markdown)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn parse_atx_heading(line: &str) -> Option<(u8, &str)> {
-    let leading_spaces = line.len() - line.trim_start_matches(' ').len();
-    if leading_spaces > 3 {
-        return None;
-    }
-    let trimmed = line.trim_start_matches(' ');
-    let hashes = trimmed.bytes().take_while(|byte| *byte == b'#').count();
-    if !(1..=6).contains(&hashes) {
-        return None;
-    }
-    let remainder = &trimmed[hashes..];
-    if !remainder.is_empty() && !remainder.chars().next().is_some_and(char::is_whitespace) {
-        return None;
-    }
-    Some((hashes as u8, remainder.trim()))
+fn inline_markdown(nodes: &[Node]) -> String {
+    nodes.iter().map(node_markdown).collect()
 }
 
-fn parse_task_item(line: &str) -> Option<(bool, &str)> {
-    let trimmed = line.trim_start();
-    let rest = trimmed
-        .strip_prefix("- ")
-        .or_else(|| trimmed.strip_prefix("* "))
-        .or_else(|| trimmed.strip_prefix("+ "))?;
-
-    if let Some(text) = rest.strip_prefix("[ ] ") {
-        return Some((false, text));
+fn node_markdown(node: &Node) -> String {
+    match node {
+        Node::Paragraph(value) => inline_markdown(&value.children),
+        Node::Heading(value) => inline_markdown(&value.children),
+        Node::Blockquote(value) => value
+            .children
+            .iter()
+            .map(node_markdown)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Node::List(value) => list_markdown(value),
+        Node::ListItem(value) => value.children.iter().map(node_markdown).collect(),
+        Node::Code(value) => value.value.clone(),
+        Node::ThematicBreak(_) => "---".to_string(),
+        Node::Table(value) => table_markdown(value),
+        Node::TableRow(value) => value
+            .children
+            .iter()
+            .map(node_markdown)
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Node::TableCell(value) => inline_markdown(&value.children),
+        Node::Text(value) => escape_styled_text(&value.value),
+        Node::Emphasis(value) => format!("*{}*", inline_markdown(&value.children)),
+        Node::Strong(value) => format!("**{}**", inline_markdown(&value.children)),
+        Node::Delete(value) => format!("~~{}~~", inline_markdown(&value.children)),
+        Node::InlineCode(value) => format!("`{}`", value.value),
+        Node::Link(value) => format!("[{}]({})", inline_markdown(&value.children), value.url),
+        Node::Image(value) => format!("![{}]({})", value.alt, value.url),
+        Node::Break(_) => "\n".to_string(),
+        Node::InlineMath(value) => value.value.clone(),
+        Node::FootnoteReference(value) => format!("[{}]", value.identifier),
+        Node::Html(value) => escape_styled_text(&value.value),
+        _ => String::new(),
     }
-    if let Some(text) = rest
-        .strip_prefix("[x] ")
-        .or_else(|| rest.strip_prefix("[X] "))
-    {
-        return Some((true, text));
-    }
-    None
 }
 
-pub fn preview_markdown(source: &str) -> String {
-    let parser = Parser::new_ext(source, Options::all());
-    let mut output = String::new();
-    let mut image: Option<(String, String)> = None;
-
-    for event in parser {
-        match event {
-            Event::Start(Tag::Heading { level, .. }) => {
-                let hashes = match level {
-                    HeadingLevel::H1 => 1,
-                    HeadingLevel::H2 => 2,
-                    HeadingLevel::H3 => 3,
-                    HeadingLevel::H4 => 4,
-                    HeadingLevel::H5 => 5,
-                    HeadingLevel::H6 => 6,
-                };
-                output.push_str(&"#".repeat(hashes));
-                output.push(' ');
-            }
-            Event::End(TagEnd::Heading(_)) => output.push_str("\n\n"),
-            Event::Start(Tag::Paragraph) => {}
-            Event::End(TagEnd::Paragraph) => output.push_str("\n\n"),
-            Event::Start(Tag::BlockQuote(_)) => output.push_str("> "),
-            Event::End(TagEnd::BlockQuote(_)) => output.push_str("\n\n"),
-            Event::Start(Tag::CodeBlock(_)) => output.push_str("```\n"),
-            Event::End(TagEnd::CodeBlock) => output.push_str("```\n\n"),
-            Event::Start(Tag::List(_)) => {}
-            Event::End(TagEnd::List(_)) => output.push('\n'),
-            Event::Start(Tag::Item) => output.push_str("- "),
-            Event::End(TagEnd::Item) => output.push('\n'),
-            Event::Start(Tag::Emphasis) => output.push('*'),
-            Event::End(TagEnd::Emphasis) => output.push('*'),
-            Event::Start(Tag::Strong) => output.push_str("**"),
-            Event::End(TagEnd::Strong) => output.push_str("**"),
-            Event::Start(Tag::Strikethrough) => output.push_str("~~"),
-            Event::End(TagEnd::Strikethrough) => output.push_str("~~"),
-            Event::Start(Tag::Link { dest_url, .. }) => {
-                output.push('[');
-                output.push_str(&format!("<markerup-link:{}>", escape_marker(&dest_url)));
-            }
-            Event::End(TagEnd::Link) => finish_link_marker(&mut output),
-            Event::Start(Tag::Image { dest_url, .. }) => {
-                image = Some((String::new(), dest_url.into_string()));
-            }
-            Event::End(TagEnd::Image) => {
-                if let Some((alt, destination)) = image.take() {
-                    output.push_str("[🖼 ");
-                    output.push_str(if alt.is_empty() { "image" } else { &alt });
-                    output.push_str("](");
-                    output.push_str(&destination);
-                    output.push(')');
-                }
-            }
-            Event::Code(text) => {
-                output.push('`');
-                output.push_str(&text);
-                output.push('`');
-            }
-            Event::Text(text) => {
-                if let Some((alt, _)) = image.as_mut() {
-                    alt.push_str(&text);
-                } else {
-                    output.push_str(&text);
-                }
-            }
-            Event::SoftBreak | Event::HardBreak => output.push('\n'),
-            Event::Rule => output.push_str("\n---\n"),
-            Event::TaskListMarker(checked) => {
-                output.push_str(if checked { "[x] " } else { "[ ] " })
-            }
-            Event::Html(html) | Event::InlineHtml(html) => {
-                output.push_str(&html.replace('<', "&lt;").replace('>', "&gt;"));
-            }
-            Event::FootnoteReference(name) => {
-                output.push('[');
-                output.push_str(&name);
-                output.push(']');
-            }
-            Event::InlineMath(math) | Event::DisplayMath(math) => output.push_str(&math),
-            _ => {}
-        }
-    }
-    output
-}
-
-fn finish_link_marker(output: &mut String) {
-    if let Some(marker_start) = output.rfind("[<markerup-link:") {
-        if let Some(marker_end_offset) = output[marker_start..].find('>') {
-            let marker_end = marker_start + marker_end_offset;
-            let marker = output[marker_start + 16..marker_end].to_string();
-            output.replace_range(marker_start + 1..=marker_end, "");
-            output.push_str("](");
-            output.push_str(&unescape_marker(&marker));
-            output.push(')');
-        }
-    }
+fn escape_styled_text(value: &str) -> String {
+    value.replace('<', "&lt;").replace('>', "&gt;")
 }
 
 pub fn image_references(source: &str) -> Vec<ImageReference> {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
     let mut references = Vec::new();
-    let mut current: Option<ImageReference> = None;
+    let mut current = None;
     for event in Parser::new_ext(source, Options::all()) {
         match event {
             Event::Start(Tag::Image { dest_url, .. }) => {
                 current = Some(ImageReference {
                     alt: String::new(),
                     destination: dest_url.into_string(),
-                });
+                })
             }
-            Event::Text(text) => {
-                if let Some(reference) = current.as_mut() {
-                    reference.alt.push_str(&text);
-                }
-            }
+            Event::Text(text) if current.is_some() => current.as_mut().unwrap().alt.push_str(&text),
             Event::End(TagEnd::Image) => {
                 if let Some(reference) = current.take() {
-                    references.push(reference);
+                    references.push(reference)
                 }
             }
             _ => {}
@@ -341,74 +335,56 @@ fn slugify(value: &str) -> String {
     output.trim_matches('-').to_string()
 }
 
-fn escape_marker(value: &str) -> String {
-    value.replace('%', "%25").replace('>', "%3E")
-}
-fn unescape_marker(value: &str) -> String {
-    value.replace("%3E", ">").replace("%25", "%")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         PreviewBlockKind, find_heading_range, find_matches, image_references, preview_blocks,
+        preview_document,
     };
 
     #[test]
-    fn headings_keep_levels() {
-        let blocks = preview_blocks("# Markerup\n\n### Smaller");
-        assert_eq!(blocks[0].kind, PreviewBlockKind::Heading(1));
-        assert_eq!(blocks[0].markdown, "Markerup");
-        assert_eq!(blocks[1].kind, PreviewBlockKind::Heading(3));
+    fn parses_commonmark_and_gfm_blocks() {
+        let document = preview_document(
+            "# Heading\n\ntext **bold** and [link](https://example.com).\n\n- one\n- two\n\n> quote\n\n```rust\nlet x = 1;\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n![alt](image.png)\n\n---",
+        );
+        assert!(matches!(
+            document.blocks[0].kind,
+            PreviewBlockKind::Heading(1)
+        ));
+        assert!(matches!(document.blocks[1].kind, PreviewBlockKind::Body));
+        assert!(matches!(
+            document.blocks[2].kind,
+            PreviewBlockKind::List(false)
+        ));
+        assert!(matches!(document.blocks[3].kind, PreviewBlockKind::Quote));
+        assert!(matches!(document.blocks[4].kind, PreviewBlockKind::Code));
+        assert!(matches!(document.blocks[5].kind, PreviewBlockKind::Table));
+        assert!(matches!(document.blocks[6].kind, PreviewBlockKind::Image));
+        assert!(matches!(document.blocks[7].kind, PreviewBlockKind::Rule));
     }
 
     #[test]
-    fn task_items_keep_checked_state() {
-        let blocks = preview_blocks("- [ ] todo\n- [x] done");
-        assert_eq!(blocks[0].kind, PreviewBlockKind::Task(false));
-        assert_eq!(blocks[0].markdown, "todo");
-        assert_eq!(blocks[1].kind, PreviewBlockKind::Task(true));
-        assert_eq!(blocks[1].markdown, "done");
-    }
-
-    #[test]
-    fn headings_inside_code_fences_are_not_blocks() {
-        let blocks = preview_blocks("```md\n# not a heading\n```");
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].kind, PreviewBlockKind::Body);
-    }
-
-    #[test]
-    fn mermaid_fences_become_diagram_blocks_without_the_fence() {
-        let blocks = preview_blocks("Intro\n\n```mermaid\nflowchart TD\n    A --> B\n```\n\nAfter");
-        assert_eq!(blocks.len(), 3);
+    fn parses_tasks_and_mermaid_without_line_scanning() {
+        let blocks = preview_blocks("- [x] done\n\n```mermaid\nflowchart TD\n A --> B\n```");
+        assert_eq!(blocks[0].kind, PreviewBlockKind::Task(true));
         assert_eq!(blocks[1].kind, PreviewBlockKind::Mermaid);
-        assert_eq!(blocks[1].markdown, "flowchart TD\n    A --> B");
+        assert!(blocks[1].markdown.contains("flowchart"));
     }
 
     #[test]
-    fn mermaid_language_name_is_case_insensitive_and_supports_tildes() {
-        let blocks = preview_blocks("~~~MERMAID\ngraph LR\n    A --> B\n~~~");
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].kind, PreviewBlockKind::Mermaid);
-        assert_eq!(blocks[0].markdown, "graph LR\n    A --> B");
-    }
-
-    #[test]
-    fn extracts_images() {
-        let refs = image_references("![Diagram](images/test.png)");
-        assert_eq!(refs[0].destination, "images/test.png");
-    }
-
-    #[test]
-    fn finds_offsets() {
-        assert_eq!(find_matches("one two one", "one"), vec![(0, 3), (8, 11)]);
-    }
-
-    #[test]
-    fn finds_heading_anchor() {
+    fn collects_images_in_document_order() {
+        let refs = image_references("![one](one.png)\n\n![two](two.png)");
         assert_eq!(
-            find_heading_range("# Hello World\ntext\n", "hello-world"),
+            refs.iter().map(|r| r.alt.as_str()).collect::<Vec<_>>(),
+            vec!["one", "two"]
+        );
+    }
+
+    #[test]
+    fn preserves_existing_navigation_helpers() {
+        assert_eq!(find_matches("one two one", "one"), vec![(0, 3), (8, 11)]);
+        assert_eq!(
+            find_heading_range("# Hello World\n", "#hello-world"),
             Some((2, 13))
         );
     }

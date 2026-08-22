@@ -19,6 +19,7 @@ export component DesktopWindow inherits Window {
     in-out property <[bool]> preview-task-checked;
     in-out property <[image]> preview-block-mermaid-images;
     in-out property <[string]> preview-block-mermaid-errors;
+    in-out property <[image]> preview-block-images;
     in-out property <[image]> preview-images;
     in-out property <[string]> preview-image-labels;
     in-out property <string> workspace-path: "";
@@ -272,13 +273,15 @@ export component DesktopWindow inherits Window {
                                 ScrollView {
                                     vertical-stretch: 1;
                                     VerticalBox {
-                                        spacing: 9px;
+                                        spacing: 16px;
+                                        padding: 8px;
 
                                         for block[index] in root.preview-block-texts : VerticalBox {
                                             if root.preview-block-kinds[index] == 1 : Text {
                                                 width: preview-pane.width - 30px;
                                                 text: root.preview-block-plain-texts[index];
                                                 wrap: word-wrap;
+                                                color: #f2f2f7;
                                                 font-weight: 700;
                                                 font-size: root.preview-heading-levels[index] == 1 ? 30px
                                                     : root.preview-heading-levels[index] == 2 ? 26px
@@ -290,7 +293,7 @@ export component DesktopWindow inherits Window {
 
                                             if root.preview-block-kinds[index] == 2 : HorizontalBox {
                                                 width: preview-pane.width - 30px;
-                                                spacing: 6px;
+                                                spacing: 10px;
                                                 CheckBox {
                                                     width: 24px;
                                                     checked: root.preview-task-checked[index];
@@ -299,6 +302,9 @@ export component DesktopWindow inherits Window {
                                                 StyledText {
                                                     horizontal-stretch: 1;
                                                     text: block;
+                                                    default-color: #f2f2f7;
+                                                    default-font-size: 16px;
+                                                    link-color: #72b7ff;
                                                     link-clicked(link) => { root.preview-link-clicked(link); }
                                                 }
                                             }
@@ -312,22 +318,63 @@ export component DesktopWindow inherits Window {
                                                 }
                                                 if root.preview-block-mermaid-errors[index] == "" : Image {
                                                     width: preview-pane.width - 30px;
-                                                    height: 360px;
+                                                    height: min(420px, max(100px, self.preferred-height));
                                                     image-fit: contain;
                                                     source: root.preview-block-mermaid-images[index];
                                                 }
                                             }
 
-                                            if root.preview-block-kinds[index] == 0 : StyledText {
+                                            if root.preview-block-kinds[index] == 0 || root.preview-block-kinds[index] == 5 || root.preview-block-kinds[index] == 10 || root.preview-block-kinds[index] == 9 : StyledText {
                                                 width: preview-pane.width - 30px;
                                                 text: block;
+                                                default-color: #f2f2f7;
+                                                default-font-size: 16px;
+                                                link-color: #72b7ff;
                                                 link-clicked(link) => { root.preview-link-clicked(link); }
                                             }
-                                        }
-
-                                        for preview-image[index] in root.preview-images : VerticalBox {
-                                            Text { text: root.preview-image-labels[index]; font-weight: 600; }
-                                            Image { source: preview-image; height: 240px; }
+                                            if root.preview-block-kinds[index] == 4 : Rectangle {
+                                                width: preview-pane.width - 30px;
+                                                background: #252b35;
+                                                VerticalBox {
+                                                    padding: 12px;
+                                                    Text {
+                                                        text: root.preview-block-plain-texts[index];
+                                                        wrap: word-wrap;
+                                                        color: #e5e7eb;
+                                                        font-family: "monospace";
+                                                        font-size: 14px;
+                                                    }
+                                                }
+                                            }
+                                            if root.preview-block-kinds[index] == 6 : Rectangle {
+                                                width: preview-pane.width - 30px;
+                                                background: #242832;
+                                                border-color: #64748b;
+                                                border-width: 3px;
+                                                VerticalBox {
+                                                    padding: 10px;
+                                                    StyledText {
+                                                        text: block;
+                                                        default-color: #d1d5db;
+                                                        default-font-size: 16px;
+                                                    }
+                                                }
+                                            }
+                                            if root.preview-block-kinds[index] == 7 : Rectangle {
+                                                width: preview-pane.width - 30px;
+                                                height: 1px;
+                                                background: #4b5563;
+                                            }
+                                            if root.preview-block-kinds[index] == 8 : VerticalBox {
+                                                width: preview-pane.width - 30px;
+                                                Image {
+                                                    width: preview-pane.width - 30px;
+                                                    height: min(360px, max(80px, self.preferred-height));
+                                                    image-fit: contain;
+                                                    source: root.preview-block-images[index];
+                                                }
+                                                Text { text: root.preview-block-plain-texts[index]; color: #9ca3af; wrap: word-wrap; }
+                                            }
                                         }
                                     }
                                 }

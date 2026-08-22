@@ -1,6 +1,8 @@
 use crate::markdown::{ImageReference, PreviewBlock, image_references, preview_blocks};
 use crate::workspace::{EntryId, Workspace, WorkspaceEntry, WorkspaceRef};
+use merman::MermaidConfig;
 use merman::render::HeadlessRenderer;
+use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,6 +88,64 @@ fn normalize_mermaid_source(source: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn mermaid_theme_config(dark: bool) -> MermaidConfig {
+    if dark {
+        MermaidConfig::from_value(json!({
+        "theme": "base",
+        "themeVariables": {
+            "background": "#1c1c1e",
+            "mainBkg": "#252b35",
+            "primaryColor": "#273449",
+            "primaryTextColor": "#f2f2f7",
+            "primaryBorderColor": "#72b7ff",
+            "lineColor": "#93c5fd",
+            "secondaryColor": "#334155",
+            "tertiaryColor": "#1f2937",
+            "nodeTextColor": "#f2f2f7",
+            "textColor": "#f2f2f7",
+            "edgeLabelBackground": "#1c1c1e",
+            "clusterBkg": "#202938",
+            "clusterBorder": "#64748b",
+            "titleColor": "#f8fafc",
+            "noteBkgColor": "#3a321f",
+            "noteTextColor": "#fef3c7",
+            "noteBorderColor": "#fbbf24"
+        },
+        "themeCSS": "text, .label, .nodeLabel { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }"
+        }))
+    } else {
+        MermaidConfig::from_value(json!({
+            "theme": "base",
+            "themeVariables": {
+                "background": "#ffffff",
+                "mainBkg": "#f8fafc",
+                "primaryColor": "#dbeafe",
+                "primaryTextColor": "#111827",
+                "primaryBorderColor": "#2563eb",
+                "lineColor": "#2563eb",
+                "textColor": "#111827",
+                "edgeLabelBackground": "#ffffff",
+                "clusterBkg": "#eff6ff",
+                "clusterBorder": "#64748b",
+                "titleColor": "#111827",
+                "noteBkgColor": "#fef3c7",
+                "noteTextColor": "#111827",
+                "noteBorderColor": "#d97706"
+            },
+            "themeCSS": "text, .label, .nodeLabel { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }"
+        }))
+    }
+}
+
+fn dark_mermaid_renderer() -> HeadlessRenderer {
+    HeadlessRenderer::new().with_site_config(mermaid_theme_config(true))
+}
+
+#[allow(dead_code)]
+fn light_mermaid_renderer() -> HeadlessRenderer {
+    HeadlessRenderer::new().with_site_config(mermaid_theme_config(false))
 }
 
 fn is_hex_color(line: &str, hash_index: usize) -> bool {
@@ -288,7 +348,7 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                             }
                             let diagram_id = format!("markerup-{generation}-{index}");
                             let renderer =
-                                mermaid_renderer.get_or_insert_with(HeadlessRenderer::new);
+                                mermaid_renderer.get_or_insert_with(dark_mermaid_renderer);
                             let normalized_source = normalize_mermaid_source(&block.markdown);
                             Some(
                                 renderer
@@ -443,7 +503,7 @@ pub fn hash_text(text: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{HeadlessRenderer, normalize_mermaid_source};
+    use super::{HeadlessRenderer, dark_mermaid_renderer, normalize_mermaid_source};
 
     #[test]
     fn mermaid_source_normalizes_leading_tabs() {
@@ -467,5 +527,18 @@ mod tests {
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("Start"));
         assert!(svg.contains("Done"));
+    }
+
+    #[test]
+    fn dark_mermaid_theme_provides_readable_colors() {
+        let svg = dark_mermaid_renderer()
+            .render_svg_resvg_safe_sync_with_diagram_id(
+                "flowchart TD\n  A[Start] --> B[Done]",
+                "markerup-dark-theme",
+            )
+            .expect("dark Mermaid should render")
+            .expect("valid Mermaid should produce SVG");
+        assert!(svg.contains("#f2f2f7") || svg.contains("#f8fafc"));
+        assert!(svg.contains("#72b7ff") || svg.contains("#93c5fd"));
     }
 }

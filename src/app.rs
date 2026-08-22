@@ -1,5 +1,5 @@
 use crate::MainWindow;
-use crate::markdown::{PreviewBlockKind, preview_markdown};
+use crate::markdown::PreviewBlockKind;
 use crate::persistence::{SavedSmbConfig, clear_session, save_session};
 use crate::workers::{
     LATEST_SEARCH_GENERATION, PreviewResult, ScanResult, SearchResult, hash_text,
@@ -316,9 +316,7 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
 }
 
 fn styled_from_markdown(markdown: &str) -> StyledText {
-    StyledText::from_markdown(markdown)
-        .or_else(|_| StyledText::from_markdown(&preview_markdown(markdown)))
-        .unwrap_or_else(|_| StyledText::from_plain_text(markdown))
+    StyledText::from_markdown(markdown).unwrap_or_else(|_| StyledText::from_plain_text(markdown))
 }
 
 pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: PreviewResult) {
@@ -339,11 +337,16 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
         } else {
             block.markdown.clone()
         });
-        texts.push(if matches!(&block.kind, PreviewBlockKind::Mermaid) {
-            StyledText::from_plain_text("")
-        } else {
-            styled_from_markdown(&block.markdown)
-        });
+        texts.push(
+            if matches!(
+                &block.kind,
+                PreviewBlockKind::Mermaid | PreviewBlockKind::Image | PreviewBlockKind::Rule
+            ) {
+                StyledText::from_plain_text("")
+            } else {
+                styled_from_markdown(&block.markdown)
+            },
+        );
         match &block.kind {
             PreviewBlockKind::Body => {
                 kinds.push(0);
@@ -362,6 +365,36 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
             }
             PreviewBlockKind::Mermaid => {
                 kinds.push(3);
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Code => {
+                kinds.push(4);
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::List(ordered) => {
+                kinds.push(if *ordered { 10 } else { 5 });
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Quote => {
+                kinds.push(6);
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Rule => {
+                kinds.push(7);
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Image => {
+                kinds.push(8);
+                heading_levels.push(0);
+                task_checked.push(false);
+            }
+            PreviewBlockKind::Table => {
+                kinds.push(9);
                 heading_levels.push(0);
                 task_checked.push(false);
             }
@@ -408,9 +441,11 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
 
     let mut images = Vec::new();
     let mut labels = Vec::new();
+    let mut block_images = vec![Image::default(); result.blocks.len()];
     if let Some(current) = state.current_file.as_deref() {
         let mut seen_assets = HashSet::new();
         for reference in result.images {
+            let reference_destination = reference.destination.clone();
             let Some(asset_id) = state
                 .workspace
                 .resolve_asset_link(current, &reference.destination)
@@ -453,9 +488,19 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
                     reference.alt
                 });
                 images.push(image);
+                if let Some((block_index, _)) =
+                    result.blocks.iter().enumerate().find(|(_, block)| {
+                        block.image.as_ref().is_some_and(|block_reference| {
+                            block_reference.destination == reference_destination
+                        })
+                    })
+                {
+                    block_images[block_index] = images.last().cloned().unwrap_or_default();
+                }
             }
         }
     }
+    ui.set_preview_block_images(image_model(block_images));
     ui.set_preview_images(image_model(images));
     ui.set_preview_image_labels(string_model(labels));
 
@@ -577,6 +622,7 @@ fn clear_preview(ui: &MainWindow) {
     ui.set_preview_task_checked(bool_model(Vec::new()));
     ui.set_preview_block_mermaid_images(image_model(Vec::new()));
     ui.set_preview_block_mermaid_errors(string_model(Vec::new()));
+    ui.set_preview_block_images(image_model(Vec::new()));
     ui.set_preview_images(image_model(Vec::new()));
     ui.set_preview_image_labels(string_model(Vec::new()));
 }

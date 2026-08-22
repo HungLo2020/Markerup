@@ -84,6 +84,7 @@ export component MobileWindow inherits Window {
     in-out property <[bool]> preview-task-checked;
     in-out property <[image]> preview-block-mermaid-images;
     in-out property <[string]> preview-block-mermaid-errors;
+    in-out property <[image]> preview-block-images;
     in-out property <[image]> preview-images;
     in-out property <[string]> preview-image-labels;
     in-out property <string> workspace-path: "";
@@ -307,14 +308,53 @@ export component MobileWindow inherits Window {
         if root.view-mode == 2 : ScrollView {
             vertical-stretch: 1; mouse-drag-pan-enabled: true;
             VerticalBox {
-                spacing: 12px;
-                Text { text: root.current-path; font-size: 22px; font-weight: 700; color: #f2f2f7; }
+                spacing: 16px; padding: 8px;
+                Text { text: root.current-path; font-size: 22px; font-weight: 700; color: #f2f2f7; width: root.width - 32px; }
                 for block[index] in root.preview-block-texts : VerticalBox {
-                    if root.preview-block-kinds[index] == 3 : Image {
-                        source: root.preview-block-mermaid-images[index]; width: root.width - 32px; height: 260px; image-fit: contain;
+                    width: root.width - 32px;
+                    if root.preview-block-kinds[index] == 1 : Text {
+                        text: root.preview-block-plain-texts[index]; width: root.width - 32px;
+                        wrap: word-wrap; color: #f2f2f7; font-weight: 700;
+                        font-size: root.preview-heading-levels[index] == 1 ? 30px
+                            : root.preview-heading-levels[index] == 2 ? 26px
+                            : root.preview-heading-levels[index] == 3 ? 22px
+                            : root.preview-heading-levels[index] == 4 ? 19px
+                            : root.preview-heading-levels[index] == 5 ? 17px : 15px;
                     }
-                    if root.preview-block-kinds[index] != 3 : StyledText {
-                        text: block; width: root.width - 32px; link-clicked(link) => { root.preview-link-clicked(link); }
+                    if root.preview-block-kinds[index] == 3 : VerticalBox {
+                        width: root.width - 32px;
+                        if root.preview-block-mermaid-errors[index] != "" : Text {
+                            text: root.preview-block-mermaid-errors[index]; color: #ff8b8b; wrap: word-wrap;
+                        }
+                        if root.preview-block-mermaid-errors[index] == "" : Image {
+                            source: root.preview-block-mermaid-images[index]; width: root.width - 32px;
+                            height: min(420px, max(100px, self.preferred-height)); image-fit: contain;
+                        }
+                    }
+                    if root.preview-block-kinds[index] == 0 || root.preview-block-kinds[index] == 2 || root.preview-block-kinds[index] == 5 || root.preview-block-kinds[index] == 9 || root.preview-block-kinds[index] == 10 : StyledText {
+                        text: block; width: root.width - 32px; default-color: #f2f2f7;
+                        default-font-size: 16px; link-color: #72b7ff;
+                        link-clicked(link) => { root.preview-link-clicked(link); }
+                    }
+                    if root.preview-block-kinds[index] == 4 : Text {
+                        text: root.preview-block-plain-texts[index]; width: root.width - 32px; wrap: word-wrap;
+                        color: #e5e7eb; font-family: "monospace"; font-size: 14px;
+                    }
+                    if root.preview-block-kinds[index] == 6 : Rectangle {
+                        width: root.width - 32px; background: #242832;
+                        border-color: #64748b; border-width: 3px;
+                        VerticalBox {
+                            padding: 10px;
+                            StyledText { text: block; default-color: #d1d5db; default-font-size: 16px; }
+                        }
+                    }
+                    if root.preview-block-kinds[index] == 7 : Rectangle {
+                        width: root.width - 32px; height: 1px; background: #4b5563;
+                    }
+                    if root.preview-block-kinds[index] == 8 : VerticalBox {
+                        width: root.width - 32px;
+                        Image { source: root.preview-block-images[index]; width: root.width - 32px; height: min(360px, max(80px, self.preferred-height)); image-fit: contain; }
+                        Text { text: root.preview-block-plain-texts[index]; color: #9ca3af; wrap: word-wrap; }
                     }
                 }
             }
