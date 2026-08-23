@@ -482,6 +482,8 @@ export component DesktopWindow inherits Window {
                                                 StyledText {
                                                     horizontal-stretch: 1;
                                                     text: block;
+                                                    height: self.preferred-height;
+                                                    vertical-alignment: top;
                                                     default-color: #f2f2f7;
                                                     default-font-size: 16px;
                                                     link-color: #72b7ff;
@@ -509,6 +511,8 @@ export component DesktopWindow inherits Window {
                                             if root.preview-block-kinds[index] == 0 || root.preview-block-kinds[index] == 5 || root.preview-block-kinds[index] == 10 || root.preview-block-kinds[index] == 9 : StyledText {
                                                 width: preview-pane.width - 30px;
                                                 text: block;
+                                                height: self.preferred-height;
+                                                vertical-alignment: top;
                                                 default-color: #f2f2f7;
                                                 default-font-size: 16px;
                                                 link-color: #72b7ff;
@@ -539,6 +543,8 @@ export component DesktopWindow inherits Window {
                                                     spacing: 0px;
                                                     StyledText {
                                                         text: block;
+                                                        height: self.preferred-height;
+                                                        vertical-alignment: top;
                                                         default-color: #d1d5db;
                                                         default-font-size: 16px;
                                                     }

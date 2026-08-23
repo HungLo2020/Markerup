@@ -352,13 +352,13 @@ export component MobileWindow inherits Window {
                         width: root.width - 32px; spacing: 10px;
                         CheckBox { width: 24px; checked: root.preview-task-checked[index]; toggled => { root.preview-task-toggled(root.preview-task-offsets[index]); } }
                         StyledText {
-                            horizontal-stretch: 1; text: block;
+                            horizontal-stretch: 1; text: block; height: self.preferred-height; vertical-alignment: top;
                             default-color: #f2f2f7; default-font-size: 16px; link-color: #72b7ff;
                             link-clicked(link) => { root.preview-link-clicked(link); }
                         }
                     }
                     if root.preview-block-kinds[index] == 0 || root.preview-block-kinds[index] == 5 || root.preview-block-kinds[index] == 9 || root.preview-block-kinds[index] == 10 : StyledText {
-                        text: block; width: root.width - 32px; default-color: #f2f2f7;
+                        text: block; width: root.width - 32px; height: self.preferred-height; vertical-alignment: top; default-color: #f2f2f7;
                         default-font-size: 16px; link-color: #72b7ff;
                         link-clicked(link) => { root.preview-link-clicked(link); }
                     }
@@ -371,7 +371,7 @@ export component MobileWindow inherits Window {
                         border-color: #64748b; border-width: 3px;
                         VerticalBox {
                             padding: 10px; spacing: 0px;
-                            StyledText { text: block; default-color: #d1d5db; default-font-size: 16px; }
+                            StyledText { text: block; height: self.preferred-height; vertical-alignment: top; default-color: #d1d5db; default-font-size: 16px; }
                         }
                     }
                     if root.preview-block-kinds[index] == 7 : Rectangle {
