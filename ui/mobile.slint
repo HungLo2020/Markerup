@@ -320,10 +320,13 @@ export component MobileWindow inherits Window {
 
         if root.view-mode == 2 : ScrollView {
             vertical-stretch: 1; mouse-drag-pan-enabled: true;
-            VerticalBox {
-                spacing: 8px; padding: 8px;
+            VerticalLayout {
+                alignment: start;
+                spacing: 10px; padding: 8px;
                 Text { text: root.current-path; font-size: 22px; font-weight: 700; color: #f2f2f7; width: root.width - 32px; }
-                for block[index] in root.preview-block-texts : VerticalBox {
+                for block[index] in root.preview-block-texts : VerticalLayout {
+                    alignment: start;
+                    vertical-stretch: 0;
                     width: root.width - 32px;
                     padding: 0px;
                     spacing: 0px;
@@ -336,7 +339,9 @@ export component MobileWindow inherits Window {
                             : root.preview-heading-levels[index] == 4 ? 19px
                             : root.preview-heading-levels[index] == 5 ? 17px : 15px;
                     }
-                    if root.preview-block-kinds[index] == 3 : VerticalBox {
+                    if root.preview-block-kinds[index] == 3 : VerticalLayout {
+                        alignment: start;
+                        vertical-stretch: 0;
                         width: root.width - 32px;
                         padding: 0px;
                         spacing: 0px;
@@ -377,7 +382,9 @@ export component MobileWindow inherits Window {
                     if root.preview-block-kinds[index] == 7 : Rectangle {
                         width: root.width - 32px; height: 1px; background: #4b5563;
                     }
-                    if root.preview-block-kinds[index] == 8 : VerticalBox {
+                    if root.preview-block-kinds[index] == 8 : VerticalLayout {
+                        alignment: start;
+                        vertical-stretch: 0;
                         width: root.width - 32px;
                         padding: 0px;
                         spacing: 0px;

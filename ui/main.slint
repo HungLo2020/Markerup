@@ -450,11 +450,14 @@ export component DesktopWindow inherits Window {
                                 Text { text: "Preview"; font-weight: 600; }
                                 ScrollView {
                                     height: max(60px, preview-pane.height - 24px);
-                                    VerticalBox {
-                                        spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: start;
+                                        spacing: 12px;
                                         padding: 8px;
 
-                                        for block[index] in root.preview-block-texts : VerticalBox {
+                                        for block[index] in root.preview-block-texts : VerticalLayout {
+                                            alignment: start;
+                                            vertical-stretch: 0;
                                             padding: 0px;
                                             spacing: 0px;
                                             if root.preview-block-kinds[index] == 1 : Text {
@@ -491,7 +494,9 @@ export component DesktopWindow inherits Window {
                                                 }
                                             }
 
-                                            if root.preview-block-kinds[index] == 3 : VerticalBox {
+                                            if root.preview-block-kinds[index] == 3 : VerticalLayout {
+                                                alignment: start;
+                                                vertical-stretch: 0;
                                                 width: preview-pane.width - 30px;
                                                 padding: 0px;
                                                 spacing: 0px;
@@ -555,7 +560,9 @@ export component DesktopWindow inherits Window {
                                                 height: 1px;
                                                 background: #4b5563;
                                             }
-                                            if root.preview-block-kinds[index] == 8 : VerticalBox {
+                                            if root.preview-block-kinds[index] == 8 : VerticalLayout {
+                                                alignment: start;
+                                                vertical-stretch: 0;
                                                 width: preview-pane.width - 30px;
                                                 padding: 0px;
                                                 spacing: 0px;
