@@ -1,5 +1,6 @@
 import { CheckBox, LineEdit, ListView, ScrollView, TextEdit, VerticalBox, HorizontalBox } from "std-widgets.slint";
-import { MarkdownPreview } from "markdown_preview.slint";
+import { MarkdownPreview, PreviewBlockData } from "markdown_preview.slint";
+import { WorkspaceActionMenu } from "workspace_action_menu.slint";
 
 component Button inherits Rectangle {
     in property <string> text;
@@ -103,17 +104,7 @@ export component MobileWindow inherits Window {
     in-out property <[int]> tree-entry-kinds;
     in-out property <[int]> tree-entry-depths;
     in-out property <[string]> search-results;
-    in-out property <[styled-text]> preview-block-texts;
-    in-out property <[string]> preview-block-plain-texts;
-    in-out property <[int]> preview-block-kinds;
-    in-out property <[int]> preview-heading-levels;
-    in-out property <[bool]> preview-task-checked;
-    in-out property <[int]> preview-task-offsets;
-    in-out property <[image]> preview-block-mermaid-images;
-    in-out property <[string]> preview-block-mermaid-errors;
-    in-out property <[image]> preview-block-images;
-    in-out property <[image]> preview-images;
-    in-out property <[string]> preview-image-labels;
+    in-out property <[PreviewBlockData]> preview-blocks;
     in-out property <string> workspace-path: "";
     in-out property <string> selected-path: "";
     in-out property <string> current-path: "No note selected";
@@ -264,29 +255,30 @@ export component MobileWindow inherits Window {
                     clicked => { root.refresh-requested(); }
                 }
             }
-            if root.action-menu-visible : Rectangle {
-                height: root.action-menu-root ? 154px : (root.action-menu-folder ? 196px : 196px);
-                background: #2c2c2e;
-                border-radius: 9px;
-                VerticalBox {
-                    padding: 8px; spacing: 6px;
-                    HorizontalBox {
-                        height: 30px;
-                        Text { text: root.action-menu-root ? "Create in workspace root" : "Item actions"; horizontal-stretch: 1; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
-                        Button { text: "Cancel"; width: 74px; height: 30px; horizontal-stretch: 0; clicked => { root.action-menu-visible = false; } }
-                    }
-                    LineEdit { height: 38px; text <=> root.action-name; placeholder-text: root.action-menu-root ? "Name" : "New name"; }
-                    HorizontalBox {
-                        height: 38px; spacing: 6px;
-                        Button { text: "New Note"; clicked => { if root.action-menu-root { root.new-note-root-requested(root.action-name); } else { root.new-note-requested(root.action-name); } } }
-                        Button { text: "New Folder"; visible: root.action-menu-root || root.action-menu-folder; clicked => { if root.action-menu-root { root.new-folder-root-requested(root.action-name); } else { root.new-folder-requested(root.action-name); } } }
-                    }
-                    if !root.action-menu-root : HorizontalBox {
-                        height: 38px; spacing: 6px;
-                        Button { text: "Rename"; clicked => { root.rename-requested(root.action-name); } }
-                        Button { text: "Delete"; clicked => { root.delete-requested(); } }
-                    }
+            if root.action-menu-visible : WorkspaceActionMenu {
+                root-mode: root.action-menu-root;
+                folder-mode: root.action-menu-folder;
+                name <=> root.action-name;
+                root-height: 154px;
+                item-height: 196px;
+                menu-padding: 8px;
+                menu-spacing: 6px;
+                cancel-width: 74px;
+                button-height: 38px;
+                title-height: 30px;
+                name-height: 38px;
+                action-spacing: 6px;
+                cancelled => { root.action-menu-visible = false; }
+                new-note-requested(name) => {
+                    if root.action-menu-root { root.new-note-root-requested(name); }
+                    else { root.new-note-requested(name); }
                 }
+                new-folder-requested(name) => {
+                    if root.action-menu-root { root.new-folder-root-requested(name); }
+                    else { root.new-folder-requested(name); }
+                }
+                rename-requested(name) => { root.rename-requested(name); }
+                delete-requested => { root.delete-requested(); }
             }
             VerticalBox {
                 vertical-stretch: 1;
@@ -369,15 +361,7 @@ export component MobileWindow inherits Window {
             document-title: root.current-path;
             mouse-drag-pan-enabled: true;
             block-spacing: 10px;
-            block-texts: root.preview-block-texts;
-            block-plain-texts: root.preview-block-plain-texts;
-            block-kinds: root.preview-block-kinds;
-            heading-levels: root.preview-heading-levels;
-            task-checked: root.preview-task-checked;
-            task-offsets: root.preview-task-offsets;
-            mermaid-images: root.preview-block-mermaid-images;
-            mermaid-errors: root.preview-block-mermaid-errors;
-            images: root.preview-block-images;
+            blocks: root.preview-blocks;
             link-clicked(link) => { root.preview-link-clicked(link); }
             task-toggled(offset) => { root.preview-task-toggled(offset); }
         }

@@ -1,6 +1,7 @@
 import { Button, CheckBox, HorizontalBox, LineEdit, ListView, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
 import { MobileWindow } from "mobile.slint";
-import { MarkdownPreview } from "markdown_preview.slint";
+import { MarkdownPreview, PreviewBlockData } from "markdown_preview.slint";
+import { WorkspaceActionMenu } from "workspace_action_menu.slint";
 export { MobileWindow } from "mobile.slint";
 
 component DesktopTreeRow inherits Rectangle {
@@ -76,17 +77,7 @@ export component DesktopWindow inherits Window {
     in-out property <[int]> tree-entry-kinds;
     in-out property <[int]> tree-entry-depths;
     in-out property <[string]> search-results;
-    in-out property <[styled-text]> preview-block-texts;
-    in-out property <[string]> preview-block-plain-texts;
-    in-out property <[int]> preview-block-kinds;
-    in-out property <[int]> preview-heading-levels;
-    in-out property <[bool]> preview-task-checked;
-    in-out property <[int]> preview-task-offsets;
-    in-out property <[image]> preview-block-mermaid-images;
-    in-out property <[string]> preview-block-mermaid-errors;
-    in-out property <[image]> preview-block-images;
-    in-out property <[image]> preview-images;
-    in-out property <[string]> preview-image-labels;
+    in-out property <[PreviewBlockData]> preview-blocks;
     in-out property <string> workspace-path: "";
     in-out property <string> selected-path: "";
     in-out property <string> current-path: "No note selected";
@@ -385,31 +376,23 @@ export component DesktopWindow inherits Window {
                             Button { text: "+"; width: 32px; height: 30px; horizontal-stretch: 0; clicked => { root.action-menu-root = true; root.action-menu-folder = false; root.action-menu-visible = true; root.action-name = ""; } }
                         }
 
-                        if root.action-menu-visible : Rectangle {
-                            height: root.action-menu-root ? 138px : 168px;
-                            background: #2c2c2e;
-                            border-radius: 6px;
-                            VerticalBox {
-                                padding: 6px; spacing: 5px;
-                                HorizontalBox {
-                                    height: 26px;
-                                    Text { text: root.action-menu-root ? "Create in workspace root" : "Item actions"; horizontal-stretch: 1; vertical-alignment: center; font-weight: 600; }
-                                    Button { text: "Cancel"; width: 62px; height: 26px; horizontal-stretch: 0; clicked => { root.action-menu-visible = false; } }
-                                }
-                                LineEdit { height: 28px; text <=> root.action-name; placeholder-text: root.action-menu-root ? "Name" : "New name"; }
-                                HorizontalBox {
-                                    height: 28px;
-                                    spacing: 4px;
-                                    Button { text: "New Note"; height: 28px; clicked => { if root.action-menu-root { root.new-note-root-requested(root.action-name); } else { root.new-note-requested(root.action-name); } } }
-                                    Button { text: "New Folder"; height: 28px; visible: root.action-menu-root || root.action-menu-folder; clicked => { if root.action-menu-root { root.new-folder-root-requested(root.action-name); } else { root.new-folder-requested(root.action-name); } } }
-                                }
-                                if !root.action-menu-root : HorizontalBox {
-                                    height: 28px;
-                                    spacing: 4px;
-                                    Button { text: "Rename"; height: 28px; clicked => { root.rename-requested(root.action-name); } }
-                                    Button { text: "Delete"; height: 28px; clicked => { root.delete-requested(); } }
-                                }
+                        if root.action-menu-visible : WorkspaceActionMenu {
+                            root-mode: root.action-menu-root;
+                            folder-mode: root.action-menu-folder;
+                            name <=> root.action-name;
+                            root-height: 138px;
+                            item-height: 168px;
+                            cancelled => { root.action-menu-visible = false; }
+                            new-note-requested(name) => {
+                                if root.action-menu-root { root.new-note-root-requested(name); }
+                                else { root.new-note-requested(name); }
                             }
+                            new-folder-requested(name) => {
+                                if root.action-menu-root { root.new-folder-root-requested(name); }
+                                else { root.new-folder-requested(name); }
+                            }
+                            rename-requested(name) => { root.rename-requested(name); }
+                            delete-requested => { root.delete-requested(); }
                         }
 
                         ListView {
@@ -491,15 +474,7 @@ export component DesktopWindow inherits Window {
                                 MarkdownPreview {
                                     vertical-stretch: 1;
                                     height: max(60px, preview-pane.height - 24px);
-                                    block-texts: root.preview-block-texts;
-                                    block-plain-texts: root.preview-block-plain-texts;
-                                    block-kinds: root.preview-block-kinds;
-                                    heading-levels: root.preview-heading-levels;
-                                    task-checked: root.preview-task-checked;
-                                    task-offsets: root.preview-task-offsets;
-                                    mermaid-images: root.preview-block-mermaid-images;
-                                    mermaid-errors: root.preview-block-mermaid-errors;
-                                    images: root.preview-block-images;
+                                    blocks: root.preview-blocks;
                                     link-clicked(link) => { root.preview-link-clicked(link); }
                                     task-toggled(offset) => { root.preview-task-toggled(offset); }
                                 }

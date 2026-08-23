@@ -1,4 +1,5 @@
 use crate::MainWindow;
+use crate::PreviewBlockData;
 use crate::markdown::PreviewBlockKind;
 use crate::navigation::NavigationState;
 use crate::persistence::{SavedSmbConfig, clear_session, save_session};
@@ -8,7 +9,7 @@ use crate::workers::{
     LATEST_SEARCH_GENERATION, PreviewResult, SaveResult, ScanResult, SearchResult, hash_text,
 };
 use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
-use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
+use slint::{Image, ModelRc, SharedString, VecModel};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
@@ -248,16 +249,7 @@ pub fn string_model(values: impl IntoIterator<Item = String>) -> ModelRc<SharedS
     ))
 }
 
-fn image_model(values: Vec<Image>) -> ModelRc<Image> {
-    ModelRc::new(VecModel::from(values))
-}
-fn styled_model(values: Vec<StyledText>) -> ModelRc<StyledText> {
-    ModelRc::new(VecModel::from(values))
-}
-fn int_model(values: Vec<i32>) -> ModelRc<i32> {
-    ModelRc::new(VecModel::from(values))
-}
-fn bool_model(values: Vec<bool>) -> ModelRc<bool> {
+fn preview_model(values: Vec<PreviewBlockData>) -> ModelRc<PreviewBlockData> {
     ModelRc::new(VecModel::from(values))
 }
 
@@ -343,82 +335,6 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
     }
 
     let apply_started = Instant::now();
-    let mut plain_texts = Vec::new();
-    let mut kinds = Vec::new();
-    let mut heading_levels = Vec::new();
-    let mut task_checked = Vec::new();
-
-    for block in &result.blocks {
-        plain_texts.push(if matches!(&block.kind, PreviewBlockKind::Mermaid) {
-            String::new()
-        } else {
-            block.markdown.clone()
-        });
-        match &block.kind {
-            PreviewBlockKind::Body => {
-                kinds.push(0);
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Heading(level) => {
-                kinds.push(1);
-                heading_levels.push(*level as i32);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Task(checked) => {
-                kinds.push(2);
-                heading_levels.push(0);
-                task_checked.push(*checked);
-            }
-            PreviewBlockKind::Mermaid => {
-                kinds.push(3);
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Code => {
-                kinds.push(4);
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::List(ordered) => {
-                kinds.push(if *ordered { 10 } else { 5 });
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Quote => {
-                kinds.push(6);
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Rule => {
-                kinds.push(7);
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Image => {
-                kinds.push(8);
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-            PreviewBlockKind::Table => {
-                kinds.push(9);
-                heading_levels.push(0);
-                task_checked.push(false);
-            }
-        }
-    }
-    let task_offsets = result
-        .blocks
-        .iter()
-        .map(|block| block.task_offset.map_or(-1, |offset| offset as i32))
-        .collect();
-
-    ui.set_preview_block_texts(styled_model(result.styled_texts));
-    ui.set_preview_block_plain_texts(string_model(plain_texts));
-    ui.set_preview_block_kinds(int_model(kinds));
-    ui.set_preview_heading_levels(int_model(heading_levels));
-    ui.set_preview_task_checked(bool_model(task_checked));
-    ui.set_preview_task_offsets(int_model(task_offsets));
 
     let mut mermaid_images = Vec::with_capacity(result.blocks.len());
     let mut mermaid_errors = Vec::with_capacity(result.blocks.len());
@@ -468,11 +384,7 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
         mermaid_images.push(cached.image);
         mermaid_errors.push(cached.error);
     }
-    ui.set_preview_block_mermaid_images(image_model(mermaid_images));
-    ui.set_preview_block_mermaid_errors(string_model(mermaid_errors));
-
     let mut images = Vec::new();
-    let mut labels = Vec::new();
     let mut block_images = vec![Image::default(); result.blocks.len()];
     if let Some(current) = state.current_file.as_deref() {
         let mut seen_assets = HashSet::new();
@@ -513,11 +425,6 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
                 });
 
             if let Some(image) = image {
-                labels.push(if reference.alt.is_empty() {
-                    asset_id
-                } else {
-                    reference.alt
-                });
                 images.push(image);
                 if let Some((block_index, _)) =
                     result.blocks.iter().enumerate().find(|(_, block)| {
@@ -531,9 +438,41 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
             }
         }
     }
-    ui.set_preview_block_images(image_model(block_images));
-    ui.set_preview_images(image_model(images));
-    ui.set_preview_image_labels(string_model(labels));
+    let preview_blocks = result
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            let (kind, heading_level, task_checked) = match &block.kind {
+                PreviewBlockKind::Body => (0, 0, false),
+                PreviewBlockKind::Heading(level) => (1, *level as i32, false),
+                PreviewBlockKind::Task(checked) => (2, 0, *checked),
+                PreviewBlockKind::Mermaid => (3, 0, false),
+                PreviewBlockKind::Code => (4, 0, false),
+                PreviewBlockKind::List(ordered) => (if *ordered { 10 } else { 5 }, 0, false),
+                PreviewBlockKind::Quote => (6, 0, false),
+                PreviewBlockKind::Rule => (7, 0, false),
+                PreviewBlockKind::Image => (8, 0, false),
+                PreviewBlockKind::Table => (9, 0, false),
+            };
+            PreviewBlockData {
+                text: result.styled_texts[index].clone(),
+                plain_text: if matches!(&block.kind, PreviewBlockKind::Mermaid) {
+                    "".into()
+                } else {
+                    block.markdown.clone().into()
+                },
+                kind,
+                heading_level,
+                task_checked,
+                task_offset: block.task_offset.map_or(-1, |offset| offset as i32),
+                mermaid_image: mermaid_images[index].clone(),
+                mermaid_error: mermaid_errors[index].clone().into(),
+                image: block_images[index].clone(),
+            }
+        })
+        .collect();
+    ui.set_preview_blocks(preview_model(preview_blocks));
 
     state.dirty = result.source_hash != state.saved_hash;
     sync_flags(ui, state);
@@ -646,16 +585,7 @@ pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResu
 }
 
 fn clear_preview(ui: &MainWindow) {
-    ui.set_preview_block_texts(styled_model(Vec::new()));
-    ui.set_preview_block_plain_texts(string_model(Vec::new()));
-    ui.set_preview_block_kinds(int_model(Vec::new()));
-    ui.set_preview_heading_levels(int_model(Vec::new()));
-    ui.set_preview_task_checked(bool_model(Vec::new()));
-    ui.set_preview_block_mermaid_images(image_model(Vec::new()));
-    ui.set_preview_block_mermaid_errors(string_model(Vec::new()));
-    ui.set_preview_block_images(image_model(Vec::new()));
-    ui.set_preview_images(image_model(Vec::new()));
-    ui.set_preview_image_labels(string_model(Vec::new()));
+    ui.set_preview_blocks(preview_model(Vec::new()));
 }
 
 pub fn save_session_for(state: &AppState) {

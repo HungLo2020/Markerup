@@ -1,18 +1,25 @@
 import { CheckBox, HorizontalBox, ScrollView } from "std-widgets.slint";
 
+// One value contains every render-time attribute for one Markdown block. Keeping
+// these values together prevents a model update from pairing a block with the
+// wrong task, image, or Mermaid result.
+export struct PreviewBlockData {
+    text: styled-text,
+    plain-text: string,
+    kind: int,
+    heading-level: int,
+    task-checked: bool,
+    task-offset: int,
+    mermaid-image: image,
+    mermaid-error: string,
+    image: image,
+}
+
 // Shared Markdown block renderer used by both desktop and mobile shells.
 // The shells provide navigation and decide how much space this component gets;
 // this component owns the visual treatment of Markdown itself.
 export component MarkdownPreview inherits Rectangle {
-    in property <[styled-text]> block-texts;
-    in property <[string]> block-plain-texts;
-    in property <[int]> block-kinds;
-    in property <[int]> heading-levels;
-    in property <[bool]> task-checked;
-    in property <[int]> task-offsets;
-    in property <[image]> mermaid-images;
-    in property <[string]> mermaid-errors;
-    in property <[image]> images;
+    in property <[PreviewBlockData]> blocks;
     in property <string> document-title: "";
     in property <bool> show-document-title: false;
     in property <bool> mouse-drag-pan-enabled: false;
@@ -40,38 +47,38 @@ export component MarkdownPreview inherits Rectangle {
                 wrap: word-wrap;
             }
 
-            for block[index] in root.block-texts : VerticalLayout {
+            for block[index] in root.blocks : VerticalLayout {
                 alignment: start;
                 vertical-stretch: 0;
                 width: 100%;
                 padding: 0px;
                 spacing: 0px;
 
-                if root.block-kinds[index] == 1 : Text {
+                if block.kind == 1 : Text {
                     width: 100%;
-                    text: root.block-plain-texts[index];
+                    text: block.plain-text;
                     wrap: word-wrap;
                     color: #f2f2f7;
                     font-weight: 700;
-                    font-size: root.heading-levels[index] == 1 ? 30px
-                        : root.heading-levels[index] == 2 ? 26px
-                        : root.heading-levels[index] == 3 ? 22px
-                        : root.heading-levels[index] == 4 ? 19px
-                        : root.heading-levels[index] == 5 ? 17px
+                    font-size: block.heading-level == 1 ? 30px
+                        : block.heading-level == 2 ? 26px
+                        : block.heading-level == 3 ? 22px
+                        : block.heading-level == 4 ? 19px
+                        : block.heading-level == 5 ? 17px
                         : 15px;
                 }
 
-                if root.block-kinds[index] == 2 : HorizontalBox {
+                if block.kind == 2 : HorizontalBox {
                     width: 100%;
                     spacing: 10px;
                     CheckBox {
                         width: 24px;
-                        checked: root.task-checked[index];
-                        toggled => { root.task-toggled(root.task-offsets[index]); }
+                        checked: block.task-checked;
+                        toggled => { root.task-toggled(block.task-offset); }
                     }
                     StyledText {
                         horizontal-stretch: 1;
-                        text: block;
+                        text: block.text;
                         height: self.preferred-height;
                         vertical-alignment: top;
                         default-color: #f2f2f7;
@@ -81,29 +88,29 @@ export component MarkdownPreview inherits Rectangle {
                     }
                 }
 
-                if root.block-kinds[index] == 3 : VerticalLayout {
+                if block.kind == 3 : VerticalLayout {
                     alignment: start;
                     vertical-stretch: 0;
                     width: 100%;
                     padding: 0px;
                     spacing: 0px;
-                    if root.mermaid-errors[index] != "" : Text {
+                    if block.mermaid-error != "" : Text {
                         width: 100%;
-                        text: root.mermaid-errors[index];
+                        text: block.mermaid-error;
                         color: #ff8b8b;
                         wrap: word-wrap;
                     }
-                    if root.mermaid-errors[index] == "" : Image {
+                    if block.mermaid-error == "" : Image {
                         width: 100%;
                         height: min(420px, max(100px, self.preferred-height));
                         image-fit: contain;
-                        source: root.mermaid-images[index];
+                        source: block.mermaid-image;
                     }
                 }
 
-                if root.block-kinds[index] == 0 || root.block-kinds[index] == 5 || root.block-kinds[index] == 9 || root.block-kinds[index] == 10 : StyledText {
+                if block.kind == 0 || block.kind == 5 || block.kind == 9 || block.kind == 10 : StyledText {
                     width: 100%;
-                    text: block;
+                    text: block.text;
                     height: self.preferred-height;
                     vertical-alignment: top;
                     default-color: #f2f2f7;
@@ -112,7 +119,7 @@ export component MarkdownPreview inherits Rectangle {
                     link-clicked(link) => { root.link-clicked(link); }
                 }
 
-                if root.block-kinds[index] == 4 : Rectangle {
+                if block.kind == 4 : Rectangle {
                     width: 100%;
                     background: #252b35;
                     VerticalLayout {
@@ -120,7 +127,7 @@ export component MarkdownPreview inherits Rectangle {
                         spacing: 0px;
                         Text {
                             width: 100%;
-                            text: root.block-plain-texts[index];
+                            text: block.plain-text;
                             wrap: word-wrap;
                             color: #e5e7eb;
                             font-family: "monospace";
@@ -129,7 +136,7 @@ export component MarkdownPreview inherits Rectangle {
                     }
                 }
 
-                if root.block-kinds[index] == 6 : Rectangle {
+                if block.kind == 6 : Rectangle {
                     width: 100%;
                     background: #242832;
                     border-color: #64748b;
@@ -139,7 +146,7 @@ export component MarkdownPreview inherits Rectangle {
                         spacing: 0px;
                         StyledText {
                             width: 100%;
-                            text: block;
+                            text: block.text;
                             height: self.preferred-height;
                             vertical-alignment: top;
                             default-color: #d1d5db;
@@ -148,13 +155,13 @@ export component MarkdownPreview inherits Rectangle {
                     }
                 }
 
-                if root.block-kinds[index] == 7 : Rectangle {
+                if block.kind == 7 : Rectangle {
                     width: 100%;
                     height: 1px;
                     background: #4b5563;
                 }
 
-                if root.block-kinds[index] == 8 : VerticalLayout {
+                if block.kind == 8 : VerticalLayout {
                     alignment: start;
                     vertical-stretch: 0;
                     width: 100%;
@@ -164,11 +171,11 @@ export component MarkdownPreview inherits Rectangle {
                         width: 100%;
                         height: min(360px, max(80px, self.preferred-height));
                         image-fit: contain;
-                        source: root.images[index];
+                        source: block.image;
                     }
                     Text {
                         width: 100%;
-                        text: root.block-plain-texts[index];
+                        text: block.plain-text;
                         color: #9ca3af;
                         wrap: word-wrap;
                     }

@@ -1,0 +1,101 @@
+import { HorizontalBox, LineEdit, VerticalBox } from "std-widgets.slint";
+
+component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <length> button-height: 28px;
+    callback clicked;
+    height: root.button-height;
+    horizontal-stretch: 1;
+    background: #3a3a3c;
+    border-radius: 5px;
+    TouchArea { clicked => { root.clicked(); } }
+    Text {
+        width: parent.width - 8px;
+        x: 4px;
+        height: parent.height;
+        text: root.text;
+        color: #f2f2f7;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        overflow: elide;
+    }
+}
+
+export component WorkspaceActionMenu inherits Rectangle {
+    in property <bool> root-mode;
+    in property <bool> folder-mode;
+    in-out property <string> name;
+    in property <length> root-height: 138px;
+    in property <length> item-height: 168px;
+    in property <length> menu-padding: 6px;
+    in property <length> menu-spacing: 5px;
+    in property <length> cancel-width: 62px;
+    in property <length> button-height: 28px;
+    in property <length> title-height: 26px;
+    in property <length> name-height: 28px;
+    in property <length> action-spacing: 4px;
+    callback cancelled;
+    callback new-note-requested(string);
+    callback new-folder-requested(string);
+    callback rename-requested(string);
+    callback delete-requested;
+
+    height: root.root-mode ? root.root-height : root.item-height;
+    background: #2c2c2e;
+    border-radius: 6px;
+
+    VerticalBox {
+        padding: root.menu-padding;
+        spacing: root.menu-spacing;
+        HorizontalBox {
+            height: root.title-height;
+            Text {
+                text: root.root-mode ? "Create in workspace root" : "Item actions";
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                font-weight: 600;
+            }
+            ActionButton {
+                text: "Cancel";
+                width: root.cancel-width;
+                button-height: root.title-height;
+                horizontal-stretch: 0;
+                clicked => { root.cancelled(); }
+            }
+        }
+        LineEdit {
+            height: root.name-height;
+            text <=> root.name;
+            placeholder-text: root.root-mode ? "Name" : "New name";
+        }
+        HorizontalBox {
+            height: root.button-height;
+            spacing: root.action-spacing;
+            ActionButton {
+                text: "New Note";
+                button-height: root.button-height;
+                clicked => { root.new-note-requested(root.name); }
+            }
+            ActionButton {
+                text: "New Folder";
+                button-height: root.button-height;
+                visible: root.root-mode || root.folder-mode;
+                clicked => { root.new-folder-requested(root.name); }
+            }
+        }
+        if !root.root-mode : HorizontalBox {
+            height: root.button-height;
+            spacing: root.action-spacing;
+            ActionButton {
+                text: "Rename";
+                button-height: root.button-height;
+                clicked => { root.rename-requested(root.name); }
+            }
+            ActionButton {
+                text: "Delete";
+                button-height: root.button-height;
+                clicked => { root.delete-requested(); }
+            }
+        }
+    }
+}
