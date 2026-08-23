@@ -193,12 +193,12 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         let state = state.clone();
         ui.on_back_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let target = state.borrow_mut().back.pop();
+            let target = {
+                let mut state = state.borrow_mut();
+                let current = state.current_file.clone();
+                state.navigation.go_back(current.as_deref())
+            };
             if let Some(target) = target {
-                let current = state.borrow().current_file.clone();
-                if let Some(current) = current {
-                    state.borrow_mut().forward.push(current);
-                }
                 open_file(&ui, &mut state.borrow_mut(), target, false);
             }
         });
@@ -209,12 +209,12 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         let state = state.clone();
         ui.on_forward_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let target = state.borrow_mut().forward.pop();
+            let target = {
+                let mut state = state.borrow_mut();
+                let current = state.current_file.clone();
+                state.navigation.go_forward(current.as_deref())
+            };
             if let Some(target) = target {
-                let current = state.borrow().current_file.clone();
-                if let Some(current) = current {
-                    state.borrow_mut().back.push(current);
-                }
                 open_file(&ui, &mut state.borrow_mut(), target, false);
             }
         });

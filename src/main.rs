@@ -8,7 +8,10 @@ mod ios_bridge;
 #[cfg(target_os = "ios")]
 mod ios_workspace;
 mod markdown;
+mod navigation;
 mod persistence;
+mod preview_controller;
+mod save_coordinator;
 mod smb_workspace;
 mod workers;
 mod workspace;
@@ -109,17 +112,19 @@ fn install_workspace<W: Watcher>(
     let generations = {
         let state = state.borrow();
         (
-            state.preview_generation,
+            state.preview.generation(),
             state.search_generation,
             state.scan_generation,
+            state.save.generation(),
         )
     };
     {
         let mut state = state.borrow_mut();
         state.replace_workspace(workspace, pinned);
-        state.preview_generation = generations.0.wrapping_add(1);
+        state.preview.replace_workspace(generations.0);
         state.search_generation = generations.1.wrapping_add(1);
         state.scan_generation = generations.2.wrapping_add(1);
+        state.save.replace_workspace(generations.3);
         reset_workspace_ui(ui, &mut state);
         state.schedule_scan(Duration::ZERO);
         sync_flags(ui, &state);
@@ -576,37 +581,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if ui.get_view_mode() != 0 {
-                    let ready = state
-                        .pending_preview
-                        .as_ref()
-                        .is_some_and(|pending| pending.due <= now);
-                    if ready {
-                        if let Some(pending) = state.pending_preview.take() {
-                            if workers
-                                .preview
-                                .send(WorkerRequest::Preview {
-                                    generation: pending.generation,
-                                    source: pending.source,
-                                })
-                                .is_err()
-                            {
-                                set_status(&ui, "Preview worker stopped unexpectedly");
-                            } else {
-                                busy_until.set(now + ACTIVE_POLL_WINDOW);
-                            }
+                    if let Some(pending) = state.preview.take_due(now) {
+                        if workers
+                            .preview
+                            .send(WorkerRequest::Preview {
+                                generation: pending.generation,
+                                source: pending.source,
+                            })
+                            .is_err()
+                        {
+                            set_status(&ui, "Preview worker stopped unexpectedly");
+                        } else {
+                            busy_until.set(now + ACTIVE_POLL_WINDOW);
                         }
                     }
-                }
 
-                if state.external_conflict {
-                    state.pending_save = None;
-                }
-                let save_ready = state
-                    .pending_save
-                    .as_ref()
-                    .is_some_and(|pending| pending.due <= now);
-                if save_ready {
-                    if let Some(pending) = state.pending_save.take() {
+                    if state.external_conflict {
+                        state.save.clear_pending();
+                    }
+                    if let Some(pending) = state.save.take_due(now) {
                         if let Some(workspace) = state.workspace.shared_clone() {
                             set_status(&ui, "Saving…");
                             if workers
@@ -620,13 +613,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 })
                                 .is_err()
                             {
-                                state.pending_save = Some(crate::app::PendingSave {
-                                    due: now + Duration::from_secs(1),
-                                    generation: state.save_generation,
-                                    file: state.current_file.clone().unwrap_or_default(),
-                                    contents: ui.get_editor_text().to_string(),
-                                    expected_disk_text: state.disk_text.clone(),
-                                });
+                                let retry_file = state.current_file.clone().unwrap_or_default();
+                                let retry_disk_text = state.disk_text.clone();
+                                state.save.retry(
+                                    now,
+                                    retry_file,
+                                    ui.get_editor_text().to_string(),
+                                    retry_disk_text,
+                                );
                                 set_status(&ui, "Save failed — retrying");
                             } else {
                                 busy_until.set(now + ACTIVE_POLL_WINDOW);
@@ -701,10 +695,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let active = busy_until.get() > Instant::now() || {
                 let state = state.borrow();
-                state.pending_preview.is_some()
+                state.preview.is_pending()
                     || state.pending_search.is_some()
                     || state.pending_scan.is_some()
-                    || state.pending_save.is_some()
+                    || state.save.is_pending()
             };
             arm_poll_timer(
                 timer_for_poll.clone(),

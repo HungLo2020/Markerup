@@ -118,16 +118,7 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
                         .current_file
                         .as_deref()
                         .map(|id| rebase_id(id, &old, &new));
-                    state.back = state
-                        .back
-                        .iter()
-                        .map(|id| rebase_id(id, &old, &new))
-                        .collect();
-                    state.forward = state
-                        .forward
-                        .iter()
-                        .map(|id| rebase_id(id, &old, &new))
-                        .collect();
+                    state.navigation.rebase(&old, &new);
                     state.expanded = state
                         .expanded
                         .iter()
@@ -182,12 +173,7 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
                         crate::app::clear_current(&ui, &mut state);
                     }
                     state.selected = None;
-                    state
-                        .back
-                        .retain(|v| v != &id && !v.starts_with(&format!("{id}/")));
-                    state
-                        .forward
-                        .retain(|v| v != &id && !v.starts_with(&format!("{id}/")));
+                    state.navigation.remove(&id);
                     mutate_refresh(&ui, &mut state);
                     set_status(&ui, "Deleted");
                 }

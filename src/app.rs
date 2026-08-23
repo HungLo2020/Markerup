@@ -1,9 +1,11 @@
 use crate::MainWindow;
 use crate::markdown::PreviewBlockKind;
+use crate::navigation::NavigationState;
 use crate::persistence::{SavedSmbConfig, clear_session, save_session};
+use crate::preview_controller::PreviewController;
+use crate::save_coordinator::SaveCoordinator;
 use crate::workers::{
-    LATEST_PREVIEW_GENERATION, LATEST_SAVE_GENERATION, LATEST_SEARCH_GENERATION, PreviewResult,
-    SaveResult, ScanResult, SearchResult, hash_text,
+    LATEST_SEARCH_GENERATION, PreviewResult, SaveResult, ScanResult, SearchResult, hash_text,
 };
 use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
@@ -32,13 +34,6 @@ fn set_editor_text(ui: &MainWindow, text: String) {
 }
 
 #[derive(Debug)]
-pub struct PendingPreview {
-    pub generation: u64,
-    pub due: Instant,
-    pub source: String,
-}
-
-#[derive(Debug)]
 pub struct PendingSearch {
     pub generation: u64,
     pub due: Instant,
@@ -50,15 +45,6 @@ pub struct PendingScan {
     pub generation: u64,
     pub due: Instant,
     pub full_tree: bool,
-}
-
-#[derive(Debug)]
-pub struct PendingSave {
-    pub generation: u64,
-    pub due: Instant,
-    pub file: EntryId,
-    pub contents: String,
-    pub expected_disk_text: String,
 }
 
 #[derive(Clone)]
@@ -81,21 +67,18 @@ pub struct AppState {
     pub saved_hash: u64,
     pub dirty: bool,
     pub external_conflict: bool,
-    pub back: Vec<EntryId>,
-    pub forward: Vec<EntryId>,
+    pub navigation: NavigationState,
     pub search_results: Vec<EntryId>,
     pub find_query: String,
     pub find_matches: Vec<(usize, usize)>,
     pub find_index: usize,
     pub delete_armed: Option<(EntryId, Instant)>,
-    pub preview_generation: u64,
+    pub preview: PreviewController,
     pub search_generation: u64,
     pub scan_generation: u64,
-    pub pending_preview: Option<PendingPreview>,
     pub pending_search: Option<PendingSearch>,
     pub pending_scan: Option<PendingScan>,
-    pub save_generation: u64,
-    pub pending_save: Option<PendingSave>,
+    pub save: SaveCoordinator,
     pub tree_model: Rc<VecModel<SharedString>>,
     image_cache: HashMap<EntryId, CachedImage>,
 }
@@ -115,21 +98,18 @@ impl AppState {
             saved_hash: hash_text(""),
             dirty: false,
             external_conflict: false,
-            back: Vec::new(),
-            forward: Vec::new(),
+            navigation: NavigationState::default(),
             search_results: Vec::new(),
             find_query: String::new(),
             find_matches: Vec::new(),
             find_index: 0,
             delete_armed: None,
-            preview_generation: 0,
+            preview: PreviewController::default(),
             search_generation: 0,
             scan_generation: 0,
-            pending_preview: None,
             pending_search: None,
             pending_scan: None,
-            save_generation: 0,
-            pending_save: None,
+            save: SaveCoordinator::default(),
             tree_model: Rc::new(VecModel::from(Vec::<SharedString>::new())),
             image_cache: HashMap::new(),
         }
@@ -153,34 +133,17 @@ impl AppState {
     }
 
     pub fn schedule_preview(&mut self, source: String, delay: Duration) {
-        self.preview_generation = self.preview_generation.wrapping_add(1);
-        LATEST_PREVIEW_GENERATION.store(
-            self.preview_generation,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        self.pending_preview = Some(PendingPreview {
-            generation: self.preview_generation,
-            due: Instant::now() + delay,
-            source,
-        });
+        self.preview.schedule(source, delay);
     }
 
     pub fn schedule_autosave(&mut self, contents: String, delay: Duration) {
-        let Some(file) = self.current_file.clone() else {
-            return;
-        };
-        if !self.workspace.is_open() {
-            return;
-        }
-        self.save_generation = self.save_generation.wrapping_add(1);
-        LATEST_SAVE_GENERATION.store(self.save_generation, std::sync::atomic::Ordering::Release);
-        self.pending_save = Some(PendingSave {
-            generation: self.save_generation,
-            due: Instant::now() + delay,
-            file,
+        self.save.schedule(
+            self.current_file.clone(),
+            self.workspace.is_open(),
             contents,
-            expected_disk_text: self.disk_text.clone(),
-        });
+            self.disk_text.clone(),
+            delay,
+        );
     }
 
     pub fn schedule_search(&mut self, query: String) {
@@ -314,8 +277,8 @@ pub fn sync_flags(ui: &MainWindow, state: &AppState) {
     ui.set_workspace_path(state.workspace.display_name().into());
     ui.set_dirty(state.dirty);
     ui.set_external_conflict(state.external_conflict);
-    ui.set_can_go_back(!state.back.is_empty());
-    ui.set_can_go_forward(!state.forward.is_empty());
+    ui.set_can_go_back(state.navigation.can_go_back());
+    ui.set_can_go_forward(state.navigation.can_go_forward());
 }
 
 pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
@@ -361,7 +324,7 @@ fn styled_from_markdown(markdown: &str) -> StyledText {
 }
 
 pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: PreviewResult) {
-    if result.generation != state.preview_generation {
+    if result.generation != state.preview.generation() {
         return;
     }
 
@@ -701,11 +664,8 @@ pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
     state.saved_hash = hash_text("");
     state.dirty = false;
     state.external_conflict = false;
-    state.preview_generation = state.preview_generation.wrapping_add(1);
-    state.pending_preview = None;
-    state.save_generation = state.save_generation.wrapping_add(1);
-    LATEST_SAVE_GENERATION.store(state.save_generation, std::sync::atomic::Ordering::Release);
-    state.pending_save = None;
+    state.preview.invalidate();
+    state.save.invalidate();
     ui.set_current_path("No note selected".into());
     set_editor_text(ui, String::new());
     clear_preview(ui);
@@ -744,11 +704,8 @@ pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bo
         }
     };
     if history {
-        if let Some(current) = state.current_file.clone() {
-            if current != id {
-                state.back.push(current);
-                state.forward.clear();
-            }
+        if state.current_file.as_deref() != Some(id.as_str()) {
+            state.navigation.visit(state.current_file.as_deref());
         }
     }
     state.current_file = Some(id.clone());
@@ -781,9 +738,7 @@ pub fn save_current(ui: &MainWindow, state: &mut AppState, contents: &str, force
         set_status(ui, "External change conflict");
         return;
     }
-    state.save_generation = state.save_generation.wrapping_add(1);
-    LATEST_SAVE_GENERATION.store(state.save_generation, std::sync::atomic::Ordering::Release);
-    state.pending_save = None;
+    state.save.begin_immediate();
     match state.workspace.write(&current, contents) {
         Ok(()) => {
             state.disk_text = contents.to_string();
@@ -802,7 +757,7 @@ pub fn save_current(ui: &MainWindow, state: &mut AppState, contents: &str, force
 }
 
 pub fn apply_save_result(ui: &MainWindow, state: &mut AppState, result: SaveResult) {
-    if result.generation != state.save_generation
+    if result.generation != state.save.generation()
         || state.current_file.as_deref() != Some(result.file.as_str())
     {
         return;
