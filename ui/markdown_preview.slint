@@ -1,0 +1,179 @@
+import { CheckBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+
+// Shared Markdown block renderer used by both desktop and mobile shells.
+// The shells provide navigation and decide how much space this component gets;
+// this component owns the visual treatment of Markdown itself.
+export component MarkdownPreview inherits Rectangle {
+    in property <[styled-text]> block-texts;
+    in property <[string]> block-plain-texts;
+    in property <[int]> block-kinds;
+    in property <[int]> heading-levels;
+    in property <[bool]> task-checked;
+    in property <[int]> task-offsets;
+    in property <[image]> mermaid-images;
+    in property <[string]> mermaid-errors;
+    in property <[image]> images;
+    in property <string> document-title: "";
+    in property <bool> show-document-title: false;
+    in property <bool> mouse-drag-pan-enabled: false;
+    in property <length> block-spacing: 12px;
+
+    callback link-clicked(string);
+    callback task-toggled(int);
+
+    ScrollView {
+        width: parent.width;
+        height: parent.height;
+        mouse-drag-pan-enabled: root.mouse-drag-pan-enabled;
+
+        VerticalLayout {
+            alignment: start;
+            spacing: root.block-spacing;
+            padding: 8px;
+
+            if root.show-document-title : Text {
+                text: root.document-title;
+                width: 100%;
+                color: #f2f2f7;
+                font-size: 22px;
+                font-weight: 700;
+                wrap: word-wrap;
+            }
+
+            for block[index] in root.block-texts : VerticalLayout {
+                alignment: start;
+                vertical-stretch: 0;
+                width: 100%;
+                padding: 0px;
+                spacing: 0px;
+
+                if root.block-kinds[index] == 1 : Text {
+                    width: 100%;
+                    text: root.block-plain-texts[index];
+                    wrap: word-wrap;
+                    color: #f2f2f7;
+                    font-weight: 700;
+                    font-size: root.heading-levels[index] == 1 ? 30px
+                        : root.heading-levels[index] == 2 ? 26px
+                        : root.heading-levels[index] == 3 ? 22px
+                        : root.heading-levels[index] == 4 ? 19px
+                        : root.heading-levels[index] == 5 ? 17px
+                        : 15px;
+                }
+
+                if root.block-kinds[index] == 2 : HorizontalBox {
+                    width: 100%;
+                    spacing: 10px;
+                    CheckBox {
+                        width: 24px;
+                        checked: root.task-checked[index];
+                        toggled => { root.task-toggled(root.task-offsets[index]); }
+                    }
+                    StyledText {
+                        horizontal-stretch: 1;
+                        text: block;
+                        height: self.preferred-height;
+                        vertical-alignment: top;
+                        default-color: #f2f2f7;
+                        default-font-size: 16px;
+                        link-color: #72b7ff;
+                        link-clicked(link) => { root.link-clicked(link); }
+                    }
+                }
+
+                if root.block-kinds[index] == 3 : VerticalLayout {
+                    alignment: start;
+                    vertical-stretch: 0;
+                    width: 100%;
+                    padding: 0px;
+                    spacing: 0px;
+                    if root.mermaid-errors[index] != "" : Text {
+                        width: 100%;
+                        text: root.mermaid-errors[index];
+                        color: #ff8b8b;
+                        wrap: word-wrap;
+                    }
+                    if root.mermaid-errors[index] == "" : Image {
+                        width: 100%;
+                        height: min(420px, max(100px, self.preferred-height));
+                        image-fit: contain;
+                        source: root.mermaid-images[index];
+                    }
+                }
+
+                if root.block-kinds[index] == 0 || root.block-kinds[index] == 5 || root.block-kinds[index] == 9 || root.block-kinds[index] == 10 : StyledText {
+                    width: 100%;
+                    text: block;
+                    height: self.preferred-height;
+                    vertical-alignment: top;
+                    default-color: #f2f2f7;
+                    default-font-size: 16px;
+                    link-color: #72b7ff;
+                    link-clicked(link) => { root.link-clicked(link); }
+                }
+
+                if root.block-kinds[index] == 4 : Rectangle {
+                    width: 100%;
+                    background: #252b35;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 0px;
+                        Text {
+                            width: 100%;
+                            text: root.block-plain-texts[index];
+                            wrap: word-wrap;
+                            color: #e5e7eb;
+                            font-family: "monospace";
+                            font-size: 14px;
+                        }
+                    }
+                }
+
+                if root.block-kinds[index] == 6 : Rectangle {
+                    width: 100%;
+                    background: #242832;
+                    border-color: #64748b;
+                    border-width: 3px;
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 0px;
+                        StyledText {
+                            width: 100%;
+                            text: block;
+                            height: self.preferred-height;
+                            vertical-alignment: top;
+                            default-color: #d1d5db;
+                            default-font-size: 16px;
+                        }
+                    }
+                }
+
+                if root.block-kinds[index] == 7 : Rectangle {
+                    width: 100%;
+                    height: 1px;
+                    background: #4b5563;
+                }
+
+                if root.block-kinds[index] == 8 : VerticalLayout {
+                    alignment: start;
+                    vertical-stretch: 0;
+                    width: 100%;
+                    padding: 0px;
+                    spacing: 0px;
+                    Image {
+                        width: 100%;
+                        height: min(360px, max(80px, self.preferred-height));
+                        image-fit: contain;
+                        source: root.images[index];
+                    }
+                    Text {
+                        width: 100%;
+                        text: root.block-plain-texts[index];
+                        color: #9ca3af;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

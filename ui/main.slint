@@ -1,5 +1,6 @@
 import { Button, CheckBox, HorizontalBox, LineEdit, ListView, ScrollView, TextEdit, VerticalBox } from "std-widgets.slint";
 import { MobileWindow } from "mobile.slint";
+import { MarkdownPreview } from "markdown_preview.slint";
 export { MobileWindow } from "mobile.slint";
 
 component DesktopTreeRow inherits Rectangle {
@@ -448,134 +449,20 @@ export component DesktopWindow inherits Window {
                                 vertical-stretch: 1;
                                 height: parent.height;
                                 Text { text: "Preview"; font-weight: 600; }
-                                ScrollView {
+                                MarkdownPreview {
+                                    vertical-stretch: 1;
                                     height: max(60px, preview-pane.height - 24px);
-                                    VerticalLayout {
-                                        alignment: start;
-                                        spacing: 12px;
-                                        padding: 8px;
-
-                                        for block[index] in root.preview-block-texts : VerticalLayout {
-                                            alignment: start;
-                                            vertical-stretch: 0;
-                                            padding: 0px;
-                                            spacing: 0px;
-                                            if root.preview-block-kinds[index] == 1 : Text {
-                                                width: preview-pane.width - 30px;
-                                                text: root.preview-block-plain-texts[index];
-                                                wrap: word-wrap;
-                                                color: #f2f2f7;
-                                                font-weight: 700;
-                                                font-size: root.preview-heading-levels[index] == 1 ? 30px
-                                                    : root.preview-heading-levels[index] == 2 ? 26px
-                                                    : root.preview-heading-levels[index] == 3 ? 22px
-                                                    : root.preview-heading-levels[index] == 4 ? 19px
-                                                    : root.preview-heading-levels[index] == 5 ? 17px
-                                                    : 15px;
-                                            }
-
-                                            if root.preview-block-kinds[index] == 2 : HorizontalBox {
-                                                width: preview-pane.width - 30px;
-                                                spacing: 10px;
-                                                CheckBox {
-                                                    width: 24px;
-                                                    checked: root.preview-task-checked[index];
-                                                    toggled => { root.preview-task-toggled(root.preview-task-offsets[index]); }
-                                                }
-                                                StyledText {
-                                                    horizontal-stretch: 1;
-                                                    text: block;
-                                                    height: self.preferred-height;
-                                                    vertical-alignment: top;
-                                                    default-color: #f2f2f7;
-                                                    default-font-size: 16px;
-                                                    link-color: #72b7ff;
-                                                    link-clicked(link) => { root.preview-link-clicked(link); }
-                                                }
-                                            }
-
-                                            if root.preview-block-kinds[index] == 3 : VerticalLayout {
-                                                alignment: start;
-                                                vertical-stretch: 0;
-                                                width: preview-pane.width - 30px;
-                                                padding: 0px;
-                                                spacing: 0px;
-                                                if root.preview-block-mermaid-errors[index] != "" : Text {
-                                                    text: root.preview-block-mermaid-errors[index];
-                                                    color: #d06060;
-                                                    wrap: word-wrap;
-                                                }
-                                                if root.preview-block-mermaid-errors[index] == "" : Image {
-                                                    width: preview-pane.width - 30px;
-                                                    height: min(420px, max(100px, self.preferred-height));
-                                                    image-fit: contain;
-                                                    source: root.preview-block-mermaid-images[index];
-                                                }
-                                            }
-
-                                            if root.preview-block-kinds[index] == 0 || root.preview-block-kinds[index] == 5 || root.preview-block-kinds[index] == 10 || root.preview-block-kinds[index] == 9 : StyledText {
-                                                width: preview-pane.width - 30px;
-                                                text: block;
-                                                height: self.preferred-height;
-                                                vertical-alignment: top;
-                                                default-color: #f2f2f7;
-                                                default-font-size: 16px;
-                                                link-color: #72b7ff;
-                                                link-clicked(link) => { root.preview-link-clicked(link); }
-                                            }
-                                            if root.preview-block-kinds[index] == 4 : Rectangle {
-                                                width: preview-pane.width - 30px;
-                                                background: #252b35;
-                                                VerticalBox {
-                                                    padding: 12px;
-                                                    spacing: 0px;
-                                                    Text {
-                                                        text: root.preview-block-plain-texts[index];
-                                                        wrap: word-wrap;
-                                                        color: #e5e7eb;
-                                                        font-family: "monospace";
-                                                        font-size: 14px;
-                                                    }
-                                                }
-                                            }
-                                            if root.preview-block-kinds[index] == 6 : Rectangle {
-                                                width: preview-pane.width - 30px;
-                                                background: #242832;
-                                                border-color: #64748b;
-                                                border-width: 3px;
-                                                VerticalBox {
-                                                    padding: 10px;
-                                                    spacing: 0px;
-                                                    StyledText {
-                                                        text: block;
-                                                        height: self.preferred-height;
-                                                        vertical-alignment: top;
-                                                        default-color: #d1d5db;
-                                                        default-font-size: 16px;
-                                                    }
-                                                }
-                                            }
-                                            if root.preview-block-kinds[index] == 7 : Rectangle {
-                                                width: preview-pane.width - 30px;
-                                                height: 1px;
-                                                background: #4b5563;
-                                            }
-                                            if root.preview-block-kinds[index] == 8 : VerticalLayout {
-                                                alignment: start;
-                                                vertical-stretch: 0;
-                                                width: preview-pane.width - 30px;
-                                                padding: 0px;
-                                                spacing: 0px;
-                                                Image {
-                                                    width: preview-pane.width - 30px;
-                                                    height: min(360px, max(80px, self.preferred-height));
-                                                    image-fit: contain;
-                                                    source: root.preview-block-images[index];
-                                                }
-                                                Text { text: root.preview-block-plain-texts[index]; color: #9ca3af; wrap: word-wrap; }
-                                            }
-                                        }
-                                    }
+                                    block-texts: root.preview-block-texts;
+                                    block-plain-texts: root.preview-block-plain-texts;
+                                    block-kinds: root.preview-block-kinds;
+                                    heading-levels: root.preview-heading-levels;
+                                    task-checked: root.preview-task-checked;
+                                    task-offsets: root.preview-task-offsets;
+                                    mermaid-images: root.preview-block-mermaid-images;
+                                    mermaid-errors: root.preview-block-mermaid-errors;
+                                    images: root.preview-block-images;
+                                    link-clicked(link) => { root.preview-link-clicked(link); }
+                                    task-toggled(offset) => { root.preview-task-toggled(offset); }
                                 }
                             }
                         }

@@ -1,4 +1,5 @@
 import { CheckBox, LineEdit, ListView, ScrollView, TextEdit, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { MarkdownPreview } from "markdown_preview.slint";
 
 component Button inherits Rectangle {
     in property <string> text;
@@ -318,81 +319,23 @@ export component MobileWindow inherits Window {
             }
         }
 
-        if root.view-mode == 2 : ScrollView {
-            vertical-stretch: 1; mouse-drag-pan-enabled: true;
-            VerticalLayout {
-                alignment: start;
-                spacing: 10px; padding: 8px;
-                Text { text: root.current-path; font-size: 22px; font-weight: 700; color: #f2f2f7; width: root.width - 32px; }
-                for block[index] in root.preview-block-texts : VerticalLayout {
-                    alignment: start;
-                    vertical-stretch: 0;
-                    width: root.width - 32px;
-                    padding: 0px;
-                    spacing: 0px;
-                    if root.preview-block-kinds[index] == 1 : Text {
-                        text: root.preview-block-plain-texts[index]; width: root.width - 32px;
-                        wrap: word-wrap; color: #f2f2f7; font-weight: 700;
-                        font-size: root.preview-heading-levels[index] == 1 ? 30px
-                            : root.preview-heading-levels[index] == 2 ? 26px
-                            : root.preview-heading-levels[index] == 3 ? 22px
-                            : root.preview-heading-levels[index] == 4 ? 19px
-                            : root.preview-heading-levels[index] == 5 ? 17px : 15px;
-                    }
-                    if root.preview-block-kinds[index] == 3 : VerticalLayout {
-                        alignment: start;
-                        vertical-stretch: 0;
-                        width: root.width - 32px;
-                        padding: 0px;
-                        spacing: 0px;
-                        if root.preview-block-mermaid-errors[index] != "" : Text {
-                            text: root.preview-block-mermaid-errors[index]; color: #ff8b8b; wrap: word-wrap;
-                        }
-                        if root.preview-block-mermaid-errors[index] == "" : Image {
-                            source: root.preview-block-mermaid-images[index]; width: root.width - 32px;
-                            height: min(420px, max(100px, self.preferred-height)); image-fit: contain;
-                        }
-                    }
-                    if root.preview-block-kinds[index] == 2 : HorizontalBox {
-                        width: root.width - 32px; spacing: 10px;
-                        CheckBox { width: 24px; checked: root.preview-task-checked[index]; toggled => { root.preview-task-toggled(root.preview-task-offsets[index]); } }
-                        StyledText {
-                            horizontal-stretch: 1; text: block; height: self.preferred-height; vertical-alignment: top;
-                            default-color: #f2f2f7; default-font-size: 16px; link-color: #72b7ff;
-                            link-clicked(link) => { root.preview-link-clicked(link); }
-                        }
-                    }
-                    if root.preview-block-kinds[index] == 0 || root.preview-block-kinds[index] == 5 || root.preview-block-kinds[index] == 9 || root.preview-block-kinds[index] == 10 : StyledText {
-                        text: block; width: root.width - 32px; height: self.preferred-height; vertical-alignment: top; default-color: #f2f2f7;
-                        default-font-size: 16px; link-color: #72b7ff;
-                        link-clicked(link) => { root.preview-link-clicked(link); }
-                    }
-                    if root.preview-block-kinds[index] == 4 : Text {
-                        text: root.preview-block-plain-texts[index]; width: root.width - 32px; wrap: word-wrap;
-                        color: #e5e7eb; font-family: "monospace"; font-size: 14px;
-                    }
-                    if root.preview-block-kinds[index] == 6 : Rectangle {
-                        width: root.width - 32px; background: #242832;
-                        border-color: #64748b; border-width: 3px;
-                        VerticalBox {
-                            padding: 10px; spacing: 0px;
-                            StyledText { text: block; height: self.preferred-height; vertical-alignment: top; default-color: #d1d5db; default-font-size: 16px; }
-                        }
-                    }
-                    if root.preview-block-kinds[index] == 7 : Rectangle {
-                        width: root.width - 32px; height: 1px; background: #4b5563;
-                    }
-                    if root.preview-block-kinds[index] == 8 : VerticalLayout {
-                        alignment: start;
-                        vertical-stretch: 0;
-                        width: root.width - 32px;
-                        padding: 0px;
-                        spacing: 0px;
-                        Image { source: root.preview-block-images[index]; width: root.width - 32px; height: min(360px, max(80px, self.preferred-height)); image-fit: contain; }
-                        Text { text: root.preview-block-plain-texts[index]; color: #9ca3af; wrap: word-wrap; }
-                    }
-                }
-            }
+        if root.view-mode == 2 : MarkdownPreview {
+            vertical-stretch: 1;
+            show-document-title: true;
+            document-title: root.current-path;
+            mouse-drag-pan-enabled: true;
+            block-spacing: 10px;
+            block-texts: root.preview-block-texts;
+            block-plain-texts: root.preview-block-plain-texts;
+            block-kinds: root.preview-block-kinds;
+            heading-levels: root.preview-heading-levels;
+            task-checked: root.preview-task-checked;
+            task-offsets: root.preview-task-offsets;
+            mermaid-images: root.preview-block-mermaid-images;
+            mermaid-errors: root.preview-block-mermaid-errors;
+            images: root.preview-block-images;
+            link-clicked(link) => { root.preview-link-clicked(link); }
+            task-toggled(offset) => { root.preview-task-toggled(offset); }
         }
 
         Text { text: root.status; color: root.external-conflict ? #a22b2b : #6c6c70; wrap: word-wrap; max-height: 38px; }
