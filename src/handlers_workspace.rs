@@ -38,6 +38,25 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
+        ui.on_tree_action_requested(move |index| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let Some(id) = state.borrow().tree_ids.get(index as usize).cloned() else {
+                return;
+            };
+            let name = state
+                .borrow()
+                .entry(&id)
+                .map(|entry| entry.name.clone())
+                .unwrap_or_default();
+            state.borrow_mut().selected = Some(id);
+            render_tree(&ui, &mut state.borrow_mut());
+            ui.set_action_name(name.into());
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let state = state.clone();
         ui.on_new_note_requested(move |name| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let parent = state.borrow().selected_parent();
@@ -54,6 +73,29 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
                     mutate_refresh(&ui, &mut state);
                     open_file(&ui, &mut state, id, true);
                     ui.set_action_name("".into());
+                    ui.set_action_menu_visible(false);
+                }
+                Err(error) => set_status(&ui, format!("Create note failed: {error}")),
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let state = state.clone();
+        ui.on_new_note_root_requested(move |name| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let result = {
+                let s = state.borrow();
+                s.workspace.create_note("", &name)
+            };
+            match result {
+                Ok(id) => {
+                    let mut state = state.borrow_mut();
+                    mutate_refresh(&ui, &mut state);
+                    open_file(&ui, &mut state, id, true);
+                    ui.set_action_name("".into());
+                    ui.set_action_menu_visible(false);
                 }
                 Err(error) => set_status(&ui, format!("Create note failed: {error}")),
             }
@@ -80,6 +122,31 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
                     state.selected = Some(id);
                     mutate_refresh(&ui, &mut state);
                     ui.set_action_name("".into());
+                    ui.set_action_menu_visible(false);
+                    set_status(&ui, "Folder created");
+                }
+                Err(error) => set_status(&ui, format!("Create folder failed: {error}")),
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let state = state.clone();
+        ui.on_new_folder_root_requested(move |name| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let result = {
+                let s = state.borrow();
+                s.workspace.create_directory("", &name)
+            };
+            match result {
+                Ok(id) => {
+                    let mut state = state.borrow_mut();
+                    state.expanded.insert(id.clone());
+                    state.selected = Some(id);
+                    mutate_refresh(&ui, &mut state);
+                    ui.set_action_name("".into());
+                    ui.set_action_menu_visible(false);
                     set_status(&ui, "Folder created");
                 }
                 Err(error) => set_status(&ui, format!("Create folder failed: {error}")),
@@ -130,6 +197,7 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
                     }
                     save_session_for(&state);
                     ui.set_action_name("".into());
+                    ui.set_action_menu_visible(false);
                     set_status(&ui, "Renamed");
                 }
                 Err(error) => set_status(&ui, format!("Rename failed: {error}")),
@@ -175,6 +243,7 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
                     state.selected = None;
                     state.navigation.remove(&id);
                     mutate_refresh(&ui, &mut state);
+                    ui.set_action_menu_visible(false);
                     set_status(&ui, "Deleted");
                 }
                 Err(error) => set_status(&ui, format!("Delete failed: {error}")),

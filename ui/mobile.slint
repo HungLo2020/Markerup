@@ -62,6 +62,7 @@ component TreeRow inherits Rectangle {
     in property <int> entry-kind;
     in property <int> depth;
     callback activated;
+    callback actions-requested;
     height: 42px;
     horizontal-stretch: 1;
     background: #2c2c2e;
@@ -77,9 +78,19 @@ component TreeRow inherits Rectangle {
     }
     Text {
         x: root.depth * 18px + (root.entry-kind > 0 ? 38px : 12px);
-        width: parent.width - self.x - 12px; height: parent.height;
+        width: parent.width - self.x - 54px; height: parent.height;
         text: root.text; font-size: 17px; color: #f2f2f7;
         vertical-alignment: center; horizontal-alignment: left; overflow: elide;
+    }
+    Rectangle {
+        x: parent.width - 46px;
+        y: 4px;
+        width: 42px;
+        height: parent.height - 8px;
+        background: #3a3a3c;
+        border-radius: 7px;
+        TouchArea { clicked => { root.actions-requested(); } }
+        Text { text: "…"; width: parent.width; height: parent.height; color: #f2f2f7; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; }
     }
 }
 
@@ -129,11 +140,15 @@ export component MobileWindow inherits Window {
     in-out property <bool> can-go-back: false;
     in-out property <bool> can-go-forward: false;
     in-out property <int> view-mode: 0;
+    in-out property <bool> action-menu-visible: false;
+    in-out property <bool> action-menu-root: false;
+    in-out property <bool> action-menu-folder: false;
 
     callback choose-workspace-requested(); callback pin-workspace-requested(); callback tree-selected(int);
+    callback tree-action-requested(int);
     callback overwrite-requested(string); callback reload-requested();
     callback editor-changed(string); callback preview-link-clicked(string); callback preview-task-toggled(int); callback refresh-requested();
-    callback new-note-requested(string); callback new-folder-requested(string); callback rename-requested(string);
+    callback new-note-requested(string); callback new-folder-requested(string); callback new-note-root-requested(string); callback new-folder-root-requested(string); callback rename-requested(string);
     callback delete-requested(); callback search-requested(string); callback search-result-selected(int);
     callback find-next-requested(string); callback back-requested(); callback forward-requested();
     callback select-editor-range(int, int); callback diagnostic-requested(); callback copy-diagnostic-requested();
@@ -239,6 +254,7 @@ export component MobileWindow inherits Window {
             HorizontalBox {
                 height: 44px; spacing: 8px; alignment: center;
                 Text { text: "Notes"; horizontal-stretch: 1; font-size: 30px; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
+                Button { text: "+"; width: 36px; height: 36px; horizontal-stretch: 0; enabled: root.workspace-open; clicked => { root.action-menu-root = true; root.action-menu-folder = false; root.action-menu-visible = true; root.action-name = ""; } }
                 IconButton {
                     width: 36px;
                     height: 36px;
@@ -246,6 +262,30 @@ export component MobileWindow inherits Window {
                     label: "Refresh Workspace";
                     enabled: root.workspace-open;
                     clicked => { root.refresh-requested(); }
+                }
+            }
+            if root.action-menu-visible : Rectangle {
+                height: root.action-menu-root ? 154px : (root.action-menu-folder ? 196px : 196px);
+                background: #2c2c2e;
+                border-radius: 9px;
+                VerticalBox {
+                    padding: 8px; spacing: 6px;
+                    HorizontalBox {
+                        height: 30px;
+                        Text { text: root.action-menu-root ? "Create in workspace root" : "Item actions"; horizontal-stretch: 1; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
+                        Button { text: "Cancel"; width: 74px; height: 30px; horizontal-stretch: 0; clicked => { root.action-menu-visible = false; } }
+                    }
+                    LineEdit { height: 38px; text <=> root.action-name; placeholder-text: root.action-menu-root ? "Name" : "New name"; }
+                    HorizontalBox {
+                        height: 38px; spacing: 6px;
+                        Button { text: "New Note"; clicked => { if root.action-menu-root { root.new-note-root-requested(root.action-name); } else { root.new-note-requested(root.action-name); } } }
+                        Button { text: "New Folder"; visible: root.action-menu-root || root.action-menu-folder; clicked => { if root.action-menu-root { root.new-folder-root-requested(root.action-name); } else { root.new-folder-requested(root.action-name); } } }
+                    }
+                    if !root.action-menu-root : HorizontalBox {
+                        height: 38px; spacing: 6px;
+                        Button { text: "Rename"; clicked => { root.rename-requested(root.action-name); } }
+                        Button { text: "Delete"; clicked => { root.delete-requested(); } }
+                    }
                 }
             }
             ScrollView {
@@ -265,6 +305,7 @@ export component MobileWindow inherits Window {
                             entry-kind: root.tree-entry-kinds[index];
                             depth: root.tree-entry-depths[index];
                             activated => { root.tree-selected(index); }
+                            actions-requested => { root.tree-action-requested(index); root.action-menu-root = false; root.action-menu-folder = root.tree-entry-kinds[index] > 0; root.action-menu-visible = true; }
                         }
                     }
                 }

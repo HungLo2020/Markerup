@@ -8,6 +8,7 @@ component DesktopTreeRow inherits Rectangle {
     in property <int> entry-kind;
     in property <int> depth;
     callback clicked;
+    callback actions-requested;
     height: 28px;
     horizontal-stretch: 1;
     background: #2c2c2e;
@@ -23,12 +24,22 @@ component DesktopTreeRow inherits Rectangle {
     }
     Text {
         x: root.depth * 18px + (root.entry-kind > 0 ? 32px : 8px);
-        width: parent.width - self.x - 8px;
+        width: parent.width - self.x - 48px;
         height: parent.height;
         text: root.text;
         vertical-alignment: center;
         horizontal-alignment: left;
         overflow: elide;
+    }
+    Rectangle {
+        x: parent.width - 40px;
+        y: 2px;
+        width: 36px;
+        height: parent.height - 4px;
+        background: #3a3a3c;
+        border-radius: 5px;
+        TouchArea { clicked => { root.actions-requested(); } }
+        Text { text: "…"; width: parent.width; height: parent.height; horizontal-alignment: center; vertical-alignment: center; font-size: 18px; }
     }
 }
 
@@ -103,10 +114,14 @@ export component DesktopWindow inherits Window {
     in-out property <bool> can-go-forward: false;
     in-out property <bool> sidebar-visible: true;
     in-out property <int> view-mode: 1;
+    in-out property <bool> action-menu-visible: false;
+    in-out property <bool> action-menu-root: false;
+    in-out property <bool> action-menu-folder: false;
 
     callback choose-workspace-requested();
     callback pin-workspace-requested();
     callback tree-selected(int);
+    callback tree-action-requested(int);
     callback overwrite-requested(string);
     callback reload-requested();
     callback editor-changed(string);
@@ -115,6 +130,8 @@ export component DesktopWindow inherits Window {
     callback refresh-requested();
     callback new-note-requested(string);
     callback new-folder-requested(string);
+    callback new-note-root-requested(string);
+    callback new-folder-root-requested(string);
     callback rename-requested(string);
     callback delete-requested();
     callback search-requested(string);
@@ -363,15 +380,36 @@ export component DesktopWindow inherits Window {
                         Text { text: root.selected-path == "" ? "Nothing selected" : root.selected-path; overflow: elide; }
 
                         HorizontalBox {
-                            spacing: 4px;
-                            LineEdit { text <=> root.action-name; }
-                            Button { text: "+ Note"; clicked => { root.new-note-requested(root.action-name); } }
-                            Button { text: "+ Folder"; clicked => { root.new-folder-requested(root.action-name); } }
+                            height: 32px;
+                            Text { text: "Workspace items"; horizontal-stretch: 1; vertical-alignment: center; font-weight: 600; }
+                            Button { text: "+"; width: 32px; height: 30px; horizontal-stretch: 0; clicked => { root.action-menu-root = true; root.action-menu-folder = false; root.action-menu-visible = true; root.action-name = ""; } }
                         }
-                        HorizontalBox {
-                            spacing: 4px;
-                            Button { text: "Rename"; enabled: root.selected-path != ""; clicked => { root.rename-requested(root.action-name); } }
-                            Button { text: "Delete"; enabled: root.selected-path != ""; clicked => { root.delete-requested(); } }
+
+                        if root.action-menu-visible : Rectangle {
+                            height: root.action-menu-root ? 138px : 168px;
+                            background: #2c2c2e;
+                            border-radius: 6px;
+                            VerticalBox {
+                                padding: 6px; spacing: 5px;
+                                HorizontalBox {
+                                    height: 26px;
+                                    Text { text: root.action-menu-root ? "Create in workspace root" : "Item actions"; horizontal-stretch: 1; vertical-alignment: center; font-weight: 600; }
+                                    Button { text: "Cancel"; width: 62px; height: 26px; horizontal-stretch: 0; clicked => { root.action-menu-visible = false; } }
+                                }
+                                LineEdit { height: 28px; text <=> root.action-name; placeholder-text: root.action-menu-root ? "Name" : "New name"; }
+                                HorizontalBox {
+                                    height: 28px;
+                                    spacing: 4px;
+                                    Button { text: "New Note"; height: 28px; clicked => { if root.action-menu-root { root.new-note-root-requested(root.action-name); } else { root.new-note-requested(root.action-name); } } }
+                                    Button { text: "New Folder"; height: 28px; visible: root.action-menu-root || root.action-menu-folder; clicked => { if root.action-menu-root { root.new-folder-root-requested(root.action-name); } else { root.new-folder-requested(root.action-name); } } }
+                                }
+                                if !root.action-menu-root : HorizontalBox {
+                                    height: 28px;
+                                    spacing: 4px;
+                                    Button { text: "Rename"; height: 28px; clicked => { root.rename-requested(root.action-name); } }
+                                    Button { text: "Delete"; height: 28px; clicked => { root.delete-requested(); } }
+                                }
+                            }
                         }
 
                         ListView {
@@ -381,6 +419,7 @@ export component DesktopWindow inherits Window {
                                 entry-kind: root.tree-entry-kinds[index];
                                 depth: root.tree-entry-depths[index];
                                 clicked => { root.tree-selected(index); }
+                                actions-requested => { root.tree-action-requested(index); root.action-menu-root = false; root.action-menu-folder = root.tree-entry-kinds[index] > 0; root.action-menu-visible = true; }
                             }
                         }
 
