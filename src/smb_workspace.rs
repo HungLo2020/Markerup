@@ -1,4 +1,5 @@
 use crate::workspace::{EntryId, EntryKind, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry};
+use percent_encoding::percent_decode_str;
 use smb2::{ClientConfig, DirectoryEntry, SmbClient, Tree};
 use std::future::Future;
 use std::io;
@@ -124,7 +125,21 @@ impl SmbWorkspace {
             tokio::time::timeout(SMB_OPERATION_TIMEOUT, future()).await
         }) {
             Ok(Ok(value)) => Ok(value),
-            Ok(Err(error)) => Err(io::Error::other(format!("SMB {operation} failed: {error}"))),
+            Ok(Err(error)) => {
+                let kind = match error.kind() {
+                    smb2::ErrorKind::NotFound => io::ErrorKind::NotFound,
+                    smb2::ErrorKind::AccessDenied => io::ErrorKind::PermissionDenied,
+                    smb2::ErrorKind::TimedOut => io::ErrorKind::TimedOut,
+                    smb2::ErrorKind::ConnectionLost
+                    | smb2::ErrorKind::SessionExpired
+                    | smb2::ErrorKind::Io => io::ErrorKind::ConnectionAborted,
+                    _ => io::ErrorKind::Other,
+                };
+                Err(io::Error::new(
+                    kind,
+                    format!("SMB {operation} failed: {error}"),
+                ))
+            }
             Err(_) => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
@@ -176,6 +191,7 @@ impl SmbWorkspace {
         };
         match result {
             Ok(data) => Ok(data),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(error),
             Err(first) => {
                 self.reconnect(&mut session).map_err(|reconnect| {
                     io::Error::other(format!(
@@ -256,9 +272,10 @@ impl SmbWorkspace {
         Ok(())
     }
 
-    fn resolve_relative(&self, current_file: &str, link: &str) -> Option<String> {
+    fn resolve_relative(current_file: &str, link: &str) -> Option<String> {
         let (path, fragment) = link.split_once('#').unwrap_or((link, ""));
-        let path = path.split('?').next()?.trim();
+        let decoded_path = percent_decode_str(path).decode_utf8().ok()?;
+        let path = decoded_path.trim();
         if path.is_empty()
             || path.starts_with('/')
             || path.contains("://")
@@ -522,18 +539,22 @@ impl Workspace for SmbWorkspace {
     }
 
     fn resolve_markdown_link(&self, current_file: &str, link: &str) -> Option<LinkTarget> {
-        let resolved = self.resolve_relative(current_file, link)?;
+        let resolved = Self::resolve_relative(current_file, link)?;
         let (id, fragment) = resolved.split_once('\0')?;
         id.to_ascii_lowercase()
             .ends_with(".md")
             .then(|| LinkTarget {
                 id: id.to_string(),
-                anchor: (!fragment.is_empty()).then(|| fragment.to_string()),
+                anchor: (!fragment.is_empty()).then(|| {
+                    percent_decode_str(fragment)
+                        .decode_utf8_lossy()
+                        .into_owned()
+                }),
             })
     }
 
     fn resolve_asset_link(&self, current_file: &str, link: &str) -> Option<EntryId> {
-        self.resolve_relative(current_file, link)
+        Self::resolve_relative(current_file, link)
             .and_then(|value| value.split_once('\0').map(|(id, _)| id.to_string()))
     }
     fn display_name(&self) -> String {
@@ -567,6 +588,25 @@ mod tests {
         assert!(validate_remote_id(r"nested\..\outside").is_err());
         assert!(validate_remote_id("./nested/Note.md").is_err());
         assert!(validate_remote_id("nested/Note.md").is_ok());
+    }
+
+    #[test]
+    fn resolves_percent_encoded_markdown_paths_before_smb_access() {
+        assert_eq!(
+            SmbWorkspace::resolve_relative(
+                "Games & Programming/Software Independence.md",
+                "../Games%20%26%20Programming/Programming%20Main%20Page.md#main%20page",
+            ),
+            Some("Games & Programming/Programming Main Page.md\0main%20page".into())
+        );
+    }
+
+    #[test]
+    fn rejects_encoded_workspace_escape_paths() {
+        assert_eq!(
+            SmbWorkspace::resolve_relative("Note.md", "%2e%2e/Outside.md"),
+            None
+        );
     }
 
     #[test]
