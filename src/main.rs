@@ -198,10 +198,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if state.workspace.is_open() {
             state.schedule_scan(Duration::ZERO);
         }
-        if let Ok(query) = std::env::var("MARKERUP_PERF_SEARCH_QUERY") {
-            if !query.trim().is_empty() {
-                state.schedule_search(query);
-            }
+        if let Ok(query) = std::env::var("MARKERUP_PERF_SEARCH_QUERY")
+            && !query.trim().is_empty()
+        {
+            state.schedule_search(query);
         }
     }
 
@@ -218,13 +218,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (smb_connect_tx, smb_connect_rx) =
         mpsc::channel::<Result<crate::smb_workspace::SmbWorkspace, String>>();
 
-    if let Some(root) = state.borrow().workspace.root_path() {
-        if let Err(error) = watcher.borrow_mut().watch(root, RecursiveMode::Recursive) {
-            set_status(
-                &ui,
-                format!("Workspace opened, but file watching failed: {error}"),
-            );
-        }
+    if let Some(root) = state.borrow().workspace.root_path()
+        && let Err(error) = watcher.borrow_mut().watch(root, RecursiveMode::Recursive)
+    {
+        set_status(
+            &ui,
+            format!("Workspace opened, but file watching failed: {error}"),
+        );
     }
 
     handlers_workspace::wire(&ui, state.clone());
@@ -568,7 +568,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let next_tick = reconcile_tick.get().wrapping_add(1);
             reconcile_tick.set(next_tick);
-            let periodic_reconcile = next_tick % FULL_RECONCILE_INTERVAL_TICKS == 0;
+            let periodic_reconcile = next_tick.is_multiple_of(FULL_RECONCILE_INTERVAL_TICKS);
 
             {
                 let mut state = state.borrow_mut();
@@ -599,32 +599,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if state.external_conflict {
                         state.save.clear_pending();
                     }
-                    if let Some(pending) = state.save.take_due(now) {
-                        if let Some(workspace) = state.workspace.shared_clone() {
-                            set_status(&ui, "Saving…");
-                            if workers
-                                .io
-                                .send(WorkerRequest::Save {
-                                    generation: pending.generation,
-                                    workspace,
-                                    file: pending.file,
-                                    contents: pending.contents,
-                                    expected_disk_text: pending.expected_disk_text,
-                                })
-                                .is_err()
-                            {
-                                let retry_file = state.current_file.clone().unwrap_or_default();
-                                let retry_disk_text = state.disk_text.clone();
-                                state.save.retry(
-                                    now,
-                                    retry_file,
-                                    ui.get_editor_text().to_string(),
-                                    retry_disk_text,
-                                );
-                                set_status(&ui, "Save failed — retrying");
-                            } else {
-                                busy_until.set(now + ACTIVE_POLL_WINDOW);
-                            }
+                    if let Some(pending) = state.save.take_due(now)
+                        && let Some(workspace) = state.workspace.shared_clone()
+                    {
+                        set_status(&ui, "Saving…");
+                        if workers
+                            .io
+                            .send(WorkerRequest::Save {
+                                generation: pending.generation,
+                                workspace,
+                                file: pending.file,
+                                contents: pending.contents,
+                                expected_disk_text: pending.expected_disk_text,
+                            })
+                            .is_err()
+                        {
+                            let retry_file = state.current_file.clone().unwrap_or_default();
+                            let retry_disk_text = state.disk_text.clone();
+                            state.save.retry(
+                                now,
+                                retry_file,
+                                ui.get_editor_text().to_string(),
+                                retry_disk_text,
+                            );
+                            set_status(&ui, "Save failed — retrying");
+                        } else {
+                            busy_until.set(now + ACTIVE_POLL_WINDOW);
                         }
                     }
                 }
@@ -633,23 +633,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .pending_search
                     .as_ref()
                     .is_some_and(|pending| pending.due <= now);
-                if search_ready {
-                    if let Some(pending) = state.pending_search.take() {
-                        if let Some(workspace) = state.workspace.shared_clone() {
-                            if workers
-                                .io
-                                .send(WorkerRequest::Search {
-                                    generation: pending.generation,
-                                    workspace,
-                                    query: pending.query,
-                                })
-                                .is_err()
-                            {
-                                set_status(&ui, "Search worker stopped unexpectedly");
-                            } else {
-                                busy_until.set(now + ACTIVE_POLL_WINDOW);
-                            }
-                        }
+                if search_ready
+                    && let Some(pending) = state.pending_search.take()
+                    && let Some(workspace) = state.workspace.shared_clone()
+                {
+                    if workers
+                        .io
+                        .send(WorkerRequest::Search {
+                            generation: pending.generation,
+                            workspace,
+                            query: pending.query,
+                        })
+                        .is_err()
+                    {
+                        set_status(&ui, "Search worker stopped unexpectedly");
+                    } else {
+                        busy_until.set(now + ACTIVE_POLL_WINDOW);
                     }
                 }
 
@@ -657,27 +656,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .pending_scan
                     .as_ref()
                     .is_some_and(|pending| pending.due <= now);
-                if scan_ready {
-                    if let Some(pending) = state.pending_scan.take() {
-                        if let Some(workspace) = state.workspace.shared_clone() {
-                            if matches!(state.workspace, WorkspaceSlot::Smb(_)) {
-                                set_status(&ui, "Scanning SMB workspace…");
-                            }
-                            if workers
-                                .io
-                                .send(WorkerRequest::Scan {
-                                    generation: pending.generation,
-                                    workspace,
-                                    current_file: state.current_file.clone(),
-                                    full_tree: pending.full_tree,
-                                })
-                                .is_err()
-                            {
-                                set_status(&ui, "Workspace worker stopped unexpectedly");
-                            } else {
-                                busy_until.set(now + ACTIVE_POLL_WINDOW);
-                            }
-                        }
+                if scan_ready
+                    && let Some(pending) = state.pending_scan.take()
+                    && let Some(workspace) = state.workspace.shared_clone()
+                {
+                    if matches!(state.workspace, WorkspaceSlot::Smb(_)) {
+                        set_status(&ui, "Scanning SMB workspace…");
+                    }
+                    if workers
+                        .io
+                        .send(WorkerRequest::Scan {
+                            generation: pending.generation,
+                            workspace,
+                            current_file: state.current_file.clone(),
+                            full_tree: pending.full_tree,
+                        })
+                        .is_err()
+                    {
+                        set_status(&ui, "Workspace worker stopped unexpectedly");
+                    } else {
+                        busy_until.set(now + ACTIVE_POLL_WINDOW);
                     }
                 }
             }
@@ -723,7 +721,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let count = perf_tick_count.get().wrapping_add(1);
                 perf_tick_count.set(count);
-                if count % 20 == 0 {
+                if count.is_multiple_of(20) {
                     let elapsed = elapsed.unwrap_or_default();
                     let interval_ms = interval.map_or(0.0, |value| value.as_secs_f64() * 1000.0);
                     let effective_fps = interval.map_or(0.0, |value| 1.0 / value.as_secs_f64());

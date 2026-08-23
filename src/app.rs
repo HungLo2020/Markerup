@@ -500,7 +500,7 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
                 .filter(|cached| cached.modified == modified && cached.len == len)
                 .map(|cached| cached.image.clone())
                 .or_else(|| {
-                    Image::load_from_path(&path).ok().map(|image| {
+                    Image::load_from_path(&path).ok().inspect(|image| {
                         state.image_cache.insert(
                             asset_id.clone(),
                             CachedImage {
@@ -509,7 +509,6 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
                                 image: image.clone(),
                             },
                         );
-                        image
                     })
                 });
 
@@ -728,10 +727,8 @@ pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bo
             return false;
         }
     };
-    if history {
-        if state.current_file.as_deref() != Some(id.as_str()) {
-            state.navigation.visit(state.current_file.as_deref());
-        }
+    if history && state.current_file.as_deref() != Some(id.as_str()) {
+        state.navigation.visit(state.current_file.as_deref());
     }
     state.current_file = Some(id.clone());
     state.selected = Some(id.clone());

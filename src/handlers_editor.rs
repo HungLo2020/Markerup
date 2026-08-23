@@ -174,15 +174,15 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
             };
 
             let anchor = target.anchor.clone();
-            if open_file(&ui, &mut state.borrow_mut(), target.id, true) {
-                if let Some(anchor) = anchor {
-                    let source = ui.get_editor_text().to_string();
-                    if let Some((start, end)) = find_heading_range(&source, &anchor) {
-                        ui.invoke_select_editor_range(start as i32, end as i32);
-                        set_status(&ui, format!("Opened #{anchor}"));
-                    } else {
-                        set_status(&ui, format!("Opened note; heading #{anchor} was not found"));
-                    }
+            if open_file(&ui, &mut state.borrow_mut(), target.id, true)
+                && let Some(anchor) = anchor
+            {
+                let source = ui.get_editor_text().to_string();
+                if let Some((start, end)) = find_heading_range(&source, &anchor) {
+                    ui.invoke_select_editor_range(start as i32, end as i32);
+                    set_status(&ui, format!("Opened #{anchor}"));
+                } else {
+                    set_status(&ui, format!("Opened note; heading #{anchor} was not found"));
                 }
             }
         });

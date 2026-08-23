@@ -510,12 +510,11 @@ impl Workspace for SmbWorkspace {
         let path = self.remote_path(id)?;
         let is_directory = self.list_directory(&path).is_ok();
         self.mutate(|client, tree| {
-            let result = if is_directory {
+            if is_directory {
                 self.run_smb("directory delete", || client.delete_directory(tree, &path))
             } else {
                 self.run_smb("file delete", || client.delete_file(tree, &path))
-            };
-            result
+            }
         })
     }
 
@@ -655,7 +654,7 @@ mod tests {
         workspace
             .create_directory("", &directory)
             .expect("create directory failed");
-        let result = (|| {
+        let result = {
             workspace
                 .write(&note, "# SMB round trip\n")
                 .expect("write failed");
@@ -677,7 +676,7 @@ mod tests {
             );
             workspace.delete(&renamed).expect("delete failed");
             Ok::<(), ()>(())
-        })();
+        };
         let _ = workspace.delete(&directory);
         result.expect("SMB round trip failed");
     }

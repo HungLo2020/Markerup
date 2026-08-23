@@ -441,11 +441,9 @@ fn slugify(value: &str) -> String {
         if ch.is_alphanumeric() || ch == '_' {
             output.extend(ch.to_lowercase());
             previous_dash = false;
-        } else if ch.is_whitespace() || ch == '-' {
-            if !output.is_empty() && !previous_dash {
-                output.push('-');
-                previous_dash = true;
-            }
+        } else if (ch.is_whitespace() || ch == '-') && !output.is_empty() && !previous_dash {
+            output.push('-');
+            previous_dash = true;
         }
     }
     output.trim_matches('-').to_string()

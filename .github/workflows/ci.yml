@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches:
+      - main
+      - master
       - feature/linux-mvp
   pull_request:
+  workflow_dispatch:
 
 jobs:
   linux:
@@ -26,9 +29,19 @@ jobs:
         run: |
           rustup update stable
           rustup default stable
+          rustup component add rustfmt clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
       - name: Test
         run: cargo test --all-targets
 
       - name: Check
         run: cargo check --all-targets
+
+      - name: Check mobile-preview configuration
+        run: cargo check --features mobile-preview
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
