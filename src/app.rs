@@ -80,6 +80,8 @@ pub struct AppState {
     pub pending_scan: Option<PendingScan>,
     pub save: SaveCoordinator,
     pub tree_model: Rc<VecModel<SharedString>>,
+    pub tree_kind_model: Rc<VecModel<i32>>,
+    pub tree_depth_model: Rc<VecModel<i32>>,
     image_cache: HashMap<EntryId, CachedImage>,
 }
 
@@ -111,6 +113,8 @@ impl AppState {
             pending_scan: None,
             save: SaveCoordinator::default(),
             tree_model: Rc::new(VecModel::from(Vec::<SharedString>::new())),
+            tree_kind_model: Rc::new(VecModel::from(Vec::<i32>::new())),
+            tree_depth_model: Rc::new(VecModel::from(Vec::<i32>::new())),
             image_cache: HashMap::new(),
         }
     }
@@ -313,9 +317,11 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
             .map(SharedString::from)
             .collect::<Vec<_>>(),
     );
+    state.tree_kind_model.set_vec(kinds);
+    state.tree_depth_model.set_vec(depths);
     ui.set_tree_labels(ModelRc::from(state.tree_model.clone()));
-    ui.set_tree_entry_kinds(ModelRc::from(Rc::new(VecModel::from(kinds))));
-    ui.set_tree_entry_depths(ModelRc::from(Rc::new(VecModel::from(depths))));
+    ui.set_tree_entry_kinds(ModelRc::from(state.tree_kind_model.clone()));
+    ui.set_tree_entry_depths(ModelRc::from(state.tree_depth_model.clone()));
     ui.set_selected_path(state.selected.clone().unwrap_or_default().into());
 }
 
@@ -675,9 +681,12 @@ pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
 
 pub fn reset_workspace_ui(ui: &MainWindow, state: &mut AppState) {
     ui.set_selected_path("".into());
-    ui.set_tree_labels(string_model(Vec::new()));
-    ui.set_tree_entry_kinds(ModelRc::from(Rc::new(VecModel::from(Vec::<i32>::new()))));
-    ui.set_tree_entry_depths(ModelRc::from(Rc::new(VecModel::from(Vec::<i32>::new()))));
+    state.tree_model.set_vec(Vec::new());
+    state.tree_kind_model.set_vec(Vec::new());
+    state.tree_depth_model.set_vec(Vec::new());
+    ui.set_tree_labels(ModelRc::from(state.tree_model.clone()));
+    ui.set_tree_entry_kinds(ModelRc::from(state.tree_kind_model.clone()));
+    ui.set_tree_entry_depths(ModelRc::from(state.tree_depth_model.clone()));
     ui.set_search_results(string_model(Vec::new()));
     ui.set_action_name("".into());
     ui.set_search_query("".into());

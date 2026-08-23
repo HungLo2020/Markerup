@@ -288,18 +288,21 @@ export component MobileWindow inherits Window {
                     }
                 }
             }
-            ScrollView {
-                vertical-stretch: 1; mouse-drag-pan-enabled: true;
-                VerticalBox {
-                    LineEdit { height: 46px; text <=> root.search-query; placeholder-text: "Search notes"; edited => { root.search-requested(self.text); } }
-                    if root.search-query != "" : Text { height: 34px; text: "Search Results"; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
-                    if root.search-query != "" : VerticalBox {
-                        for result[index] in root.search-results : TreeRow {
-                            text: result; activated => { root.search-result-selected(index); root.view-mode = 0; }
-                        }
+            VerticalBox {
+                vertical-stretch: 1;
+                LineEdit { height: 46px; text <=> root.search-query; placeholder-text: "Search notes"; edited => { root.search-requested(self.text); } }
+                if root.search-query != "" : Text { height: 34px; text: "Search Results"; font-weight: 700; color: #f2f2f7; vertical-alignment: center; }
+                if root.search-query != "" : ListView {
+                    vertical-stretch: 1;
+                    for result[index] in root.search-results : TreeRow {
+                        text: result; activated => { root.search-result-selected(index); root.view-mode = 0; }
                     }
-                    if root.search-query == "" : VerticalBox {
-                        if !root.workspace-open : Button { text: "Choose Workspace"; clicked => { root.view-mode = 7; } }
+                }
+                if root.search-query == "" : VerticalBox {
+                    vertical-stretch: 1;
+                    if !root.workspace-open : Button { text: "Choose Workspace"; clicked => { root.view-mode = 7; } }
+                    ListView {
+                        vertical-stretch: 1;
                         for label[index] in root.tree-labels : TreeRow {
                             text: label;
                             entry-kind: root.tree-entry-kinds[index];
