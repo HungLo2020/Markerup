@@ -3,6 +3,7 @@ use crate::workspace::{EntryId, Workspace, WorkspaceEntry, WorkspaceRef};
 use merman::MermaidConfig;
 use merman::render::HeadlessRenderer;
 use serde_json::json;
+use slint::StyledText;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +14,43 @@ use std::time::{Duration, Instant};
 pub static LATEST_SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub static LATEST_PREVIEW_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub static LATEST_SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+const MERMAID_CACHE_LIMIT: usize = 32;
+
+struct MermaidCache {
+    values: HashMap<String, Result<String, String>>,
+    order: VecDeque<String>,
+}
+
+impl MermaidCache {
+    fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<Result<String, String>> {
+        let value = self.values.get(key).cloned();
+        if value.is_some() {
+            self.order.retain(|cached| cached != key);
+            self.order.push_back(key.to_string());
+        }
+        value
+    }
+
+    fn insert(&mut self, key: String, value: Result<String, String>) {
+        self.values.insert(key.clone(), value);
+        self.order.retain(|cached| cached != &key);
+        self.order.push_back(key);
+        while self.order.len() > MERMAID_CACHE_LIMIT {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.values.remove(&oldest);
+        }
+    }
+}
 
 fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
@@ -206,6 +244,8 @@ pub struct PreviewResult {
     pub generation: u64,
     pub source_hash: u64,
     pub blocks: Vec<PreviewBlock>,
+    pub styled_texts: Vec<StyledText>,
+    pub mermaid_keys: Vec<Option<String>>,
     pub mermaid_svgs: Vec<Option<Result<String, String>>>,
     pub images: Vec<ImageReference>,
     pub elapsed: Duration,
@@ -352,6 +392,7 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
             .name("markerup-preview".into())
             .spawn(move || {
                 let mut mermaid_renderer: Option<HeadlessRenderer> = None;
+                let mut mermaid_cache = MermaidCache::new();
                 while let Ok(mut request) = preview_rx.recv() {
                     // Text edits can enqueue several previews while an older
                     // parse or Mermaid render is still running. Only the
@@ -367,7 +408,29 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                     let document = preview_document(&source);
                     let blocks = document.blocks;
                     let images = document.images;
+                    // Styled-text parsing is CPU work and does not require
+                    // the UI thread. Keep the exact same fallback behavior
+                    // as the UI path, but prepare the owned Slint values
+                    // alongside the Markdown parse.
+                    let styled_texts = blocks
+                        .iter()
+                        .map(|block| {
+                            if matches!(
+                                &block.kind,
+                                crate::markdown::PreviewBlockKind::Mermaid
+                                    | crate::markdown::PreviewBlockKind::Image
+                                    | crate::markdown::PreviewBlockKind::Rule
+                            ) {
+                                StyledText::from_plain_text("")
+                            } else {
+                                StyledText::from_markdown(&block.markdown).unwrap_or_else(|_| {
+                                    StyledText::from_plain_text(&block.markdown)
+                                })
+                            }
+                        })
+                        .collect();
                     let mut mermaid_svgs = Vec::with_capacity(blocks.len());
+                    let mut mermaid_keys = Vec::with_capacity(blocks.len());
                     let mut cancelled = false;
                     for (index, block) in blocks.iter().enumerate() {
                         if LATEST_PREVIEW_GENERATION.load(Ordering::Relaxed) != generation {
@@ -375,14 +438,17 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                             break;
                         }
                         if !matches!(block.kind, crate::markdown::PreviewBlockKind::Mermaid) {
+                            mermaid_keys.push(None);
                             mermaid_svgs.push(None);
                             continue;
                         }
-                        let diagram_id = format!("markerup-{generation}-{index}");
-                        let renderer = mermaid_renderer.get_or_insert_with(dark_mermaid_renderer);
                         let normalized_source = normalize_mermaid_source(&block.markdown);
-                        mermaid_svgs.push(Some(
-                            renderer
+                        let cache_key = format!("dark-mermaid-v1:{normalized_source}");
+                        let rendered = mermaid_cache.get(&cache_key).unwrap_or_else(|| {
+                            let diagram_id = format!("markerup-{generation}-{index}");
+                            let renderer =
+                                mermaid_renderer.get_or_insert_with(dark_mermaid_renderer);
+                            let rendered = renderer
                                 .render_svg_resvg_safe_sync_with_diagram_id(
                                     &normalized_source,
                                     &diagram_id,
@@ -390,8 +456,12 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                                 .map_err(|error| error.to_string())
                                 .and_then(|svg| {
                                     svg.ok_or_else(|| "no Mermaid diagram found".to_string())
-                                }),
-                        ));
+                                });
+                            mermaid_cache.insert(cache_key.clone(), rendered.clone());
+                            rendered
+                        });
+                        mermaid_keys.push(Some(cache_key));
+                        mermaid_svgs.push(Some(rendered));
                     }
                     if cancelled {
                         continue;
@@ -400,6 +470,8 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                         generation,
                         source_hash: hash_text(&source),
                         blocks,
+                        styled_texts,
+                        mermaid_keys,
                         mermaid_svgs,
                         images,
                         elapsed: started.elapsed(),
@@ -563,7 +635,27 @@ pub fn hash_text(text: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{HeadlessRenderer, dark_mermaid_renderer, normalize_mermaid_source};
+    use super::{
+        HeadlessRenderer, MERMAID_CACHE_LIMIT, MermaidCache, dark_mermaid_renderer,
+        normalize_mermaid_source,
+    };
+
+    #[test]
+    fn mermaid_cache_reuses_values_and_evicts_old_entries() {
+        let mut cache = MermaidCache::new();
+        cache.insert("first".to_string(), Ok("svg-first".to_string()));
+        assert_eq!(cache.get("first"), Some(Ok("svg-first".to_string())));
+
+        for index in 0..MERMAID_CACHE_LIMIT {
+            cache.insert(format!("diagram-{index}"), Ok(format!("svg-{index}")));
+        }
+
+        assert!(cache.get("first").is_none());
+        assert_eq!(
+            cache.get(&format!("diagram-{}", MERMAID_CACHE_LIMIT - 1)),
+            Some(Ok(format!("svg-{}", MERMAID_CACHE_LIMIT - 1)))
+        );
+    }
 
     #[test]
     fn mermaid_source_normalizes_leading_tabs() {

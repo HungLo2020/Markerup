@@ -9,7 +9,7 @@ use crate::workers::{
 };
 use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -54,6 +54,14 @@ struct CachedImage {
     image: Image,
 }
 
+#[derive(Clone)]
+struct CachedMermaidImage {
+    image: Image,
+    error: String,
+}
+
+const MERMAID_IMAGE_CACHE_LIMIT: usize = 32;
+
 pub struct AppState {
     pub workspace: WorkspaceSlot,
     pub pinned: bool,
@@ -83,6 +91,8 @@ pub struct AppState {
     pub tree_kind_model: Rc<VecModel<i32>>,
     pub tree_depth_model: Rc<VecModel<i32>>,
     image_cache: HashMap<EntryId, CachedImage>,
+    mermaid_image_cache: HashMap<String, CachedMermaidImage>,
+    mermaid_image_order: VecDeque<String>,
 }
 
 impl AppState {
@@ -116,6 +126,8 @@ impl AppState {
             tree_kind_model: Rc::new(VecModel::from(Vec::<i32>::new())),
             tree_depth_model: Rc::new(VecModel::from(Vec::<i32>::new())),
             image_cache: HashMap::new(),
+            mermaid_image_cache: HashMap::new(),
+            mermaid_image_order: VecDeque::new(),
         }
     }
 
@@ -325,17 +337,12 @@ pub fn render_tree(ui: &MainWindow, state: &mut AppState) {
     ui.set_selected_path(state.selected.clone().unwrap_or_default().into());
 }
 
-fn styled_from_markdown(markdown: &str) -> StyledText {
-    StyledText::from_markdown(markdown).unwrap_or_else(|_| StyledText::from_plain_text(markdown))
-}
-
 pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: PreviewResult) {
     if result.generation != state.preview.generation() {
         return;
     }
 
     let apply_started = Instant::now();
-    let mut texts = Vec::new();
     let mut plain_texts = Vec::new();
     let mut kinds = Vec::new();
     let mut heading_levels = Vec::new();
@@ -347,16 +354,6 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
         } else {
             block.markdown.clone()
         });
-        texts.push(
-            if matches!(
-                &block.kind,
-                PreviewBlockKind::Mermaid | PreviewBlockKind::Image | PreviewBlockKind::Rule
-            ) {
-                StyledText::from_plain_text("")
-            } else {
-                styled_from_markdown(&block.markdown)
-            },
-        );
         match &block.kind {
             PreviewBlockKind::Body => {
                 kinds.push(0);
@@ -416,7 +413,7 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
         .map(|block| block.task_offset.map_or(-1, |offset| offset as i32))
         .collect();
 
-    ui.set_preview_block_texts(styled_model(texts));
+    ui.set_preview_block_texts(styled_model(result.styled_texts));
     ui.set_preview_block_plain_texts(string_model(plain_texts));
     ui.set_preview_block_kinds(int_model(kinds));
     ui.set_preview_heading_levels(int_model(heading_levels));
@@ -431,26 +428,45 @@ pub fn apply_preview_result(ui: &MainWindow, state: &mut AppState, result: Previ
             mermaid_errors.push(String::new());
             continue;
         }
-        match result.mermaid_svgs.get(index).and_then(|svg| svg.as_ref()) {
-            Some(Ok(svg)) => match Image::load_from_svg_data(svg.as_bytes()) {
-                Ok(image) => {
-                    mermaid_images.push(image);
-                    mermaid_errors.push(String::new());
+        let cache_key = result.mermaid_keys.get(index).and_then(Clone::clone);
+        let cached = cache_key
+            .as_deref()
+            .and_then(|key| state.mermaid_image_cache.get(key).cloned());
+        let cached = cached.unwrap_or_else(|| {
+            let (image, error) = match result.mermaid_svgs.get(index).and_then(|svg| svg.as_ref()) {
+                Some(Ok(svg)) => match Image::load_from_svg_data(svg.as_bytes()) {
+                    Ok(image) => (image, String::new()),
+                    Err(_) => (
+                        Image::default(),
+                        "Mermaid SVG could not be displayed".to_string(),
+                    ),
+                },
+                Some(Err(error)) => (Image::default(), format!("Mermaid error: {error}")),
+                None => (
+                    Image::default(),
+                    "Mermaid render result was missing".to_string(),
+                ),
+            };
+            let cached = CachedMermaidImage { image, error };
+            if let Some(key) = cache_key.clone() {
+                state
+                    .mermaid_image_cache
+                    .insert(key.clone(), cached.clone());
+                state
+                    .mermaid_image_order
+                    .retain(|cached_key| cached_key != &key);
+                state.mermaid_image_order.push_back(key);
+                while state.mermaid_image_order.len() > MERMAID_IMAGE_CACHE_LIMIT {
+                    let Some(oldest) = state.mermaid_image_order.pop_front() else {
+                        break;
+                    };
+                    state.mermaid_image_cache.remove(&oldest);
                 }
-                Err(_) => {
-                    mermaid_images.push(Image::default());
-                    mermaid_errors.push("Mermaid SVG could not be displayed".to_string());
-                }
-            },
-            Some(Err(error)) => {
-                mermaid_images.push(Image::default());
-                mermaid_errors.push(format!("Mermaid error: {error}"));
             }
-            None => {
-                mermaid_images.push(Image::default());
-                mermaid_errors.push("Mermaid render result was missing".to_string());
-            }
-        }
+            cached
+        });
+        mermaid_images.push(cached.image);
+        mermaid_errors.push(cached.error);
     }
     ui.set_preview_block_mermaid_images(image_model(mermaid_images));
     ui.set_preview_block_mermaid_errors(string_model(mermaid_errors));
