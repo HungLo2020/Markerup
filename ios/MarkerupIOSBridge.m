@@ -12,6 +12,7 @@
 
 typedef void (*MarkerupPickerCallback)(const char *, const unsigned char *, size_t, void *);
 extern void markerup_ios_resume_request(void);
+extern void markerup_ios_background_save_request(void);
 
 // ATTR_CMN_OBJTYPE returns the Darwin vnode type. The iOS SDK exposes the
 // attribute but not the private sys/vnode.h constants: VREG is 1 and VDIR is 2.
@@ -568,6 +569,13 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
 }
 
 void markerup_ios_install_lifecycle_observers(void) {
+    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification
+                                                     object:nil
+                                                 queue:NSOperationQueue.mainQueue
+                                                 usingBlock:^(NSNotification *note) {
+        (void)note;
+        markerup_ios_background_save_request();
+    }];
     [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
                                                      object:nil
                                                  queue:NSOperationQueue.mainQueue

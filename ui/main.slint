@@ -106,7 +106,6 @@ export component DesktopWindow inherits Window {
     callback choose-workspace-requested();
     callback pin-workspace-requested();
     callback tree-selected(int);
-    callback save-requested(string);
     callback overwrite-requested(string);
     callback reload-requested();
     callback editor-changed(string);
@@ -141,10 +140,6 @@ export component DesktopWindow inherits Window {
         height: parent.height;
 
         KeyBinding {
-            keys: @keys(Control + S);
-            activated => { root.save-requested(root.editor-text); }
-        }
-        KeyBinding {
             keys: @keys(Control + F);
             activated => { root.find-next-requested(root.find-query); }
         }
@@ -172,11 +167,6 @@ export component DesktopWindow inherits Window {
                 Button { text: "→"; enabled: root.workspace-open && root.can-go-forward; clicked => { root.forward-requested(); } }
                 Button { text: "Refresh"; enabled: root.workspace-open; clicked => { root.refresh-requested(); } }
                 Button { text: "Reload"; enabled: root.workspace-open && root.current-path != "No note selected"; clicked => { root.reload-requested(); } }
-                Button {
-                    text: "Save";
-                    enabled: root.workspace-open && root.current-path != "No note selected" && root.dirty && !root.external-conflict;
-                    clicked => { root.save-requested(root.editor-text); }
-                }
                 Rectangle { horizontal-stretch: 1; }
                 DesktopIconButton {
                     icon: @image-url("../resources/icon_preview_settings.svg");

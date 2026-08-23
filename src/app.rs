@@ -2,8 +2,8 @@ use crate::MainWindow;
 use crate::markdown::PreviewBlockKind;
 use crate::persistence::{SavedSmbConfig, clear_session, save_session};
 use crate::workers::{
-    LATEST_PREVIEW_GENERATION, LATEST_SEARCH_GENERATION, PreviewResult, ScanResult, SearchResult,
-    hash_text,
+    LATEST_PREVIEW_GENERATION, LATEST_SAVE_GENERATION, LATEST_SEARCH_GENERATION, PreviewResult,
+    SaveResult, ScanResult, SearchResult, hash_text,
 };
 use crate::workspace::{EntryId, EntryKind, Workspace, WorkspaceEntry, WorkspaceSlot};
 use slint::{Image, ModelRc, SharedString, StyledText, VecModel};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(200);
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 pub const SCAN_DEBOUNCE: Duration = Duration::from_millis(100);
+pub const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(700);
 
 fn set_editor_text(ui: &MainWindow, text: String) {
     // Slint's mobile TextEdit does not expose the gesture-panning switch of
@@ -51,6 +52,15 @@ pub struct PendingScan {
     pub full_tree: bool,
 }
 
+#[derive(Debug)]
+pub struct PendingSave {
+    pub generation: u64,
+    pub due: Instant,
+    pub file: EntryId,
+    pub contents: String,
+    pub expected_disk_text: String,
+}
+
 #[derive(Clone)]
 struct CachedImage {
     modified: Option<SystemTime>,
@@ -84,6 +94,8 @@ pub struct AppState {
     pub pending_preview: Option<PendingPreview>,
     pub pending_search: Option<PendingSearch>,
     pub pending_scan: Option<PendingScan>,
+    pub save_generation: u64,
+    pub pending_save: Option<PendingSave>,
     pub tree_model: Rc<VecModel<SharedString>>,
     image_cache: HashMap<EntryId, CachedImage>,
 }
@@ -116,6 +128,8 @@ impl AppState {
             pending_preview: None,
             pending_search: None,
             pending_scan: None,
+            save_generation: 0,
+            pending_save: None,
             tree_model: Rc::new(VecModel::from(Vec::<SharedString>::new())),
             image_cache: HashMap::new(),
         }
@@ -148,6 +162,24 @@ impl AppState {
             generation: self.preview_generation,
             due: Instant::now() + delay,
             source,
+        });
+    }
+
+    pub fn schedule_autosave(&mut self, contents: String, delay: Duration) {
+        let Some(file) = self.current_file.clone() else {
+            return;
+        };
+        if !self.workspace.is_open() {
+            return;
+        }
+        self.save_generation = self.save_generation.wrapping_add(1);
+        LATEST_SAVE_GENERATION.store(self.save_generation, std::sync::atomic::Ordering::Release);
+        self.pending_save = Some(PendingSave {
+            generation: self.save_generation,
+            due: Instant::now() + delay,
+            file,
+            contents,
+            expected_disk_text: self.disk_text.clone(),
         });
     }
 
@@ -671,6 +703,9 @@ pub fn clear_current(ui: &MainWindow, state: &mut AppState) {
     state.external_conflict = false;
     state.preview_generation = state.preview_generation.wrapping_add(1);
     state.pending_preview = None;
+    state.save_generation = state.save_generation.wrapping_add(1);
+    LATEST_SAVE_GENERATION.store(state.save_generation, std::sync::atomic::Ordering::Release);
+    state.pending_save = None;
     ui.set_current_path("No note selected".into());
     set_editor_text(ui, String::new());
     clear_preview(ui);
@@ -695,11 +730,11 @@ pub fn reset_workspace_ui(ui: &MainWindow, state: &mut AppState) {
 
 pub fn open_file(ui: &MainWindow, state: &mut AppState, id: EntryId, history: bool) -> bool {
     if state.dirty && state.current_file.as_deref() != Some(id.as_str()) {
-        set_status(
-            ui,
-            "Unsaved changes: save or reload before leaving this note",
-        );
-        return false;
+        let contents = ui.get_editor_text().to_string();
+        save_current(ui, state, &contents, false);
+        if state.dirty {
+            return false;
+        }
     }
     let contents = match state.workspace.read(&id) {
         Ok(contents) => contents,
@@ -743,22 +778,69 @@ pub fn save_current(ui: &MainWindow, state: &mut AppState, contents: &str, force
         return;
     };
     if state.external_conflict && !force {
-        set_status(
-            ui,
-            "File changed externally. Reload external changes or choose Overwrite.",
-        );
+        set_status(ui, "External change conflict");
         return;
     }
+    state.save_generation = state.save_generation.wrapping_add(1);
+    LATEST_SAVE_GENERATION.store(state.save_generation, std::sync::atomic::Ordering::Release);
+    state.pending_save = None;
     match state.workspace.write(&current, contents) {
         Ok(()) => {
             state.disk_text = contents.to_string();
             state.saved_hash = hash_text(contents);
             state.dirty = false;
-            state.external_conflict = false;
             sync_flags(ui, state);
-            set_status(ui, format!("Saved {current}"));
+            set_status(ui, "Saved");
         }
-        Err(error) => set_status(ui, format!("Save failed: {error}")),
+        Err(error) => {
+            state.dirty = true;
+            set_status(ui, format!("Save failed — retrying: {error}"));
+            state.schedule_autosave(contents.to_string(), Duration::from_secs(1));
+            sync_flags(ui, state);
+        }
+    }
+}
+
+pub fn apply_save_result(ui: &MainWindow, state: &mut AppState, result: SaveResult) {
+    if result.generation != state.save_generation
+        || state.current_file.as_deref() != Some(result.file.as_str())
+    {
+        return;
+    }
+    match result.result {
+        Ok(()) => {
+            state.disk_text = result.contents.clone();
+            state.saved_hash = hash_text(&result.contents);
+            let current = ui.get_editor_text().to_string();
+            state.dirty = current != result.contents;
+            sync_flags(ui, state);
+            if state.dirty {
+                state.schedule_autosave(current, AUTOSAVE_DEBOUNCE);
+                set_status(ui, "Unsaved changes");
+            } else {
+                set_status(ui, "Saved");
+            }
+        }
+        Err(error) if error == "superseded save request" => {}
+        Err(error) => {
+            state.dirty = true;
+            if error == "external change conflict" {
+                state.external_conflict = true;
+                sync_flags(ui, state);
+                set_status(ui, "External change conflict");
+                return;
+            }
+            sync_flags(ui, state);
+            if state.external_conflict {
+                set_status(ui, "External change conflict");
+            } else {
+                state.schedule_autosave(result.contents, Duration::from_secs(1));
+                set_status(ui, format!("Save failed — retrying: {error}"));
+            }
+        }
+    }
+    if perf_enabled() {
+        eprintln!("markerup perf: save worker={:?}", result.elapsed);
     }
 }
 

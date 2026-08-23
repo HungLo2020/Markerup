@@ -130,7 +130,7 @@ export component MobileWindow inherits Window {
     in-out property <int> view-mode: 0;
 
     callback choose-workspace-requested(); callback pin-workspace-requested(); callback tree-selected(int);
-    callback save-requested(string); callback overwrite-requested(string); callback reload-requested();
+    callback overwrite-requested(string); callback reload-requested();
     callback editor-changed(string); callback preview-link-clicked(string); callback preview-task-toggled(int); callback refresh-requested();
     callback new-note-requested(string); callback new-folder-requested(string); callback rename-requested(string);
     callback delete-requested(); callback search-requested(string); callback search-result-selected(int);
@@ -289,14 +289,6 @@ export component MobileWindow inherits Window {
                     icon: @image-url("../resources/icon_preview_keyboard_hide.svg");
                     label: "Hide Keyboard";
                     clicked => { root.smb-keyboard-dismiss-requested(); }
-                }
-                if root.dirty : IconButton {
-                    width: 36px;
-                    height: 36px;
-                    icon: @image-url("../resources/icon_preview_save.svg");
-                    label: "Save";
-                    enabled: root.workspace-open;
-                    clicked => { root.save-requested(root.editor-text); }
                 }
                 if !root.dirty : IconButton {
                     width: 36px;

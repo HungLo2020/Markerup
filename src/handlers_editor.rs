@@ -1,7 +1,7 @@
 use crate::MainWindow;
 use crate::app::{
-    AppState, PREVIEW_DEBOUNCE, open_file, refresh_workspace, reload_current, save_current,
-    set_status, string_model, sync_flags,
+    AUTOSAVE_DEBOUNCE, AppState, PREVIEW_DEBOUNCE, open_file, refresh_workspace, reload_current,
+    save_current, set_status, string_model, sync_flags,
 };
 use crate::markdown::toggle_task_at_offset;
 use crate::markdown::{find_heading_range, find_matches};
@@ -11,16 +11,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
-    {
-        let ui_weak = ui.as_weak();
-        let state = state.clone();
-        ui.on_save_requested(move |contents| {
-            if let Some(ui) = ui_weak.upgrade() {
-                save_current(&ui, &mut state.borrow_mut(), &contents, false);
-            }
-        });
-    }
-
     {
         let ui_weak = ui.as_weak();
         let state = state.clone();
@@ -42,8 +32,9 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
             ui.set_editor_text(updated.clone().into());
             state.dirty = true;
             state.schedule_preview(updated, PREVIEW_DEBOUNCE);
+            state.schedule_autosave(ui.get_editor_text().to_string(), AUTOSAVE_DEBOUNCE);
             sync_flags(&ui, &state);
-            set_status(&ui, "Task changed (not saved)");
+            set_status(&ui, "Unsaved changes");
         });
     }
 
@@ -62,7 +53,15 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         let state = state.clone();
         ui.on_reload_requested(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                reload_current(&ui, &mut state.borrow_mut());
+                let mut state = state.borrow_mut();
+                if state.dirty {
+                    let contents = ui.get_editor_text().to_string();
+                    save_current(&ui, &mut state, &contents, false);
+                    if state.dirty {
+                        return;
+                    }
+                }
+                reload_current(&ui, &mut state);
             }
         });
     }
@@ -78,8 +77,9 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
             }
             state.dirty = true;
             state.schedule_preview(contents.to_string(), PREVIEW_DEBOUNCE);
+            state.schedule_autosave(contents.to_string(), AUTOSAVE_DEBOUNCE);
             sync_flags(&ui, &state);
-            set_status(&ui, "Modified (not saved)");
+            set_status(&ui, "Unsaved changes");
         });
     }
 
@@ -193,10 +193,6 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         let state = state.clone();
         ui.on_back_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            if state.borrow().dirty {
-                set_status(&ui, "Unsaved changes: save or reload before navigating");
-                return;
-            }
             let target = state.borrow_mut().back.pop();
             if let Some(target) = target {
                 let current = state.borrow().current_file.clone();
@@ -213,10 +209,6 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
         let state = state.clone();
         ui.on_forward_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            if state.borrow().dirty {
-                set_status(&ui, "Unsaved changes: save or reload before navigating");
-                return;
-            }
             let target = state.borrow_mut().forward.pop();
             if let Some(target) = target {
                 let current = state.borrow().current_file.clone();

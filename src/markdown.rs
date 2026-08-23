@@ -62,11 +62,10 @@ pub fn preview_document(source: &str) -> PreviewDocument {
         Node::Root(root) => root.children.iter().flat_map(block_from_node).collect(),
         node => block_from_node(node).collect(),
     };
-    let blocks = parsed_blocks
-        .into_iter()
-        .flat_map(expand_task_list_block)
-        .collect();
-    PreviewDocument { blocks, images }
+    PreviewDocument {
+        blocks: parsed_blocks,
+        images,
+    }
 }
 
 fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
@@ -119,29 +118,15 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
             task_offset: None,
         }),
         Node::List(value) => {
-            let all_tasks = value
-                .children
-                .iter()
-                .all(|child| matches!(child, Node::ListItem(item) if item.checked.is_some()));
-            if all_tasks && value.children.len() == 1 {
-                if let Node::ListItem(item) = &value.children[0] {
-                    Some(PreviewBlock {
-                        kind: PreviewBlockKind::Task(item.checked.unwrap_or(false)),
-                        markdown: item.children.iter().map(node_markdown).collect(),
-                        image: None,
-                        task_offset: item.position.as_ref().map(|position| position.start.offset),
-                    })
-                } else {
-                    None
-                }
-            } else {
-                Some(PreviewBlock {
-                    kind: PreviewBlockKind::List(value.ordered),
-                    markdown: list_markdown(value),
-                    image: None,
-                    task_offset: None,
-                })
+            if is_task_list(value) {
+                return task_blocks_from_list(value).into_iter();
             }
+            Some(PreviewBlock {
+                kind: PreviewBlockKind::List(value.ordered),
+                markdown: list_markdown(value),
+                image: None,
+                task_offset: None,
+            })
         }
         Node::Blockquote(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Quote,
@@ -230,29 +215,47 @@ fn collect_images(
     }
 }
 
-fn expand_task_list_block(block: PreviewBlock) -> Vec<PreviewBlock> {
-    if !matches!(block.kind, PreviewBlockKind::List(_)) {
-        return vec![block];
-    }
+fn is_task_list(list: &markdown::mdast::List) -> bool {
+    !list.children.is_empty()
+        && list
+            .children
+            .iter()
+            .all(|child| matches!(child, Node::ListItem(item) if item.checked.is_some()))
+}
 
-    let tasks = block
-        .markdown
-        .lines()
-        .map(parse_task_line)
-        .collect::<Option<Vec<_>>>();
-    let Some(tasks) = tasks.filter(|tasks| !tasks.is_empty()) else {
-        return vec![block];
-    };
+fn task_blocks_from_list(list: &markdown::mdast::List) -> Vec<PreviewBlock> {
+    let mut blocks = Vec::new();
+    for child in &list.children {
+        let Node::ListItem(item) = child else {
+            continue;
+        };
 
-    tasks
-        .into_iter()
-        .map(|(checked, markdown)| PreviewBlock {
-            kind: PreviewBlockKind::Task(checked),
-            markdown,
+        // A task item's label is its paragraph content. Nested lists are
+        // separate tasks and must not be concatenated into that label.
+        let label = item
+            .children
+            .iter()
+            .filter(|child| !matches!(child, Node::List(_)))
+            .map(node_markdown)
+            .collect::<Vec<_>>()
+            .join("\n");
+        blocks.push(PreviewBlock {
+            kind: PreviewBlockKind::Task(item.checked.unwrap_or(false)),
+            markdown: label,
             image: None,
-            task_offset: block.task_offset,
-        })
-        .collect()
+            task_offset: item.position.as_ref().map(|position| position.start.offset),
+        });
+
+        for nested in item.children.iter().filter_map(|child| match child {
+            Node::List(list) => Some(list),
+            _ => None,
+        }) {
+            if is_task_list(nested) {
+                blocks.extend(task_blocks_from_list(nested));
+            }
+        }
+    }
+    blocks
 }
 
 fn parse_task_line(line: &str) -> Option<(bool, String)> {
@@ -366,7 +369,12 @@ fn node_markdown(node: &Node) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         Node::List(value) => list_markdown(value),
-        Node::ListItem(value) => value.children.iter().map(node_markdown).collect(),
+        Node::ListItem(value) => value
+            .children
+            .iter()
+            .map(node_markdown)
+            .collect::<Vec<_>>()
+            .join("\n"),
         Node::Code(value) => value.value.clone(),
         Node::ThematicBreak(_) => "---".to_string(),
         Node::Table(value) => table_markdown(value),
@@ -472,13 +480,34 @@ mod tests {
 
     #[test]
     fn parses_tasks_and_mermaid_without_line_scanning() {
-        let blocks =
-            preview_document("- [ ] todo\n- [x] done\n\n```mermaid\nflowchart TD\n A --> B\n```")
-                .blocks;
+        let source = "- [ ] todo\n- [x] done\n\n```mermaid\nflowchart TD\n A --> B\n```";
+        let blocks = preview_document(source).blocks;
         assert_eq!(blocks[0].kind, PreviewBlockKind::Task(false));
         assert_eq!(blocks[1].kind, PreviewBlockKind::Task(true));
+        assert_eq!(blocks[0].task_offset, Some(0));
+        assert_eq!(blocks[1].task_offset, source.find("- [x] done"));
         assert_eq!(blocks[2].kind, PreviewBlockKind::Mermaid);
         assert!(blocks[2].markdown.contains("flowchart"));
+    }
+
+    #[test]
+    fn renders_nested_tasks_as_individual_checkboxes() {
+        let source = "- [x] Parent\n  - [ ] Child one\n  - [x] Child two\n- [ ] Sibling";
+        let blocks = preview_document(source).blocks;
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| (block.kind.clone(), block.markdown.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (PreviewBlockKind::Task(true), "Parent".to_string()),
+                (PreviewBlockKind::Task(false), "Child one".to_string()),
+                (PreviewBlockKind::Task(true), "Child two".to_string()),
+                (PreviewBlockKind::Task(false), "Sibling".to_string()),
+            ]
+        );
+        assert_eq!(blocks[1].task_offset, source.find("- [ ] Child one"));
+        assert_eq!(blocks[2].task_offset, source.find("- [x] Child two"));
     }
 
     #[test]

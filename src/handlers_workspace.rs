@@ -1,6 +1,7 @@
 use crate::MainWindow;
 use crate::app::{
-    AppState, mutate_refresh, open_file, rebase_id, render_tree, save_session_for, set_status,
+    AppState, mutate_refresh, open_file, rebase_id, render_tree, save_current, save_session_for,
+    set_status,
 };
 use crate::workspace::{EntryKind, Workspace};
 use slint::ComponentHandle;
@@ -96,8 +97,11 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
                 return;
             };
             if state.borrow().dirty && state.borrow().current_is_under(&old) {
-                set_status(&ui, "Save or reload the current note before renaming it");
-                return;
+                let contents = ui.get_editor_text().to_string();
+                save_current(&ui, &mut state.borrow_mut(), &contents, false);
+                if state.borrow().dirty {
+                    return;
+                }
             }
             let result = {
                 let s = state.borrow();
@@ -152,8 +156,11 @@ pub fn wire(ui: &MainWindow, state: Rc<RefCell<AppState>>) {
                 return;
             };
             if state.borrow().dirty && state.borrow().current_is_under(&id) {
-                set_status(&ui, "Save or reload the current note before deleting it");
-                return;
+                let contents = ui.get_editor_text().to_string();
+                save_current(&ui, &mut state.borrow_mut(), &contents, false);
+                if state.borrow().dirty {
+                    return;
+                }
             }
             if !state.borrow().delete_is_armed(&id) {
                 state.borrow_mut().delete_armed = Some((id.clone(), Instant::now()));

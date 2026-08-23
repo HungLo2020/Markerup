@@ -13,6 +13,7 @@ pub struct WorkspaceSelection {
 type PickerCallback = Box<dyn FnOnce(Result<Option<WorkspaceSelection>, String>)>;
 
 static RESUME_REQUESTED: AtomicBool = AtomicBool::new(false);
+static BACKGROUND_SAVE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
     fn markerup_ios_present_directory_picker(
@@ -52,6 +53,10 @@ pub fn take_resume_request() -> bool {
     RESUME_REQUESTED.swap(false, Ordering::AcqRel)
 }
 
+pub fn take_background_save_request() -> bool {
+    BACKGROUND_SAVE_REQUESTED.swap(false, Ordering::AcqRel)
+}
+
 pub fn save_smb_password(account: &str, password: &str) -> Result<(), String> {
     let account = CString::new(account).map_err(|_| "invalid SMB keychain account".to_string())?;
     let password = CString::new(password).map_err(|_| "invalid SMB password".to_string())?;
@@ -83,6 +88,11 @@ pub fn delete_smb_password(account: &str) {
 #[unsafe(no_mangle)]
 pub extern "C" fn markerup_ios_resume_request() {
     RESUME_REQUESTED.store(true, Ordering::Release);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn markerup_ios_background_save_request() {
+    BACKGROUND_SAVE_REQUESTED.store(true, Ordering::Release);
 }
 
 extern "C" fn picker_callback(

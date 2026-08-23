@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 pub static LATEST_SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub static LATEST_PREVIEW_GENERATION: AtomicU64 = AtomicU64::new(0);
+pub static LATEST_SAVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
@@ -183,6 +184,13 @@ pub enum WorkerRequest {
         current_file: Option<EntryId>,
         full_tree: bool,
     },
+    Save {
+        generation: u64,
+        workspace: WorkspaceRef,
+        file: EntryId,
+        contents: String,
+        expected_disk_text: String,
+    },
 }
 
 #[derive(Debug)]
@@ -190,6 +198,7 @@ pub enum WorkerResult {
     Preview(PreviewResult),
     Search(SearchResult),
     Scan(ScanResult),
+    Save(SaveResult),
 }
 
 #[derive(Debug)]
@@ -216,6 +225,15 @@ pub struct ScanResult {
     pub entries: Option<Result<Vec<WorkspaceEntry>, String>>,
     pub current_file: Option<EntryId>,
     pub current_text: Option<Result<String, String>>,
+    pub elapsed: Duration,
+}
+
+#[derive(Debug)]
+pub struct SaveResult {
+    pub generation: u64,
+    pub file: EntryId,
+    pub contents: String,
+    pub result: Result<(), String>,
     pub elapsed: Duration,
 }
 
@@ -484,6 +502,34 @@ pub fn spawn_workers() -> (WorkerSenders, Receiver<WorkerResult>) {
                             }));
                         }
                         continue;
+                    }
+                    WorkerRequest::Save {
+                        generation,
+                        workspace,
+                        file,
+                        contents,
+                        expected_disk_text,
+                    } => {
+                        let started = Instant::now();
+                        let result = if LATEST_SAVE_GENERATION.load(Ordering::Relaxed) != generation
+                        {
+                            Err("superseded save request".to_string())
+                        } else {
+                            safe_workspace_call(|| {
+                                let current = workspace.read(&file)?;
+                                if current != expected_disk_text {
+                                    return Err(std::io::Error::other("external change conflict"));
+                                }
+                                workspace.write(&file, &contents)
+                            })
+                        };
+                        WorkerResult::Save(SaveResult {
+                            generation,
+                            file,
+                            contents,
+                            result,
+                            elapsed: started.elapsed(),
+                        })
                     }
                     WorkerRequest::Preview { .. } => continue,
                 };

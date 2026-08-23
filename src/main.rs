@@ -15,8 +15,9 @@ mod workspace;
 mod workspace_picker;
 
 use crate::app::{
-    AppState, SCAN_DEBOUNCE, apply_preview_result, apply_scan_result, apply_search_result,
-    open_file, render_tree, reset_workspace_ui, save_session_for, set_status, sync_flags,
+    AppState, SCAN_DEBOUNCE, apply_preview_result, apply_save_result, apply_scan_result,
+    apply_search_result, open_file, render_tree, reset_workspace_ui, save_current,
+    save_session_for, set_status, sync_flags,
 };
 #[cfg(target_os = "ios")]
 use crate::ios_workspace::IosWorkspace;
@@ -257,8 +258,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let ui_weak = ui.as_weak();
+        let state = state.clone();
         ui.on_connect_smb_requested(move || {
             if let Some(ui) = ui_weak.upgrade() {
+                if state.borrow().dirty {
+                    let contents = ui.get_editor_text().to_string();
+                    save_current(&ui, &mut state.borrow_mut(), &contents, false);
+                    if state.borrow().dirty {
+                        return;
+                    }
+                }
                 ui.set_view_mode(5);
             }
         });
@@ -311,11 +320,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_choose_workspace_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             if state.borrow().dirty {
-                set_status(
-                    &ui,
-                    "Save or reload the current note before changing workspaces",
-                );
-                return;
+                let contents = ui.get_editor_text().to_string();
+                save_current(&ui, &mut state.borrow_mut(), &contents, false);
+                if state.borrow().dirty {
+                    return;
+                }
             }
 
             let chosen = match workspace_picker::choose_workspace() {
@@ -354,11 +363,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_choose_workspace_requested(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             if state.borrow().dirty {
-                set_status(
-                    &ui,
-                    "Save or reload the current note before changing workspaces",
-                );
-                return;
+                let contents = ui.get_editor_text().to_string();
+                save_current(&ui, &mut state.borrow_mut(), &contents, false);
+                if state.borrow().dirty {
+                    return;
+                }
             }
             let ui_weak = ui.as_weak();
             let state = state.clone();
@@ -459,12 +468,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let perf_last_tick = Cell::new(None::<Instant>);
         let perf_tick_started = Cell::new(None::<Instant>);
         let perf_tick_count = Cell::new(0u64);
+        let last_view_mode = Cell::new(ui.get_view_mode());
         *poll_callback.borrow_mut() = Some(Box::new(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let now = Instant::now();
             let tick_started = now;
             let tick_number = perf_ticks.get().wrapping_add(1);
             perf_ticks.set(tick_number);
+
+            if ui.get_view_mode() != last_view_mode.get() {
+                last_view_mode.set(ui.get_view_mode());
+                let mut state = state.borrow_mut();
+                if state.dirty {
+                    let contents = ui.get_editor_text().to_string();
+                    save_current(&ui, &mut state, &contents, false);
+                }
+            }
 
             let mut watcher_requires_full_scan = false;
             let mut watcher_current_file_changed = false;
@@ -494,6 +513,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "ios")]
             if crate::ios_bridge::take_resume_request() {
                 state.borrow_mut().schedule_scan(Duration::ZERO);
+            }
+            #[cfg(target_os = "ios")]
+            if crate::ios_bridge::take_background_save_request() {
+                let mut state = state.borrow_mut();
+                if state.dirty {
+                    let contents = ui.get_editor_text().to_string();
+                    save_current(&ui, &mut state, &contents, false);
+                }
             }
             while let Ok(result) = watch_rx.try_recv() {
                 match result {
@@ -571,6 +598,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
+                if state.external_conflict {
+                    state.pending_save = None;
+                }
+                let save_ready = state
+                    .pending_save
+                    .as_ref()
+                    .is_some_and(|pending| pending.due <= now);
+                if save_ready {
+                    if let Some(pending) = state.pending_save.take() {
+                        if let Some(workspace) = state.workspace.shared_clone() {
+                            set_status(&ui, "Saving…");
+                            if workers
+                                .io
+                                .send(WorkerRequest::Save {
+                                    generation: pending.generation,
+                                    workspace,
+                                    file: pending.file,
+                                    contents: pending.contents,
+                                    expected_disk_text: pending.expected_disk_text,
+                                })
+                                .is_err()
+                            {
+                                state.pending_save = Some(crate::app::PendingSave {
+                                    due: now + Duration::from_secs(1),
+                                    generation: state.save_generation,
+                                    file: state.current_file.clone().unwrap_or_default(),
+                                    contents: ui.get_editor_text().to_string(),
+                                    expected_disk_text: state.disk_text.clone(),
+                                });
+                                set_status(&ui, "Save failed — retrying");
+                            } else {
+                                busy_until.set(now + ACTIVE_POLL_WINDOW);
+                            }
+                        }
+                    }
+                }
+
                 let search_ready = state
                     .pending_search
                     .as_ref()
@@ -631,6 +695,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     WorkerResult::Preview(result) => apply_preview_result(&ui, &mut state, result),
                     WorkerResult::Search(result) => apply_search_result(&ui, &mut state, result),
                     WorkerResult::Scan(result) => apply_scan_result(&ui, &mut state, result),
+                    WorkerResult::Save(result) => apply_save_result(&ui, &mut state, result),
                 }
             }
 
@@ -639,6 +704,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.pending_preview.is_some()
                     || state.pending_search.is_some()
                     || state.pending_scan.is_some()
+                    || state.pending_save.is_some()
             };
             arm_poll_timer(
                 timer_for_poll.clone(),
@@ -689,7 +755,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     sync_flags(&ui, &state.borrow());
 
-    ui.run()?;
+    let run_result = ui.run();
+    // Slint returns after the desktop window is closed. Flush any edit that
+    // was still inside the debounce window before the process exits. On iOS,
+    // backgrounding is handled by the lifecycle observer above.
+    if state.borrow().dirty {
+        let contents = ui.get_editor_text().to_string();
+        save_current(&ui, &mut state.borrow_mut(), &contents, false);
+    }
+    run_result?;
     drop(timer);
     drop(watcher);
     Ok(())
