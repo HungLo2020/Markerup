@@ -553,8 +553,23 @@ pub fn apply_scan_result(ui: &MainWindow, state: &mut AppState, result: ScanResu
             }
         } else if result.current_file.as_deref() == Some(current.as_str()) {
             match result.current_text {
+                // A provider scan can complete before the corresponding save
+                // result. Defer its interpretation while a Markerup save for
+                // this file is in flight; the save worker performs the
+                // authoritative optimistic-concurrency check.
+                Some(Ok(_)) if state.save.has_in_flight_for(&current) => {}
                 Some(Ok(disk)) if disk != state.disk_text => {
-                    if state.dirty {
+                    if state.save.matches_recent_local_save(&current, &disk) {
+                        state.disk_text = disk.clone();
+                        state.saved_hash = hash_text(&disk);
+                        let editor = ui.get_editor_text().to_string();
+                        state.dirty = editor != disk;
+                        if state.dirty {
+                            state.schedule_autosave(editor, AUTOSAVE_DEBOUNCE);
+                            set_status(ui, "Unsaved changes");
+                        }
+                        sync_flags(ui, state);
+                    } else if state.dirty {
                         state.external_conflict = true;
                         sync_flags(ui, state);
                         set_status(
@@ -696,6 +711,10 @@ pub fn save_current(ui: &MainWindow, state: &mut AppState, contents: &str, force
             state.disk_text = contents.to_string();
             state.saved_hash = hash_text(contents);
             state.dirty = false;
+            state
+                .save
+                .record_local_save(current, state.save.generation(), contents.to_string());
+            state.external_conflict = false;
             sync_flags(ui, state);
             set_status(ui, "Saved");
         }
@@ -709,9 +728,37 @@ pub fn save_current(ui: &MainWindow, state: &mut AppState, contents: &str, force
 }
 
 pub fn apply_save_result(ui: &MainWindow, state: &mut AppState, result: SaveResult) {
-    if result.generation != state.save.generation()
-        || state.current_file.as_deref() != Some(result.file.as_str())
-    {
+    let completed = state.save.complete_in_flight(result.generation);
+    let is_current_file = state.current_file.as_deref() == Some(result.file.as_str());
+
+    // A save can finish after a newer edit has superseded its generation. It
+    // may still have written successfully, so retain that fact as the new
+    // disk baseline instead of allowing the next save to misclassify our own
+    // write as an external edit.
+    if is_current_file && completed.is_some() && result.result.is_ok() {
+        state.save.record_local_save(
+            result.file.clone(),
+            result.generation,
+            result.contents.clone(),
+        );
+        if result.generation != state.save.generation()
+            && !state
+                .save
+                .has_newer_local_save(&result.file, result.generation)
+        {
+            state.disk_text = result.contents.clone();
+            state.saved_hash = hash_text(&result.contents);
+            let current = ui.get_editor_text().to_string();
+            state.dirty = current != result.contents;
+            if state.dirty {
+                state.schedule_autosave(current, AUTOSAVE_DEBOUNCE);
+            }
+            sync_flags(ui, state);
+            return;
+        }
+    }
+
+    if result.generation != state.save.generation() || !is_current_file {
         return;
     }
     match result.result {
