@@ -20,8 +20,11 @@ jobs:
       IOS_MOBILE_PROVISION: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check out requested reusable-workflow revision
+        if: ${{ inputs.source_sha != '' }}
+        uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
+          ref: ${{ inputs.source_sha }}
       - uses: maxim-lobanov/setup-xcode@v1
         with: { xcode-version: '26.0.1' }
       - uses: actions/setup-node@v4
