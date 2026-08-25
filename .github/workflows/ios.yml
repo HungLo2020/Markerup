@@ -1,10 +1,14 @@
 name: iOS build and simulator smoke test
 on:
-  push: { branches: [main, master] }
+  push:
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
-permissions: { contents: read }
-concurrency: { group: ios-simulator-${{ github.ref }}, cancel-in-progress: true }
+permissions:
+  contents: read
+concurrency:
+  group: "ios-simulator-${{ github.ref }}"
+  cancel-in-progress: true
 jobs:
   ios:
     runs-on: macos-15

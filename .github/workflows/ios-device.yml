@@ -2,8 +2,12 @@ name: Signed iOS device build
 on:
   workflow_dispatch:
   workflow_call:
-    inputs: { source_sha: { required: false, type: string } }
-permissions: { contents: read }
+    inputs:
+      source_sha:
+        required: false
+        type: string
+permissions:
+  contents: read
 jobs:
   device:
     runs-on: macos-15
@@ -16,7 +20,8 @@ jobs:
       IOS_MOBILE_PROVISION: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
-        with: { ref: ${{ inputs.source_sha || github.sha }} }
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
       - uses: maxim-lobanov/setup-xcode@v1
         with: { xcode-version: '26.0.1' }
       - uses: actions/setup-node@v4
