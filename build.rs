@@ -21,10 +21,10 @@ fn main() {
 
 /// Tauri's icon generator deliberately writes RGBA PNGs, including for iOS
 /// icons generated from an SVG with an opaque `--ios-color` background. Apple
-/// rejects App Store icons that merely *have* an alpha channel, even when every
-/// alpha sample is fully opaque. Re-encode the generated catalog as RGB after
-/// first asserting that it contains no transparent pixels. The source SVG
-/// remains canonical; this only changes a generated Apple build artifact.
+/// rejects App Store icons that merely *have* an alpha channel. Composite the
+/// generated RGBA catalog over Tauri's configured opaque iOS background, then
+/// re-encode it as RGB. The source SVG remains canonical; this only changes a
+/// generated Apple build artifact.
 fn normalize_generated_ios_app_icons() {
     use png::{BitDepth, ColorType, Decoder, Encoder, Transformations};
     use std::{
@@ -67,12 +67,18 @@ fn normalize_generated_ios_app_icons() {
                 ColorType::Rgba => pixels
                     .chunks_exact(4)
                     .map(|rgba| {
-                        assert_eq!(
-                            rgba[3], 255,
-                            "generated iOS app icon {} has transparent pixels; provide an opaque --ios-color",
-                            path.display()
-                        );
-                        [rgba[0], rgba[1], rgba[2]]
+                        // Match `--ios-color '#eaf4ff'` in the iOS workflows.
+                        // SVG antialiasing legitimately leaves fractional alpha
+                        // at icon edges; blending it here retains those edges
+                        // while making the final AppIcon fully opaque.
+                        const BACKGROUND: [u8; 3] = [234, 244, 255];
+                        let alpha = u16::from(rgba[3]);
+                        let pixel: [u8; 3] = std::array::from_fn(|channel| {
+                            let foreground = u16::from(rgba[channel]);
+                            let background = u16::from(BACKGROUND[channel]);
+                            ((foreground * alpha + background * (255 - alpha) + 127) / 255) as u8
+                        });
+                        pixel
                     })
                     .flatten()
                     .collect::<Vec<_>>(),
