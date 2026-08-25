@@ -66,10 +66,41 @@ jobs:
           test -n "$IOS_CERTIFICATE" && test -n "$IOS_CERTIFICATE_PASSWORD" && test -n "$IOS_MOBILE_PROVISION"
           plutil -lint ios/PrivacyInfo.xcprivacy
       - name: Build signed App Store Connect IPA
-        run: cargo tauri ios build --export-method app-store-connect
+        run: |
+          archive_path="$RUNNER_TEMP/Markerup.xcarchive"
+          export_path="$RUNNER_TEMP/markerup-export"
+          export_options="$RUNNER_TEMP/ExportOptions.plist"
+          cat > "$export_options" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>$IOS_TEAM_ID</string>
+            <key>provisioningProfiles</key><dict>
+              <key>$IOS_BUNDLE_ID</key><string>$IOS_PROFILE_NAME</string>
+            </dict>
+          </dict></plist>
+          EOF
+          xcodebuild \
+            -workspace gen/apple/markerup.xcodeproj/project.xcworkspace \
+            -scheme markerup_iOS \
+            -configuration release \
+            -sdk iphoneos \
+            -archivePath "$archive_path" \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME" \
+            archive
+          xcodebuild -exportArchive \
+            -archivePath "$archive_path" \
+            -exportOptionsPlist "$export_options" \
+            -exportPath "$export_path"
       - id: ipa
         run: |
-          ipa="$(find gen/apple/build -name '*.ipa' -print -quit)"
+          ipa="$(find "$RUNNER_TEMP/markerup-export" -name '*.ipa' -print -quit)"
           test -f "$ipa"; echo "path=$ipa" >> "$GITHUB_OUTPUT"
       - uses: apple-actions/upload-testflight-build@v4
         with:
