@@ -35,7 +35,7 @@ jobs:
         run: echo "id=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')" >> "$GITHUB_OUTPUT"
       - name: Install and launch Tauri simulator app
         run: |
-          app_path="$(find gen/apple/build -type d -name 'Markerup.app' -path '*iphonesimulator*' -print -quit)"
+          app_path="$(find gen/apple/build -type d -name '*.app' -print -quit)"
           test -d "$app_path"
           xcrun simctl boot '${{ steps.simulator.outputs.id }}' || true
           xcrun simctl bootstatus '${{ steps.simulator.outputs.id }}' -b
