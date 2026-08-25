@@ -39,6 +39,8 @@ jobs:
         with: { toolchain: stable, target: aarch64-apple-ios }
       - run: npm ci --prefix frontend
       - run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Generate the canonical app icon for Apple project initialization
+        run: cargo check --lib --target aarch64-apple-ios
       - run: cargo tauri ios init --ci
       - name: Install the signing certificate and App Store provisioning profile
         run: |

@@ -22,13 +22,15 @@ jobs:
         with: { toolchain: stable, target: aarch64-apple-ios,aarch64-apple-ios-sim }
       - run: npm ci --prefix frontend
       - run: cargo install tauri-cli --version 2.11.4 --locked
+      - name: Generate the canonical app icon for Apple project initialization
+        run: cargo check --lib --target aarch64-apple-ios
       - name: Initialize Tauri Apple project
         run: cargo tauri ios init --ci
       - name: Verify app resources and privacy manifest
         run: |
           test -f ios/PrivacyInfo.xcprivacy
           plutil -lint ios/PrivacyInfo.xcprivacy
-          test -f resources/markerup_notepad_icon.png
+          test -f icons/icon.png
       - name: Build simulator application
         run: cargo tauri ios build --target aarch64-sim
       - id: simulator
