@@ -40,16 +40,25 @@ jobs:
       - run: npm ci --prefix frontend
       - run: cargo install tauri-cli --version 2.11.4 --locked
       - run: cargo tauri ios init --ci
-      - name: Install the App Store provisioning profile for Xcode
+      - name: Install the signing certificate and App Store provisioning profile
         run: |
+          keychain_path="$RUNNER_TEMP/markerup-signing.keychain-db"
+          certificate_path="$RUNNER_TEMP/markerup-signing.p12"
           profile_path="$RUNNER_TEMP/markerup.mobileprovision"
           profile_plist="$RUNNER_TEMP/markerup-profile.plist"
           profile_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$profile_dir"
+          printf '%s' "$IOS_CERTIFICATE" | base64 --decode > "$certificate_path"
           printf '%s' "$IOS_MOBILE_PROVISION" | base64 --decode > "$profile_path"
           security cms -D -i "$profile_path" > "$profile_plist"
           profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
           test -n "$profile_uuid"
+          security create-keychain -p "$IOS_CERTIFICATE_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$IOS_CERTIFICATE_PASSWORD" "$keychain_path"
+          security import "$certificate_path" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
           cp "$profile_path" "$profile_dir/$profile_uuid.mobileprovision"
       - name: Validate signing inputs and required resources
         run: |
