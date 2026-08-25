@@ -28,6 +28,7 @@ jobs:
       IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
       IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
       IOS_MOBILE_PROVISION: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.IOS_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: maxim-lobanov/setup-xcode@v1
@@ -39,6 +40,17 @@ jobs:
       - run: npm ci --prefix frontend
       - run: cargo install tauri-cli --version 2.11.4 --locked
       - run: cargo tauri ios init --ci
+      - name: Install the App Store provisioning profile for Xcode
+        run: |
+          profile_path="$RUNNER_TEMP/markerup.mobileprovision"
+          profile_plist="$RUNNER_TEMP/markerup-profile.plist"
+          profile_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profile_dir"
+          printf '%s' "$IOS_MOBILE_PROVISION" | base64 --decode > "$profile_path"
+          security cms -D -i "$profile_path" > "$profile_plist"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          test -n "$profile_uuid"
+          cp "$profile_path" "$profile_dir/$profile_uuid.mobileprovision"
       - name: Validate signing inputs and required resources
         run: |
           test -n "$IOS_BUNDLE_ID" && test -n "$IOS_TEAM_ID" && test -n "$IOS_PROFILE_NAME"
