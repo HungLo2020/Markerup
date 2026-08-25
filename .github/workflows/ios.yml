@@ -32,30 +32,9 @@ jobs:
         run: cargo tauri icon resources/markerup_notepad_icon.svg --output icons --ios-color '#eaf4ff'
       - name: Remove alpha channels from generated iOS app icons
         # Apple rejects AppIcon PNGs that have an alpha channel even if every
-        # pixel is opaque. The build script validates opacity and re-encodes
-        # Tauri's SVG-derived RGBA files as RGB PNGs before Xcode compiles them.
-        run: cargo check --lib --target aarch64-apple-ios
-      - name: Verify generated iOS app icons are opaque RGB PNGs
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import struct
-
-          iconset = Path("gen/apple/Assets.xcassets/AppIcon.appiconset")
-          icons = sorted(iconset.glob("*.png"))
-          if not icons:
-              raise SystemExit("generated iOS AppIcon catalog contains no PNG files")
-          for icon in icons:
-              header = icon.read_bytes()[:29]
-              if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
-                  raise SystemExit(f"{icon} is not a valid PNG with an IHDR chunk")
-              width, height, depth, color_type = struct.unpack(">IIBB", header[16:26])
-              if depth != 8 or color_type != 2:
-                  raise SystemExit(
-                      f"{icon} is {width}x{height}, bit depth {depth}, PNG color type {color_type}; "
-                      "AppIcon files must be 8-bit RGB (color type 2) with no alpha channel"
-                  )
-          PY
+        # pixel is opaque. This composites Tauri's SVG-derived RGBA files over
+        # the configured iOS background and verifies RGB output before Xcode.
+        run: python3 DevUtils/normalize_ios_app_icons.py
       - name: Verify app resources and privacy manifest
         run: |
           test -f ios/PrivacyInfo.xcprivacy

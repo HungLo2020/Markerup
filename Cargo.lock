@@ -2732,7 +2732,6 @@ dependencies = [
  "merman",
  "notify",
  "percent-encoding",
- "png 0.17.16",
  "resvg",
  "serde",
  "serde_json",
