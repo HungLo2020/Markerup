@@ -108,6 +108,10 @@ jobs:
           api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
           api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
           uses-non-exempt-encryption: 'false'
+          # Apple's upload completed successfully, but the action's delayed
+          # processing poll can outlive its App Store Connect bearer token.
+          # Processing remains asynchronous in App Store Connect.
+          wait-for-processing: 'false'
       - uses: actions/upload-artifact@v4
         with:
           name: markerup-ios-signed-device
