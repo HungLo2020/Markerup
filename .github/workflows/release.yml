@@ -122,5 +122,5 @@ jobs:
             --target "$SOURCE_SHA" \
             --title latest \
             --notes "Automated latest build for ${SOURCE_SHA}. Smoke test passed before packaging." \
-            release-assets/markerup_*.deb \
+              release-assets/Markerup_*.deb \
             release-assets/ios/Markerup.ipa
