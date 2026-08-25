@@ -20,7 +20,7 @@ permissions:
   contents: read
 jobs:
   device:
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       IOS_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
       IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: maxim-lobanov/setup-xcode@v1
-        with: { xcode-version: '26.0.1' }
+        with: { xcode-version: '26.6' }
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm, cache-dependency-path: frontend/package-lock.json }
       - uses: actions-rust-lang/setup-rust-toolchain@v1

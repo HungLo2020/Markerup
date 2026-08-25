@@ -16,6 +16,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "iOS": {
+      "minimumSystemVersion": "26.5"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",

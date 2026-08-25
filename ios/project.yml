@@ -2,14 +2,14 @@ name: Markerup
 options:
   bundleIdPrefix: com.example
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "26.5"
 settings:
   ENABLE_USER_SCRIPT_SANDBOXING: NO
 targets:
   Markerup:
     type: application
     platform: iOS
-    deploymentTarget: "15.0"
+    deploymentTarget: "26.5"
     info:
       path: Info.plist
       properties:
