@@ -26,5 +26,6 @@ tauri-plugin-opener = "2.5.4"
 
 [build-dependencies]
 cc = "1.2.44"
+png = "0.17.16"
 resvg = "0.45.1"
 tauri-build = { version = "2.6.3", features = [] }
