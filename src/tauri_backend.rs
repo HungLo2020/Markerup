@@ -531,8 +531,8 @@ pub fn preview_document(source: String) -> PreviewPayload {
 }
 
 #[tauri::command]
-pub fn toggle_markdown_task(source: String, offset: usize) -> Result<String, String> {
-    toggle_task_at_offset(&source, offset)
+pub fn toggle_markdown_task(source: String, task_offset: usize) -> Result<String, String> {
+    toggle_task_at_offset(&source, task_offset)
         .ok_or_else(|| "Could not locate the Markdown task".to_string())
 }
 

@@ -16,6 +16,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["resources/markerup_notepad_icon.svg"]
+    "icon": ["resources/markerup_notepad_icon.png"]
   }
 }

@@ -28,7 +28,7 @@ jobs:
         run: |
           test -f ios/PrivacyInfo.xcprivacy
           plutil -lint ios/PrivacyInfo.xcprivacy
-          test -f resources/markerup_notepad_icon.svg
+          test -f resources/markerup_notepad_icon.png
       - name: Build simulator application
         run: cargo tauri ios build --target aarch64-sim
       - id: simulator

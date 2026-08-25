@@ -9,6 +9,10 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import "./styles.css";
 
+const menuIcon = new URL("../../resources/icon_menu.svg", import.meta.url).href;
+const settingsIcon = new URL("../../resources/icon_preview_settings.svg", import.meta.url).href;
+const folderIcon = new URL("../../resources/icon_folder.svg", import.meta.url).href;
+
 type Entry = { id: string; name: string; kind: "File" | "Directory"; depth: number };
 type Snapshot = { workspaceOpen: boolean; workspacePath: string; workspaceIsSmb: boolean; workspacePinned: boolean; entries: Entry[]; currentFile?: string; canGoBack: boolean; canGoForward: boolean; externalConflict: boolean };
 type Note = { id: string; contents: string; snapshot: Snapshot };
@@ -29,7 +33,7 @@ const call = <T>(command: string, args?: Record<string, unknown>) => invoke<T>(c
 const mobileLayout = () => window.matchMedia("(max-width: 700px)").matches;
 
 function renderShell() {
-  app.innerHTML = `<header><button id="menu" aria-label="Toggle workspace">☰</button><strong>Markerup</strong><span id="location">${escape(snapshot?.workspacePath ?? "No workspace")}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" aria-label="Settings">⚙</button></header><main id="content"></main><footer id="status">Ready</footer>`;
+  app.innerHTML = `<header><button id="menu" class="icon-button" aria-label="Toggle workspace"><img src="${menuIcon}" alt=""></button><strong>Markerup</strong><span id="location">${escape(snapshot?.workspacePath ?? "No workspace")}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" class="icon-button" aria-label="Settings"><img src="${settingsIcon}" alt=""></button></header><main id="content"></main><footer id="status">Ready</footer>`;
   document.querySelector("#menu")!.addEventListener("click", () => document.body.classList.toggle("sidebar-hidden"));
   document.querySelector("#settings")!.addEventListener("click", () => { page = "settings"; renderPage(); });
   document.querySelector("#refresh")!.addEventListener("click", refresh);
@@ -65,7 +69,7 @@ document.addEventListener("click", event => {
 
 function renderTree(entries = snapshot?.entries ?? []) {
   const tree=document.querySelector("#tree"); if (!tree) return;
-  tree.innerHTML=entries.map(entry=>`<div class="entry" style="padding-left:${entry.depth * 16 + 6}px"><button class="entry-main" data-id="${escape(entry.id)}">${entry.kind === "Directory" ? "▣" : "·"} ${escape(entry.name)}</button><button class="entry-actions" data-id="${escape(entry.id)}" data-kind="${entry.kind}">…</button></div>`).join("") || "<p class=muted>No Markdown notes found.</p>";
+  tree.innerHTML=entries.map(entry=>`<div class="entry" style="padding-left:${entry.depth * 16 + 6}px"><button class="entry-main" data-id="${escape(entry.id)}">${entry.kind === "Directory" ? `<img class="entry-folder-icon" src="${folderIcon}" alt="">` : "·"} ${escape(entry.name)}</button><button class="entry-actions" data-id="${escape(entry.id)}" data-kind="${entry.kind}">…</button></div>`).join("") || "<p class=muted>No Markdown notes found.</p>";
   tree.querySelectorAll<HTMLButtonElement>(".entry-main").forEach(b=>b.addEventListener("click",()=>openNote(b.dataset.id!)));
   tree.querySelectorAll<HTMLButtonElement>(".entry-actions").forEach(b=>b.addEventListener("click",()=>entryActions(b.dataset.id!, b.dataset.kind === "Directory")));
 }
@@ -105,7 +109,7 @@ async function createAtRoot(){
 async function createEntry(parent:string,note:boolean){ const name=prompt(note?"New note name":"New folder name"); if(!name)return; try { if(note){loadNote(await call<Note>("create_note",{parent,name}));} else {snapshot=await call<Snapshot>("create_folder",{parent,name});renderShell();renderPage();} }catch(error){status(String(error))} }
 async function entryActions(id:string,isDirectory:boolean){ const action=prompt(isDirectory?"new-note, new-folder, rename, or delete":"rename or delete"); if(!action)return; if(action==="new-note")return createEntry(id,true); if(action==="new-folder")return createEntry(id,false); try { if(action==="rename"){const name=prompt("New name");if(name)snapshot=await call<Snapshot>("rename_entry",{id,name});} if(action==="delete"&&confirm(`Delete ${id}?`))snapshot=await call<Snapshot>("delete_entry",{id}); renderShell();renderPage(); }catch(error){status(String(error))} }
 async function search(){ const query=(document.querySelector<HTMLInputElement>("#search")?.value ?? "").trim(); if(!query)return renderTree(); try {const ids=await call<string[]>("search_workspace",{query});renderTree((snapshot?.entries??[]).filter(e=>ids.includes(e.id)));}catch(error){status(String(error))} }
-async function renderPreview(){ const preview=document.querySelector<HTMLElement>("#preview"); if(!preview)return; const {blocks}=await call<{blocks:Block[]}>("preview_document",{source:currentText}); preview.innerHTML=""; for(const block of blocks){const element=document.createElement("section"); const kind=JSON.stringify(block.kind); if(kind.includes("Task")){const checked=kind.includes("true");element.innerHTML=`<label class="task"><input type="checkbox" ${checked?"checked":""}>${DOMPurify.sanitize(await marked.parse(block.markdown))}</label>`; element.querySelector("input")!.addEventListener("change",async()=>{try{const source=await call<string>("toggle_markdown_task",{source:currentText,offset:block.taskOffset});currentText=source;editor.dispatch({changes:{from:0,to:editor.state.doc.length,insert:source}});await flushSave();}catch(error){status(String(error))}});} else {element.innerHTML=DOMPurify.sanitize(await marked.parse(block.markdown));} preview.append(element); }
+async function renderPreview(){ const preview=document.querySelector<HTMLElement>("#preview"); if(!preview)return; const {blocks}=await call<{blocks:Block[]}>("preview_document",{source:currentText}); preview.innerHTML=""; for(const block of blocks){const element=document.createElement("section"); const kind=JSON.stringify(block.kind); if(kind.includes("Task")){const checked=kind.includes("true");element.innerHTML=`<label class="task"><input type="checkbox" ${checked?"checked":""}>${DOMPurify.sanitize(await marked.parse(block.markdown))}</label>`; element.querySelector("input")!.addEventListener("change",async()=>{try{if(typeof block.taskOffset !== "number") throw new Error("Markdown task has no source offset");const source=await call<string>("toggle_markdown_task",{source:currentText,taskOffset:block.taskOffset});currentText=source;editor.dispatch({changes:{from:0,to:editor.state.doc.length,insert:source}});await flushSave();}catch(error){status(String(error))}});} else {element.innerHTML=DOMPurify.sanitize(await marked.parse(block.markdown));} preview.append(element); }
   preview.querySelectorAll<HTMLAnchorElement>("a[href]").forEach(link => link.addEventListener("click", async event => {
     const href=link.getAttribute("href") ?? "";
     if (!href || href.startsWith("#")) return;
