@@ -43,6 +43,11 @@ jobs:
           test -f gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-60x60@2x.png
       - name: Build simulator application
         run: cargo tauri ios build --target aarch64-sim
+      - name: Verify generated export-compliance declaration
+        run: |
+          info_plist="$(find gen/apple -name Info.plist -print -quit)"
+          test -n "$info_plist"
+          test "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$info_plist")" = "false"
       - id: simulator
         name: Select an iOS 26.5 iPhone simulator
         run: |

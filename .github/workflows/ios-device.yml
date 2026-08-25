@@ -100,6 +100,11 @@ jobs:
           PY
       - name: Build signed App Store Connect IPA
         run: cargo tauri ios build --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER"
+      - name: Verify generated export-compliance declaration
+        run: |
+          info_plist="$(find gen/apple -name Info.plist -print -quit)"
+          test -n "$info_plist"
+          test "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$info_plist")" = "false"
       - id: ipa
         run: |
           ipa="$(find gen/apple/build -name '*.ipa' -print -quit)"
