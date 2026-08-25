@@ -16,20 +16,11 @@ concurrency:
 jobs:
   gate:
     name: Require successful smoke test
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
-      - name: Verify smoke test result
-        env:
-          SMOKE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          SMOKE_BRANCH: ${{ github.event.workflow_run.head_branch }}
-        run: |
-          if [[ "$SMOKE_CONCLUSION" != "success" || "$SMOKE_BRANCH" != "main" ]]; then
-            echo "Refusing release: smoke test conclusion=$SMOKE_CONCLUSION branch=$SMOKE_BRANCH"
-            exit 1
-          fi
-
       - name: Record smoke-tested commit
         id: source
         run: echo "sha=${{ github.event.workflow_run.head_sha }}" >> "$GITHUB_OUTPUT"
