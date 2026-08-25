@@ -44,7 +44,28 @@ jobs:
       - name: Build simulator application
         run: cargo tauri ios build --target aarch64-sim
       - id: simulator
-        run: echo "id=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')" >> "$GITHUB_OUTPUT"
+        name: Select an iOS 26.5 iPhone simulator
+        run: |
+          simulator_id="$(python3 - <<'PY'
+          import json
+          import subprocess
+
+          devices = json.loads(
+              subprocess.check_output(
+                  ["xcrun", "simctl", "list", "devices", "available", "--json"],
+                  text=True,
+              )
+          )["devices"]
+          runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-5"
+          for device in devices.get(runtime, []):
+              if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                  print(device["udid"])
+                  break
+          else:
+              raise SystemExit("no available iPhone simulator running iOS 26.5")
+          PY
+          )"
+          echo "id=$simulator_id" >> "$GITHUB_OUTPUT"
       - name: Install and launch Tauri simulator app
         run: |
           app_path="$(find gen/apple/build -type d -name '*.app' -print -quit)"
