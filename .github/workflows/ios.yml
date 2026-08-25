@@ -30,7 +30,7 @@ jobs:
           plutil -lint ios/PrivacyInfo.xcprivacy
           test -f resources/markerup_notepad_icon.svg
       - name: Build simulator application
-        run: cargo tauri ios build --target aarch64-apple-ios-sim
+        run: cargo tauri ios build --target aarch64-sim
       - id: simulator
         run: echo "id=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')" >> "$GITHUB_OUTPUT"
       - name: Install and launch Tauri simulator app
