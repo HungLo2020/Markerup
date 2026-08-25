@@ -28,11 +28,14 @@ jobs:
         run: cargo tauri icon resources/markerup_notepad_icon.svg --output icons --ios-color '#eaf4ff'
       - name: Initialize Tauri Apple project
         run: cargo tauri ios init --ci
+      - name: Populate the generated iOS icon catalog from the canonical SVG
+        run: cargo tauri icon resources/markerup_notepad_icon.svg --output icons --ios-color '#eaf4ff'
       - name: Verify app resources and privacy manifest
         run: |
           test -f ios/PrivacyInfo.xcprivacy
           plutil -lint ios/PrivacyInfo.xcprivacy
           test -f icons/icon.png
+          test -f gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-60x60@2x.png
       - name: Build simulator application
         run: cargo tauri ios build --target aarch64-sim
       - id: simulator

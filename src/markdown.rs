@@ -22,6 +22,7 @@ pub enum PreviewBlockKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PreviewBlock {
     pub kind: PreviewBlockKind,
     pub markdown: String,
@@ -490,6 +491,16 @@ mod tests {
         assert_eq!(blocks[1].task_offset, source.find("- [x] done"));
         assert_eq!(blocks[2].kind, PreviewBlockKind::Mermaid);
         assert!(blocks[2].markdown.contains("flowchart"));
+    }
+
+    #[test]
+    fn serializes_task_offsets_for_the_tauri_frontend() {
+        let document = preview_document("- [ ] ship the fix\n");
+        let value = serde_json::to_value(document).expect("preview document should serialize");
+        let task = &value["blocks"][0];
+
+        assert_eq!(task["taskOffset"], 0);
+        assert!(task.get("task_offset").is_none());
     }
 
     #[test]
