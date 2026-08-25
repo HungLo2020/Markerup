@@ -280,7 +280,7 @@ pub fn open_local_workspace(
             false,
             None,
         );
-        return MarkerupBackend::snapshot(&inner);
+        MarkerupBackend::snapshot(&inner)
     }
     #[cfg(target_os = "ios")]
     Err("Use the iOS folder picker to select a local workspace".to_string())

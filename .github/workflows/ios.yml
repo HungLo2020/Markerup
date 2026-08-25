@@ -21,7 +21,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with: { toolchain: stable, target: aarch64-apple-ios,aarch64-apple-ios-sim }
       - run: npm ci --prefix frontend
-      - run: cargo install tauri-cli --version 2.11.0 --locked --features mobile
+      - run: cargo install tauri-cli --version 2.11.4 --locked
       - name: Initialize Tauri Apple project
         run: cargo tauri ios init --ci
       - name: Verify app resources and privacy manifest
