@@ -4,14 +4,15 @@ use crate::markdown::{
 use crate::navigation::NavigationState;
 use crate::persistence::{SavedSmbConfig, clear_session, load_session, save_session};
 use crate::smb_workspace::{SmbConnectionConfig, SmbWorkspace};
-use crate::workspace::{
-    EntryId, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry, WorkspaceSlot,
-};
+#[cfg(not(target_os = "ios"))]
+use crate::workspace::LocalWorkspace;
+use crate::workspace::{EntryId, LinkTarget, Workspace, WorkspaceEntry, WorkspaceSlot};
 use base64::Engine;
 use merman::MermaidConfig;
 use merman::render::HeadlessRenderer;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+#[cfg(not(target_os = "ios"))]
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -268,7 +269,7 @@ pub fn open_local_workspace(
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
     #[cfg(target_os = "ios")]
-    let _ = path;
+    let _ = (path, state);
     #[cfg(not(target_os = "ios"))]
     {
         let workspace =
