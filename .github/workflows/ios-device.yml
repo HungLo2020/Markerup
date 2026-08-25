@@ -1,6 +1,21 @@
 name: Signed iOS device build
 on:
   workflow_call:
+    secrets:
+      IOS_BUNDLE_ID:
+        required: true
+      IOS_TEAM_ID:
+        required: true
+      IOS_PROFILE_NAME:
+        required: true
+      IOS_CERTIFICATE_P12_BASE64:
+        required: true
+      IOS_CERTIFICATE_PASSWORD:
+        required: true
+      IOS_PROVISIONING_PROFILE_BASE64:
+        required: true
+      APPSTORE_API_PRIVATE_KEY:
+        required: true
 permissions:
   contents: read
 jobs:
