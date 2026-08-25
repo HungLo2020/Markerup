@@ -94,8 +94,6 @@ jobs:
     name: Build signed iOS package
     needs: gate
     uses: ./.github/workflows/ios-device.yml
-    with:
-      source_sha: ${{ needs.gate.outputs.source_sha }}
     secrets: inherit
 
   release:
