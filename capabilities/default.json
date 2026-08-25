@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Markerup's primary application window permissions.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
+  ]
+}

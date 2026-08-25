@@ -1,5 +1,5 @@
 fn main() {
-    slint_build::compile("ui/main.slint").expect("failed to compile Slint UI");
+    tauri_build::build();
 
     let target_is_ios = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("ios");
     let host_is_apple = std::env::var("HOST").is_ok_and(|host| host.contains("apple"));

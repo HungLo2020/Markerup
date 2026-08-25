@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Markerup",
+  "version": "0.4.0",
+  "identifier": "com.matt.markerup",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "frontend/dist"
+  },
+  "app": {
+    "windows": [{ "title": "Markerup", "width": 1200, "height": 760, "minWidth": 480, "minHeight": 480 }],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["resources/markerup_notepad_icon.svg"]
+  }
+}

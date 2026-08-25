@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Launch Markerup's existing mobile UI locally on Linux for visual preview.
-
-This is a development preview only. It uses the normal debug build and the
-existing MobileWindow component; it does not build an iOS binary or change the
-default Linux desktop build.
-"""
+"""Launch the responsive Tauri UI in an iPhone-sized Linux window."""
 
 from __future__ import annotations
 
@@ -23,8 +18,11 @@ def main() -> int:
     environment = os.environ.copy()
     environment.setdefault("RUST_BACKTRACE", "1")
 
-    command = ["cargo", "run", "--features", "mobile-preview"]
-    print("Launching Markerup mobile preview in debug mode...", flush=True)
+    command = [
+        "cargo", "tauri", "dev", "--config",
+        '{"app":{"windows":[{"title":"Markerup mobile preview","width":390,"height":844,"minWidth":390,"minHeight":700}]}}',
+    ]
+    print("Launching Markerup responsive mobile preview...", flush=True)
     return subprocess.run(command, cwd=repo_root, env=environment).returncode
 
 

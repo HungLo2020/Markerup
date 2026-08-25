@@ -55,7 +55,7 @@ void markerup_ios_copy_diagnostics(void) {
 void markerup_ios_dismiss_keyboard(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         // UIKit routes this action to the current first responder, which is
-        // the active Slint LineEdit when the SMB form is being edited.
+        // the active web editor field when the SMB form is being edited.
         [UIApplication.sharedApplication sendAction:@selector(resignFirstResponder)
                                                  to:nil
                                                from:nil

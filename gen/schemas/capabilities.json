@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Markerup's primary application window permissions.","local":true,"windows":["main"],"permissions":["core:default","dialog:default","opener:allow-open-url","opener:allow-default-urls"]}}

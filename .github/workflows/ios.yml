@@ -1,158 +1,41 @@
 name: iOS build and simulator smoke test
-
 on:
-  push:
-    branches: [main, master, feature/ios-testflight-ci]
+  push: { branches: [main, master] }
   pull_request:
   workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ios-simulator-${{ github.ref }}
-  cancel-in-progress: true
-
+permissions: { contents: read }
+concurrency: { group: ios-simulator-${{ github.ref }}, cancel-in-progress: true }
 jobs:
   ios:
-    name: Build iOS app and launch simulator
     runs-on: macos-15
-
     steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: '26.0.1'
-
-      - name: Install Rust targets
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          target: aarch64-apple-ios,aarch64-apple-ios-sim
-          components: rustfmt
-
-      - name: Cache Rust build outputs
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ios
-
-      - name: Install XcodeGen and icon tooling
-        run: brew install xcodegen librsvg imagemagick
-
-      - name: Read application version
-        id: version
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with: { xcode-version: '26.0.1' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with: { toolchain: stable, target: aarch64-apple-ios,aarch64-apple-ios-sim }
+      - run: npm ci --prefix frontend
+      - run: cargo install tauri-cli --version 2.11.0 --locked --features mobile
+      - name: Initialize Tauri Apple project
+        run: cargo tauri ios init --ci
+      - name: Verify app resources and privacy manifest
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "markerup") | .version')"
-          test -n "$version"
-          echo "marketing_version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Run Rust tests
-        run: cargo test
-
-      - name: Build device Rust target
-        run: |
-          cargo build --target aarch64-apple-ios --bin markerup --release
-          test -x target/aarch64-apple-ios/release/markerup
-
-      - name: Build simulator Rust target
-        run: |
-          cargo build --target aarch64-apple-ios-sim --bin markerup --release
-          test -x target/aarch64-apple-ios-sim/release/markerup
-
-      - name: Select available iPhone simulator
-        id: simulator
-        run: |
-          device_id="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
-          if [[ -z "$device_id" ]]; then
-            echo 'No available iPhone simulator was found.'
-            xcrun simctl list devices available
-            exit 1
-          fi
-          echo "device_id=$device_id" >> "$GITHUB_OUTPUT"
-
-      - name: Generate Xcode project
-        working-directory: ios
-        run: |
-          ./generate_app_icons.sh
-          xcodegen generate --spec project.yml
-
-      - name: Validate generated iOS resources
-        run: |
-          test -f resources/markerup_notepad_icon.svg
-          test -f ios/Info.plist
           test -f ios/PrivacyInfo.xcprivacy
           plutil -lint ios/PrivacyInfo.xcprivacy
-          test -f ios/Assets.xcassets/AppIcon.appiconset/icon-60@2x.png
-          test -f ios/Assets.xcassets/AppIcon.appiconset/icon-76@2x.png
-          test -f ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png
-          file ios/Assets.xcassets/AppIcon.appiconset/icon-1024.png | grep -q '8-bit/color RGB'
-          grep -q 'Assets.xcassets' ios/Markerup.xcodeproj/project.pbxproj
-          grep -q 'LaunchScreen.storyboard' ios/Markerup.xcodeproj/project.pbxproj
-          grep -q 'CFBundleIconName' ios/Info.plist
-          test "$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' ios/Info.plist)" = "false"
-          grep -q 'UILaunchStoryboardName' ios/Info.plist
-
-      - name: Build the actual iOS application
-        run: >-
-          xcodebuild
-          -project ios/Markerup.xcodeproj
-          -scheme Markerup
-          -configuration Release
-          -sdk iphonesimulator
-          -destination 'id=${{ steps.simulator.outputs.device_id }}'
-          PRODUCT_BUNDLE_IDENTIFIER=com.matt.markerup
-          MARKETING_VERSION=${{ steps.version.outputs.marketing_version }}
-          MARKERUP_BUILD_NUMBER=${{ github.run_id }}
-          CODE_SIGNING_ALLOWED=NO
-          CODE_SIGNING_REQUIRED=NO
-          build
-
-      - name: Find built application
-        id: app
+          test -f resources/markerup_notepad_icon.svg
+      - name: Build simulator application
+        run: cargo tauri ios build --target aarch64-apple-ios-sim
+      - id: simulator
+        run: echo "id=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')" >> "$GITHUB_OUTPUT"
+      - name: Install and launch Tauri simulator app
         run: |
-          app_path="$(find "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME/Library/Developer/Xcode/DerivedData" \
-            -type d -path '*/Release-iphonesimulator/*.app' -print -quit 2>/dev/null || true)"
-          if [[ ! -d "$app_path" ]]; then
-            echo "Could not find built app at: $app_path"
-            find "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME/Library/Developer/Xcode/DerivedData" \
-              -type d -name '*.app' -print 2>/dev/null || true
-            exit 1
-          fi
-          test -f "$app_path/PrivacyInfo.xcprivacy"
-          plutil -lint "$app_path/PrivacyInfo.xcprivacy"
-          echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
-
-      - name: Boot iOS simulator
-        run: |
-          device_id="${{ steps.simulator.outputs.device_id }}"
-          xcrun simctl boot "$device_id" || true
-          xcrun simctl bootstatus "$device_id" -b
-
-      - name: Install and launch app in simulator
-        run: |
-          device_id="${{ steps.simulator.outputs.device_id }}"
-          xcrun simctl install "$device_id" "${{ steps.app.outputs.app_path }}"
-          set +e
-          launch_output="$(xcrun simctl launch "$device_id" com.matt.markerup 2>&1)"
-          launch_status=$?
-          set -e
-          echo "$launch_output"
-          sleep 10
-          xcrun simctl spawn "$device_id" log show --last 10s --style compact --predicate 'process == "markerup"' || true
-          exit "$launch_status"
-
-      - name: Upload iOS app artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: markerup-ios-release-simulator
-          path: ${{ steps.app.outputs.app_path }}
-          if-no-files-found: error
-
-      - name: Collect simulator diagnostics on failure
-        if: failure()
-        run: |
-          xcrun simctl list devices available || true
-          xcodebuild -project ios/Markerup.xcodeproj -scheme Markerup -showBuildSettings || true
+          app_path="$(find gen/apple/build -type d -name 'Markerup.app' -path '*iphonesimulator*' -print -quit)"
+          test -d "$app_path"
+          xcrun simctl boot '${{ steps.simulator.outputs.id }}' || true
+          xcrun simctl bootstatus '${{ steps.simulator.outputs.id }}' -b
+          xcrun simctl install '${{ steps.simulator.outputs.id }}' "$app_path"
+          xcrun simctl launch '${{ steps.simulator.outputs.id }}' com.matt.markerup
+      - uses: actions/upload-artifact@v4
+        with: { name: markerup-ios-release-simulator, path: gen/apple/build/, if-no-files-found: error }

@@ -1,5 +1,6 @@
 use crate::smb_workspace::SmbWorkspace;
 use percent_encoding::percent_decode_str;
+use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
@@ -10,13 +11,13 @@ use crate::ios_workspace::IosWorkspace;
 
 pub type EntryId = String;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum EntryKind {
     File,
     Directory,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkspaceEntry {
     pub id: EntryId,
     pub name: String,
@@ -24,12 +25,13 @@ pub struct WorkspaceEntry {
     pub depth: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LinkTarget {
     pub id: EntryId,
     pub anchor: Option<String>,
 }
 
+#[allow(dead_code)] // Kept for provider cancellation and identity-aware backends.
 pub trait Workspace: Send + Sync {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>>;
     fn entries_with_cancel(
@@ -53,6 +55,7 @@ pub trait Workspace: Send + Sync {
     fn asset_path(&self, id: &str) -> io::Result<Option<PathBuf>>;
 }
 
+#[allow(dead_code)]
 pub type WorkspaceRef = Arc<dyn Workspace>;
 
 #[derive(Debug, Clone)]
@@ -458,6 +461,7 @@ impl WorkspaceSlot {
             Self::Empty => String::new(),
         }
     }
+    #[allow(dead_code)]
     pub fn shared_clone(&self) -> Option<WorkspaceRef> {
         match self {
             Self::Local(workspace) => Some(Arc::new(workspace.clone())),
@@ -488,6 +492,7 @@ impl WorkspaceSlot {
     }
 
     #[cfg(target_os = "ios")]
+    #[allow(dead_code)]
     pub fn bookmark(&self) -> Option<Vec<u8>> {
         match self {
             Self::Ios(workspace) => Some(workspace.selection().bookmark),
@@ -496,6 +501,7 @@ impl WorkspaceSlot {
     }
 
     #[cfg(not(target_os = "ios"))]
+    #[allow(dead_code)]
     pub fn bookmark(&self) -> Option<Vec<u8>> {
         None
     }

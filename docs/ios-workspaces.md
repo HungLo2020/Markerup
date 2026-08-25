@@ -14,7 +14,7 @@ Markerup must treat an iOS workspace as a user-granted document-provider directo
 
 This is intentionally different from the Linux implementation. The shared `Workspace` API uses opaque entry IDs so provider items do not have to masquerade as ordinary local `PathBuf`s.
 
-The implementation is split between `src/ios_workspace.rs`, `src/ios_bridge.rs`, and `ios/MarkerupIOSBridge.m`. The mobile Slint component is `ui/mobile.slint`; the desktop component remains separate in `ui/main.slint`.
+The implementation is split between `src/ios_workspace.rs`, `src/ios_bridge.rs`, and `ios/MarkerupIOSBridge.m`. The Tauri frontend is shared with desktop; platform-specific selection and credential storage remain behind Rust commands.
 
 ## SMB acceptance target
 

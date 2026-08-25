@@ -7,7 +7,7 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 ## Linux workspace features
 
 - Starts with no workspace unless the user explicitly pinned one previously.
-- **Choose Folder** opens a native folder picker; no CLI path is required.
+- **Choose Folder** opens the platform-native folder picker; no CLI path is required.
 - **Pin Workspace** makes the selected workspace reopen on the next launch; unpinned workspaces are session-only.
 - Hidden directories such as `.git` are excluded from the notes tree.
 - Recursively browse `.md` notes in a collapsible directory tree.
@@ -15,8 +15,7 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 - Double-confirm destructive deletes.
 - Edit the real Markdown files in place.
 - Source, preview, and split views.
-- `Ctrl+S` save and dirty-state tracking.
-- Automatic recursive filesystem watching plus periodic reconciliation for network-backed filesystems.
+- Debounced autosave and dirty-state tracking.
 - External-change reload when the note is clean.
 - Conflict protection when a note changes externally while Markerup has unsaved edits.
 - Explicit **Use Disk** and **Overwrite Disk** conflict resolution.
@@ -31,8 +30,12 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 ## Run on Linux
 
 ```bash
-cargo run
+python3 DevUtils/RunTauriDev.py
 ```
+
+`cargo run` loads the already-built `frontend/dist` bundle, so it works without
+a development server. Use the launcher above (or `cargo tauri dev`) when you
+want Tauri's frontend watch/rebuild loop.
 
 Choose the notes directory from Markerup itself. If you pin it, Markerup will reopen that workspace next time.
 
@@ -55,11 +58,11 @@ Markerup application state is disposable. Notes and organization live only in th
 
 ## Architecture
 
-The shared core uses opaque entry IDs and supports enumeration, read/write, create/rename/delete, search, and relative Markdown link/asset resolution. `LocalWorkspace` is the Linux implementation; its IDs happen to be slash-separated relative paths.
+The shared Rust core uses opaque entry IDs and supports enumeration, read/write, create/rename/delete, search, and relative Markdown link/asset resolution. Tauri 2 supplies one HTML/CSS/TypeScript shell for desktop and mobile; its frontend never receives filesystem paths for mutation or SMB credentials. CodeMirror 6 provides the editor surface, including native browser/iOS selection and IME behavior.
 
 Workspace selection is deliberately platform-specific rather than pretending every OS exposes folders as normal paths:
 
-- **Linux:** native XDG portal folder picker, then normal filesystem access.
+- **Linux:** Tauri's native dialog picker, then normal filesystem access.
 - **Android:** Storage Access Framework document-tree selection and persistable URI permissions.
 - **iOS:** `UIDocumentPickerViewController` directory selection, security-scoped bookmarks, and coordinated file access.
 
@@ -68,6 +71,5 @@ For iOS, the intended implementation follows Apple's supported external-director
 ## Current limitations
 
 - Android workspace integration remains planned. iOS now has a native folder picker, security-scoped bookmark persistence, coordinated file access, foreground reconciliation, and a separate mobile UI. The iOS package must be built on macOS with Xcode/Xcodegen.
-- Mermaid rendering currently uses the Rust-native Merman `0.7.0-alpha.1` release because Merman `0.8.0-alpha.5` requires a newer Rust toolchain than the project currently uses.
-- Slint's stock `TextEdit` does not expose per-range text styling, so the editable source pane is monospace but does not yet provide true syntax highlighting. The rendered preview is Markdown-aware.
-- Heading-fragment navigation selects the matching heading in the source editor; preview scrolling to an anchor is not yet exposed by Slint's `StyledText`.
+- Mermaid rendering remains Rust-native through Merman; the UI only displays the generated SVG.
+- Android workspace integration remains planned.

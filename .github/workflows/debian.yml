@@ -23,7 +23,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             dpkg-dev \
-            libfontconfig1-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
             libgl1-mesa-dev \
             libwayland-dev \
             libx11-dev \
@@ -34,44 +36,23 @@ jobs:
         with:
           toolchain: stable
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
       - name: Build Debian package
         env:
           MARKERUP_BUILD_NUMBER: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          cargo build --locked --release
-          package_root="$RUNNER_TEMP/markerup-package"
-          mkdir -p "$package_root/DEBIAN" \
-            "$package_root/usr/bin" \
-            "$package_root/usr/share/applications" \
-            "$package_root/usr/share/icons/hicolor/scalable/apps"
-          install -m 0755 target/release/markerup "$package_root/usr/bin/markerup"
-          install -m 0644 resources/markerup_notepad_transparent.svg \
-            "$package_root/usr/share/icons/hicolor/scalable/apps/markerup.svg"
-          cat > "$package_root/DEBIAN/control" <<EOF
-          Package: markerup
-          Version: ${GITHUB_RUN_NUMBER}
-          Section: editors
-          Priority: optional
-          Architecture: amd64
-          Maintainer: Markerup contributors
-          Description: Filesystem-first Markdown notes editor
-           Markerup is a Markdown notes editor built with Rust and Slint.
-          EOF
-          cat > "$package_root/usr/share/applications/markerup.desktop" <<'EOF'
-          [Desktop Entry]
-          Type=Application
-          Name=Markerup
-          Comment=Filesystem-first Markdown notes editor
-          Exec=markerup
-          Icon=markerup
-          Terminal=false
-          Categories=Office;TextEditor;
-          MimeType=text/markdown;text/plain;
-          EOF
+          cargo tauri build --bundles deb -- --locked
           mkdir -p release
-          dpkg-deb --build --root-owner-group "$package_root" \
-            "release/markerup_${GITHUB_RUN_NUMBER}_amd64.deb"
+          cp target/release/bundle/deb/*.deb release/
           sha256sum release/* > release/SHA256SUMS
 
       - name: Upload Debian package artifact

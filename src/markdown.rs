@@ -1,12 +1,13 @@
 use markdown::{Constructs, ParseOptions, mdast::Node, to_mdast};
+use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ImageReference {
     pub alt: String,
     pub destination: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PreviewBlockKind {
     Body,
     Heading(u8),
@@ -20,7 +21,7 @@ pub enum PreviewBlockKind {
     Table,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreviewBlock {
     pub kind: PreviewBlockKind,
     pub markdown: String,
@@ -28,7 +29,7 @@ pub struct PreviewBlock {
     pub task_offset: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreviewDocument {
     pub blocks: Vec<PreviewBlock>,
     pub images: Vec<ImageReference>,
@@ -404,6 +405,7 @@ fn escape_styled_text(value: &str) -> String {
     value.replace('<', "&lt;").replace('>', "&gt;")
 }
 
+#[allow(dead_code)]
 pub fn find_matches(source: &str, query: &str) -> Vec<(usize, usize)> {
     if query.is_empty() {
         return Vec::new();
@@ -414,6 +416,7 @@ pub fn find_matches(source: &str, query: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn find_heading_range(source: &str, requested_anchor: &str) -> Option<(usize, usize)> {
     let requested = slugify(requested_anchor.trim_start_matches('#'));
     let mut offset = 0usize;
@@ -434,6 +437,7 @@ pub fn find_heading_range(source: &str, requested_anchor: &str) -> Option<(usize
     None
 }
 
+#[allow(dead_code)]
 fn slugify(value: &str) -> String {
     let mut output = String::new();
     let mut previous_dash = false;

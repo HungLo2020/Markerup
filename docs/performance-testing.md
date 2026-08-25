@@ -8,7 +8,7 @@ The debug profiling harness is [`scripts/perf_debug.sh`](../scripts/perf_debug.s
 - UI timer cadence, including interval and effective cadence, from the same opt-in performance output;
 - supplemental Linux `perf stat` counters when kernel permissions allow them.
 
-The application-side changes keep search content caching bounded to 4 MiB, cancel stale search generations during filesystem walking and content matching, reuse the tree's Slint model, back off UI polling from 50 ms to 250 ms while idle, and initialize Merman only when a Mermaid block is actually rendered.
+The application-side changes keep search content caching bounded to 4 MiB, cancel stale search generations during filesystem walking and content matching, and initialize Merman only when a Mermaid block is actually rendered.
 
 Build first, then run a scenario:
 
@@ -35,6 +35,6 @@ The scenarios contain 100, 1,000, and 5,000 Markdown notes. They are intended to
 
 ## Interpreting frame data
 
-Markerup currently uses a 50 ms Slint timer to poll filesystem and worker events. The reported `effective_fps` is therefore UI timer cadence, not compositor-presented FPS. It is useful for detecting event-loop stalls, but true rendered FPS should be measured with platform tooling: Instruments/Core Animation on iOS, and a compositor or GPU profiler on Linux. No release-mode settings are used by this harness.
+With the Tauri frontend, compositor frame pacing should be measured with platform tooling: Instruments/Core Animation on iOS, and a compositor or GPU profiler on Linux. No release-mode settings are used by this harness.
 
 For a fair comparison, close other Markerup instances, keep the display/compositor configuration fixed, and record the OS, device, Rust version, scenario, and whether `perf-stat.txt` was permitted.
