@@ -4,8 +4,10 @@ on:
   workflow_call:
     inputs:
       source_sha:
+        description: Exact commit SHA selected by the gated release workflow.
         required: false
         type: string
+        default: ""
 permissions:
   contents: read
 jobs:
