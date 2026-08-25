@@ -88,7 +88,7 @@ jobs:
           project.write_text(source.replace(marker, marker + settings))
           PY
       - name: Build signed App Store Connect IPA
-        run: cargo tauri ios build --export-method app-store-connect
+        run: cargo tauri ios build --export-method app-store-connect --build-number "$GITHUB_RUN_NUMBER"
       - id: ipa
         run: |
           ipa="$(find gen/apple/build -name '*.ipa' -print -quit)"
