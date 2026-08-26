@@ -25,11 +25,11 @@ jobs:
         run: npm run build --prefix frontend
       - run: cargo install tauri-cli --version 2.11.4 --locked
       - name: Generate the canonical app icon for Apple project initialization
-        run: cargo tauri icon resources/markerup_notepad_icon.svg --output icons --ios-color '#eaf4ff'
+        run: cargo tauri icon resources/markerup_notepad_transparent.svg --output icons --ios-color '#eaf4ff'
       - name: Initialize Tauri Apple project
         run: cargo tauri ios init --ci
       - name: Populate the generated iOS icon catalog from the canonical SVG
-        run: cargo tauri icon resources/markerup_notepad_icon.svg --output icons --ios-color '#eaf4ff'
+        run: cargo tauri icon resources/markerup_notepad_transparent.svg --output icons --ios-color '#eaf4ff'
       - name: Remove alpha channels from generated iOS app icons
         # Apple rejects AppIcon PNGs that have an alpha channel even if every
         # pixel is opaque. This composites Tauri's SVG-derived RGBA files over

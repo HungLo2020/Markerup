@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-source_svg="${1:-$repo_root/resources/markerup_notepad_icon.svg}"
+source_svg="${1:-$repo_root/resources/markerup_notepad_transparent.svg}"
 asset_dir="$repo_root/ios/Assets.xcassets/AppIcon.appiconset"
 
 if ! command -v rsvg-convert >/dev/null 2>&1; then

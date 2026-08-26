@@ -23,7 +23,7 @@ fn generate_app_icon() {
     use std::{env, fs, path::PathBuf};
 
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing manifest directory"));
-    let source = root.join("resources/markerup_notepad_icon.svg");
+    let source = root.join("resources/markerup_notepad_transparent.svg");
     let destination_dir = root.join("icons");
     println!("cargo:rerun-if-changed={}", source.display());
 
