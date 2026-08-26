@@ -4,7 +4,7 @@ import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
 import { EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { keymap, EditorView } from "@codemirror/view";
+import { drawSelection, keymap, EditorView } from "@codemirror/view";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import "./styles.css";
@@ -138,7 +138,7 @@ function renderTree(entries = snapshot?.entries ?? []) {
 }
 function setupEditor() {
   const host=document.querySelector<HTMLElement>("#editor")!;
-  editor = new EditorView({ state: EditorState.create({ doc: currentText, extensions: [history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"}}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();scheduleSave();renderPreview()}})] }), parent:host });
+  editor = new EditorView({ state: EditorState.create({ doc: currentText, extensions: [history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();scheduleSave();renderPreview()}})] }), parent:host });
 }
 function applyMode(){ const panes=document.querySelector("#panes"); if(panes) panes.className=editorMode; }
 async function openNote(id:string){
