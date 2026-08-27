@@ -8,5 +8,7 @@
     -->
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Markerup connects directly to the SMB server you choose to access your Markdown workspace.</string>
 </dict>
 </plist>

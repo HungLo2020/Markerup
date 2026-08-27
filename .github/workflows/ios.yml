@@ -48,6 +48,7 @@ jobs:
           info_plist="$(find gen/apple -name Info.plist -print -quit)"
           test -n "$info_plist"
           test "$(plutil -extract ITSAppUsesNonExemptEncryption raw "$info_plist")" = "false"
+          test "$(plutil -extract NSLocalNetworkUsageDescription raw "$info_plist")" = "Markerup connects directly to the SMB server you choose to access your Markdown workspace."
       - id: simulator
         name: Select an iOS 26.5 iPhone simulator
         run: |
