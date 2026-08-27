@@ -6,7 +6,9 @@ use crate::persistence::{SavedSmbConfig, clear_session, load_session, save_sessi
 use crate::smb_workspace::{SmbConnectionConfig, SmbWorkspace};
 #[cfg(not(target_os = "ios"))]
 use crate::workspace::LocalWorkspace;
-use crate::workspace::{EntryId, LinkTarget, Workspace, WorkspaceEntry, WorkspaceSlot};
+use crate::workspace::{
+    EntryId, LinkTarget, Workspace, WorkspaceEntry, WorkspaceRef, WorkspaceSlot,
+};
 use base64::Engine;
 use merman::MermaidConfig;
 use merman::render::HeadlessRenderer;
@@ -21,6 +23,7 @@ const PRIVACY_POLICY_URL: &str = "https://hunglo2020.github.io/Markerup/privacy-
 #[derive(Default)]
 struct BackendInner {
     workspace: WorkspaceSlot,
+    entries: Vec<WorkspaceEntry>,
     pinned: bool,
     bookmark: Option<Vec<u8>>,
     current_file: Option<EntryId>,
@@ -34,6 +37,12 @@ struct BackendInner {
 #[derive(Default)]
 pub struct MarkerupBackend {
     inner: Mutex<BackendInner>,
+}
+
+struct SaveRequest {
+    workspace: WorkspaceRef,
+    file: EntryId,
+    baseline: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,9 +90,23 @@ impl MarkerupBackend {
             .map_err(|_| "Markerup workspace state is unavailable".to_string())
     }
 
-    fn snapshot(inner: &BackendInner) -> Result<WorkspaceSnapshot, String> {
+    fn snapshot(inner: &BackendInner) -> WorkspaceSnapshot {
         let workspace_open = inner.workspace.is_open();
-        let entries = if workspace_open {
+        WorkspaceSnapshot {
+            workspace_open,
+            workspace_path: inner.workspace.root_display(),
+            workspace_is_smb: matches!(inner.workspace, WorkspaceSlot::Smb(_)),
+            workspace_pinned: inner.pinned,
+            entries: inner.entries.clone(),
+            current_file: inner.current_file.clone(),
+            can_go_back: inner.navigation.can_go_back(),
+            can_go_forward: inner.navigation.can_go_forward(),
+            external_conflict: inner.external_conflict,
+        }
+    }
+
+    fn refresh_entries(inner: &mut BackendInner) -> Result<(), String> {
+        inner.entries = if inner.workspace.is_open() {
             inner
                 .workspace
                 .entries()
@@ -91,17 +114,7 @@ impl MarkerupBackend {
         } else {
             Vec::new()
         };
-        Ok(WorkspaceSnapshot {
-            workspace_open,
-            workspace_path: inner.workspace.root_display(),
-            workspace_is_smb: matches!(inner.workspace, WorkspaceSlot::Smb(_)),
-            workspace_pinned: inner.pinned,
-            entries,
-            current_file: inner.current_file.clone(),
-            can_go_back: inner.navigation.can_go_back(),
-            can_go_forward: inner.navigation.can_go_forward(),
-            external_conflict: inner.external_conflict,
-        })
+        Ok(())
     }
 
     fn persist(inner: &BackendInner) {
@@ -130,6 +143,7 @@ impl MarkerupBackend {
         bookmark: Option<Vec<u8>>,
     ) {
         inner.workspace = workspace;
+        inner.entries.clear();
         inner.pinned = pinned;
         inner.bookmark = bookmark;
         inner.current_file = None;
@@ -155,7 +169,7 @@ impl MarkerupBackend {
         inner.disk_text = contents.clone();
         inner.external_conflict = false;
         Self::persist(inner);
-        let snapshot = Self::snapshot(inner)?;
+        let snapshot = Self::snapshot(inner);
         Ok(NotePayload {
             id,
             contents,
@@ -170,31 +184,45 @@ impl MarkerupBackend {
             .ok_or_else(|| "No note is selected".to_string())
     }
 
-    fn save_locked(
-        inner: &mut BackendInner,
-        contents: &str,
-        force: bool,
-    ) -> Result<WorkspaceSnapshot, String> {
-        let file = Self::current_file(inner)?;
+    fn begin_save(&self, force: bool) -> Result<SaveRequest, String> {
+        let inner = self.locked()?;
         if inner.external_conflict && !force {
             return Err("External change conflict".to_string());
         }
-        let current_disk = inner
-            .workspace
-            .read(&file)
-            .map_err(|error| error.to_string())?;
-        if !force && current_disk != inner.disk_text {
+        Ok(SaveRequest {
+            workspace: inner
+                .workspace
+                .shared_clone()
+                .ok_or_else(|| "No workspace is open".to_string())?,
+            file: Self::current_file(&inner)?,
+            baseline: inner.disk_text.clone(),
+        })
+    }
+
+    fn mark_conflict_if_current(&self, request: &SaveRequest) {
+        if let Ok(mut inner) = self.locked()
+            && inner.current_file.as_deref() == Some(request.file.as_str())
+            && inner.disk_text == request.baseline
+        {
             inner.external_conflict = true;
-            return Err("External change conflict".to_string());
         }
-        inner
-            .workspace
-            .write(&file, contents)
-            .map_err(|error| error.to_string())?;
+    }
+
+    fn complete_save(
+        &self,
+        request: &SaveRequest,
+        contents: &str,
+    ) -> Result<WorkspaceSnapshot, String> {
+        let mut inner = self.locked()?;
+        if inner.current_file.as_deref() != Some(request.file.as_str())
+            || inner.disk_text != request.baseline
+        {
+            return Err("The active note changed while its save was in progress; reload before editing further.".to_string());
+        }
         inner.disk_text = contents.to_string();
         inner.external_conflict = false;
-        Self::persist(inner);
-        Self::snapshot(inner)
+        Self::persist(&inner);
+        Ok(Self::snapshot(&inner))
     }
 
     pub fn restore(&self) {
@@ -208,6 +236,7 @@ impl MarkerupBackend {
         {
             if let Ok(workspace) = LocalWorkspace::open(&session.pinned_workspace) {
                 Self::install_workspace(&mut inner, WorkspaceSlot::local(workspace), true, None);
+                let _ = Self::refresh_entries(&mut inner);
                 if let Some(id) = session.current_file {
                     let _ = Self::open_note_locked(&mut inner, id, false);
                 }
@@ -235,6 +264,7 @@ impl MarkerupBackend {
                             true,
                             None,
                         );
+                        let _ = Self::refresh_entries(&mut inner);
                     }
                 }
             } else if let Some(bookmark) = session.bookmark
@@ -247,6 +277,7 @@ impl MarkerupBackend {
                     true,
                     Some(bookmark),
                 );
+                let _ = Self::refresh_entries(&mut inner);
             }
             if let Some(id) = session.current_file {
                 let _ = Self::open_note_locked(&mut inner, id, false);
@@ -260,7 +291,7 @@ pub fn workspace_snapshot(
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
     let inner = state.locked()?;
-    MarkerupBackend::snapshot(&inner)
+    Ok(MarkerupBackend::snapshot(&inner))
 }
 
 #[tauri::command]
@@ -274,6 +305,7 @@ pub fn open_local_workspace(
     {
         let workspace =
             LocalWorkspace::open(PathBuf::from(path)).map_err(|error| error.to_string())?;
+        let entries = workspace.entries().map_err(|error| error.to_string())?;
         let mut inner = state.locked()?;
         MarkerupBackend::install_workspace(
             &mut inner,
@@ -281,7 +313,8 @@ pub fn open_local_workspace(
             false,
             None,
         );
-        MarkerupBackend::snapshot(&inner)
+        inner.entries = entries;
+        Ok(MarkerupBackend::snapshot(&inner))
     }
     #[cfg(target_os = "ios")]
     Err("Use the iOS folder picker to select a local workspace".to_string())
@@ -307,6 +340,7 @@ pub async fn choose_ios_workspace(
     let bookmark = selection.bookmark.clone();
     let workspace =
         crate::ios_workspace::IosWorkspace::open(selection).map_err(|error| error.to_string())?;
+    let entries = workspace.entries().map_err(|error| error.to_string())?;
     let mut inner = state.locked()?;
     MarkerupBackend::install_workspace(
         &mut inner,
@@ -314,7 +348,8 @@ pub async fn choose_ios_workspace(
         false,
         Some(bookmark),
     );
-    MarkerupBackend::snapshot(&inner)
+    inner.entries = entries;
+    Ok(MarkerupBackend::snapshot(&inner))
 }
 
 #[tauri::command]
@@ -330,9 +365,11 @@ pub fn connect_smb(
         remote_path: request.remote_path,
     };
     let workspace = SmbWorkspace::connect(config).map_err(|error| error.to_string())?;
+    let entries = workspace.entries().map_err(|error| error.to_string())?;
     let mut inner = state.locked()?;
     MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::smb(workspace), false, None);
-    MarkerupBackend::snapshot(&inner)
+    inner.entries = entries;
+    Ok(MarkerupBackend::snapshot(&inner))
 }
 
 #[tauri::command]
@@ -350,8 +387,39 @@ pub fn save_note(
     force: bool,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
-    let mut inner = state.locked()?;
-    MarkerupBackend::save_locked(&mut inner, &contents, force)
+    let request = state.begin_save(force)?;
+    let current_disk = request
+        .workspace
+        .read(&request.file)
+        .map_err(|error| error.to_string())?;
+    if !force && current_disk != request.baseline {
+        state.mark_conflict_if_current(&request);
+        return Err("External change conflict".to_string());
+    }
+    if let Err(error) = request.workspace.write(&request.file, &contents) {
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            return match request.workspace.read(&request.file) {
+                Ok(remote) if remote == contents => state.complete_save(&request, &contents),
+                Ok(_) => {
+                    state.mark_conflict_if_current(&request);
+                    Err("Save outcome unknown — the SMB server could have applied the write or another client changed the note. Reload before retrying.".to_string())
+                }
+                Err(verification_error) => Err(format!(
+                    "Save outcome unknown — SMB write failed and Markerup could not verify the remote note: {verification_error}. Reload before retrying."
+                )),
+            };
+        }
+        return Err(error.to_string());
+    }
+    let verified_disk = request
+        .workspace
+        .read(&request.file)
+        .map_err(|error| format!("Save completed but Markerup could not verify it: {error}"))?;
+    if verified_disk != contents {
+        state.mark_conflict_if_current(&request);
+        return Err("External change conflict — the note changed while Markerup was saving. Reload before retrying.".to_string());
+    }
+    state.complete_save(&request, &contents)
 }
 
 #[tauri::command]
@@ -379,7 +447,8 @@ pub fn refresh_workspace(
             inner.external_conflict = false;
         }
     }
-    MarkerupBackend::snapshot(&inner)
+    MarkerupBackend::refresh_entries(&mut inner)?;
+    Ok(MarkerupBackend::snapshot(&inner))
 }
 
 #[tauri::command]
@@ -405,6 +474,7 @@ pub fn create_note(
         .workspace
         .create_note(&parent, &name)
         .map_err(|error| error.to_string())?;
+    MarkerupBackend::refresh_entries(&mut inner)?;
     MarkerupBackend::open_note_locked(&mut inner, id, true)
 }
 
@@ -414,12 +484,13 @@ pub fn create_folder(
     name: String,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
-    let inner = state.locked()?;
+    let mut inner = state.locked()?;
     inner
         .workspace
         .create_directory(&parent, &name)
         .map_err(|error| error.to_string())?;
-    MarkerupBackend::snapshot(&inner)
+    MarkerupBackend::refresh_entries(&mut inner)?;
+    Ok(MarkerupBackend::snapshot(&inner))
 }
 
 #[tauri::command]
@@ -438,7 +509,8 @@ pub fn rename_entry(
         inner.current_file = Some(new_id);
     }
     MarkerupBackend::persist(&inner);
-    MarkerupBackend::snapshot(&inner)
+    MarkerupBackend::refresh_entries(&mut inner)?;
+    Ok(MarkerupBackend::snapshot(&inner))
 }
 
 #[tauri::command]
@@ -462,7 +534,8 @@ pub fn delete_entry(
         inner.disk_text.clear();
     }
     MarkerupBackend::persist(&inner);
-    MarkerupBackend::snapshot(&inner)
+    MarkerupBackend::refresh_entries(&mut inner)?;
+    Ok(MarkerupBackend::snapshot(&inner))
 }
 
 #[tauri::command]
@@ -521,7 +594,7 @@ pub fn set_workspace_pinned(
     }
     inner.pinned = pinned;
     MarkerupBackend::persist(&inner);
-    MarkerupBackend::snapshot(&inner)
+    Ok(MarkerupBackend::snapshot(&inner))
 }
 
 #[tauri::command]

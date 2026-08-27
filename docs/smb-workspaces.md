@@ -18,11 +18,10 @@ database or a second canonical copy.
 
 The password is held in memory for the active connection only. It is not put
 in Markdown, logs, diagnostics, session preferences, GitHub Actions, or app
-metadata. Direct SMB connections are intentionally session-only in this
-version, so the existing “pin workspace” feature is disabled for them. This
-avoids accidentally storing a password in the ordinary folder-session format;
-a future “remember connection” feature must use iOS Keychain and an equivalent
-Linux secret store, never plaintext preferences.
+metadata. On iOS, pinning an SMB workspace stores only the password in
+Keychain; its server/share/username/folder metadata is retained in the normal
+session file. On Linux, direct SMB connections remain session-only until an
+equivalent secure-secret store is available.
 
 The remote folder and every generated entry ID are checked for absolute paths,
 `.`/`..` traversal, NUL bytes, and Windows separator tricks before being sent
@@ -34,7 +33,19 @@ SMB connection, authentication, timeout, enumeration, and read failures are
 returned to the application as errors. An unavailable share is never converted
 to an empty workspace. Reads and enumeration retry once after reconnecting;
 mutations are not blindly retried because a network failure can occur after a
-server has committed an operation, making an automatic retry ambiguous.
+server has committed an operation, making an automatic retry ambiguous. The
+same explicit unknown-outcome rule applies to create, rename, and delete.
+
+Markerup verifies every completed write by reading the note back. If a mutation
+fails after a transport interruption, Markerup also attempts a read-back: a
+matching note is treated as saved, while a mismatch or unreadable result is
+reported as an **unknown save outcome**. That state requires a reload before a
+user retries, so the app never guesses whether a remote write happened.
+
+Workspace scans are bounded to 50,000 visible entries and 64 directory levels,
+honor cancellation between directory operations, and return an explicit error
+when either safety bound is exceeded. This prevents an unavailable, cyclic, or
+unexpectedly huge share from being represented as an empty workspace.
 
 The iOS direct flow does not infer SMB credentials from a Files/LiveFiles URL.
 It explicitly asks for server, share, username, password, and remote folder.

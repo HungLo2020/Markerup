@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 const SMB_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const SMB_SCAN_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_SMB_SCAN_DEPTH: usize = 64;
+const MAX_SMB_SCAN_ENTRIES: usize = 50_000;
 
 /// Connection information for a direct SMB workspace.
 ///
@@ -163,7 +165,7 @@ impl SmbWorkspace {
         };
         match result {
             Ok(entries) => Ok(entries),
-            Err(first) => {
+            Err(first) if is_transient_smb_error(&first) => {
                 self.reconnect(&mut session).map_err(|reconnect| {
                     io::Error::other(format!(
                         "SMB list failed: {first}; reconnect failed: {reconnect}"
@@ -174,9 +176,13 @@ impl SmbWorkspace {
                     client.list_directory(tree, path)
                 })
                 .map_err(|retry| {
-                    io::Error::other(format!("SMB list failed after reconnect: {retry}"))
+                    io::Error::new(
+                        retry.kind(),
+                        format!("SMB list failed after reconnect: {retry}"),
+                    )
                 })
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -192,7 +198,7 @@ impl SmbWorkspace {
         match result {
             Ok(data) => Ok(data),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Err(error),
-            Err(first) => {
+            Err(first) if is_transient_smb_error(&first) => {
                 self.reconnect(&mut session).map_err(|reconnect| {
                     io::Error::other(format!(
                         "SMB read failed: {first}; reconnect failed: {reconnect}"
@@ -203,9 +209,13 @@ impl SmbWorkspace {
                     client.read_file_pipelined(tree, path)
                 })
                 .map_err(|retry| {
-                    io::Error::other(format!("SMB read failed after reconnect: {retry}"))
+                    io::Error::new(
+                        retry.kind(),
+                        format!("SMB read failed after reconnect: {retry}"),
+                    )
                 })
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -227,17 +237,36 @@ impl SmbWorkspace {
         relative_directory: &str,
         depth: usize,
         deadline: Instant,
+        should_cancel: Option<&dyn Fn() -> bool>,
         output: &mut Vec<WorkspaceEntry>,
     ) -> io::Result<()> {
+        if should_cancel.is_some_and(|cancel| cancel()) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "SMB workspace scan cancelled",
+            ));
+        }
         if Instant::now() >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "SMB workspace scan timed out",
             ));
         }
+        if depth > MAX_SMB_SCAN_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("SMB workspace scan exceeded the maximum depth of {MAX_SMB_SCAN_DEPTH}"),
+            ));
+        }
         let mut children = self.list_directory(directory)?;
         children.sort_by_key(|entry| entry.name.to_lowercase());
         for child in children {
+            if should_cancel.is_some_and(|cancel| cancel()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "SMB workspace scan cancelled",
+                ));
+            }
             if child.name == "." || child.name == ".." || child.name.starts_with('.') {
                 continue;
             }
@@ -247,6 +276,7 @@ impl SmbWorkspace {
                 format!("{relative_directory}/{}", child.name)
             };
             if child.is_directory {
+                ensure_scan_capacity(output.len())?;
                 let child_name = child.name.clone();
                 output.push(WorkspaceEntry {
                     id: id.clone(),
@@ -259,8 +289,16 @@ impl SmbWorkspace {
                 } else {
                     format!("{directory}/{child_name}")
                 };
-                self.collect_entries(&child_directory, &id, depth + 1, deadline, output)?;
+                self.collect_entries(
+                    &child_directory,
+                    &id,
+                    depth + 1,
+                    deadline,
+                    should_cancel,
+                    output,
+                )?;
             } else if child.name.to_ascii_lowercase().ends_with(".md") {
+                ensure_scan_capacity(output.len())?;
                 output.push(WorkspaceEntry {
                     id,
                     name: child.name,
@@ -403,6 +441,7 @@ impl Workspace for SmbWorkspace {
             "",
             0,
             Instant::now() + SMB_SCAN_TIMEOUT,
+            None,
             &mut entries,
         )?;
         Ok(entries)
@@ -415,8 +454,19 @@ impl Workspace for SmbWorkspace {
         if should_cancel() {
             return Ok(None);
         }
-        let entries = self.entries()?;
-        Ok((!should_cancel()).then_some(entries))
+        let root = self.remote_path("")?;
+        let mut entries = Vec::new();
+        match self.collect_entries(
+            &root,
+            "",
+            0,
+            Instant::now() + SMB_SCAN_TIMEOUT,
+            Some(should_cancel),
+            &mut entries,
+        ) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => Ok(None),
+            result => result.map(|()| Some(entries)),
+        }
     }
 
     fn markdown_files(&self) -> io::Result<Vec<EntryId>> {
@@ -441,6 +491,7 @@ impl Workspace for SmbWorkspace {
             })
             .map(|_| ())
         })
+        .map_err(mark_ambiguous_mutation)
     }
 
     fn create_note(&self, parent: &str, name: &str) -> io::Result<EntryId> {
@@ -453,22 +504,22 @@ impl Workspace for SmbWorkspace {
         } else {
             format!("{parent}/{name}")
         };
-        if self.entries()?.iter().any(|entry| entry.id == id) {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "an SMB entry with that name already exists",
-            ));
-        }
-        self.write(
-            &id,
-            &format!(
-                "# {}\n",
-                Path::new(&id)
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-            ),
-        )?;
+        let path = self.remote_path(&id)?;
+        let contents = format!(
+            "# {}\n",
+            Path::new(&id)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+        self.mutate(|client, tree| {
+            self.run_smb("exclusive note creation", || async {
+                let mut writer = client.create_file_writer_exclusive(tree, &path).await?;
+                writer.write_chunk(contents.as_bytes()).await?;
+                writer.finish().await.map(|_| ())
+            })
+        })
+        .map_err(mark_ambiguous_mutation)?;
         Ok(id)
     }
 
@@ -485,7 +536,8 @@ impl Workspace for SmbWorkspace {
             self.run_smb("directory creation", || {
                 client.create_directory(tree, &path)
             })
-        })?;
+        })
+        .map_err(mark_ambiguous_mutation)?;
         Ok(id)
     }
 
@@ -502,7 +554,8 @@ impl Workspace for SmbWorkspace {
         let destination = self.remote_path(&destination_id)?;
         self.mutate(|client, tree| {
             self.run_smb("rename", || client.rename(tree, &source, &destination))
-        })?;
+        })
+        .map_err(mark_ambiguous_mutation)?;
         Ok(destination_id)
     }
 
@@ -516,6 +569,7 @@ impl Workspace for SmbWorkspace {
                 self.run_smb("file delete", || client.delete_file(tree, &path))
             }
         })
+        .map_err(mark_ambiguous_mutation)
     }
 
     fn search_markdown(&self, query: &str) -> io::Result<Vec<EntryId>> {
@@ -570,9 +624,42 @@ impl Workspace for SmbWorkspace {
     }
 }
 
+fn is_transient_smb_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionAborted | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+    )
+}
+
+fn mark_ambiguous_mutation(error: io::Error) -> io::Error {
+    if is_transient_smb_error(&error) {
+        io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!(
+                "SMB mutation outcome is unknown after a transport failure: {error}. Reload before retrying."
+            ),
+        )
+    } else {
+        error
+    }
+}
+
+fn ensure_scan_capacity(entries: usize) -> io::Result<()> {
+    if entries >= MAX_SMB_SCAN_ENTRIES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("SMB workspace scan exceeded the maximum of {MAX_SMB_SCAN_ENTRIES} entries"),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SmbConnectionConfig, SmbWorkspace, normalize_remote_path, validate_remote_id};
+    use super::{
+        SmbConnectionConfig, SmbWorkspace, ensure_scan_capacity, is_transient_smb_error,
+        normalize_remote_path, validate_remote_id,
+    };
     use crate::workspace::Workspace;
 
     #[test]
@@ -626,6 +713,33 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn only_connection_failures_are_retried() {
+        assert!(is_transient_smb_error(&std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "connection reset",
+        )));
+        assert!(is_transient_smb_error(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timeout",
+        )));
+        assert!(!is_transient_smb_error(&std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        )));
+        assert!(!is_transient_smb_error(&std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing",
+        )));
+    }
+
+    #[test]
+    fn scan_entry_limit_is_enforced() {
+        assert!(ensure_scan_capacity(0).is_ok());
+        assert!(ensure_scan_capacity(super::MAX_SMB_SCAN_ENTRIES - 1).is_ok());
+        assert!(ensure_scan_capacity(super::MAX_SMB_SCAN_ENTRIES).is_err());
     }
 
     /// Opt-in Linux validation against a real SMB2/3 server. Credentials are

@@ -22,6 +22,9 @@ let snapshot: Snapshot | undefined;
 let currentText = "";
 let savedText = "";
 let saveTimer: number | undefined;
+let saveInFlight: Promise<void> | undefined;
+let retryTimer: number | undefined;
+let saveBlockedUntilReload = false;
 let editor: EditorView;
 let page: "main" | "settings" | "location" | "smb" | "about" = "main";
 let editorMode: "source" | "split" | "preview" = "split";
@@ -142,7 +145,7 @@ function setupEditor() {
 }
 function applyMode(){ const panes=document.querySelector("#panes"); if(panes) panes.className=editorMode; }
 async function openNote(id:string){
-  await flushSave();
+  if(!await saveBeforeChangingNote()) return;
   try {
     const note=await call<Note>("open_note",{id});
     openNoteView(note);
@@ -155,20 +158,70 @@ function openNoteView(note: Note) {
   }
   loadNote(note);
 }
-function loadNote(note:Note){ snapshot=note.snapshot; currentText=savedText=note.contents; renderShell(); renderPage(); status("Saved"); }
-function scheduleSave(){ status("Unsaved changes"); if(saveTimer) clearTimeout(saveTimer); saveTimer=window.setTimeout(()=>void flushSave(),750); }
-async function flushSave(){ if(!snapshot?.currentFile || currentText===savedText) return; status("Saving…"); try { snapshot=await call<Snapshot>("save_note",{contents:currentText,force:false}); savedText=currentText; status("Saved"); } catch(error){ status(`Save failed — retrying: ${error}`); } }
+function loadNote(note:Note){ if(saveTimer) clearTimeout(saveTimer); if(retryTimer) clearTimeout(retryTimer); saveBlockedUntilReload=false; snapshot=note.snapshot; currentText=savedText=note.contents; renderShell(); renderPage(); status("Saved"); }
+function scheduleSave(delay=750){
+  if(saveBlockedUntilReload) {
+    status("Reload this note before saving again");
+    return;
+  }
+  status("Unsaved changes");
+  if(saveTimer) clearTimeout(saveTimer);
+  saveTimer=window.setTimeout(()=>void flushSave(),delay);
+}
+function scheduleRetry(error: unknown){
+  const message=String(error);
+  if (/outcome unknown|external change conflict/i.test(message)) {
+    saveBlockedUntilReload=true;
+    status(message);
+    return;
+  }
+  status(`Save failed — retrying: ${message}`);
+  if(retryTimer) clearTimeout(retryTimer);
+  retryTimer=window.setTimeout(()=>void flushSave(),2000);
+}
+function flushSave(): Promise<void> {
+  if(saveInFlight) return saveInFlight;
+  if(saveBlockedUntilReload) return Promise.resolve();
+  if(retryTimer) { clearTimeout(retryTimer); retryTimer=undefined; }
+  saveInFlight=(async()=>{
+    while(snapshot?.currentFile && currentText!==savedText) {
+      const file=snapshot.currentFile;
+      const contents=currentText;
+      status("Saving…");
+      try {
+        const next=await call<Snapshot>("save_note",{contents,force:false});
+        if(snapshot?.currentFile!==file) return;
+        snapshot=next;
+        savedText=contents;
+        status("Saved");
+      } catch(error) {
+        scheduleRetry(error);
+        return;
+      }
+    }
+  })().finally(()=>{
+    saveInFlight=undefined;
+    if(snapshot?.currentFile && currentText!==savedText && !retryTimer && !saveBlockedUntilReload) scheduleSave();
+  });
+  return saveInFlight;
+}
+async function saveBeforeChangingNote(): Promise<boolean> {
+  await flushSave();
+  if(currentText===savedText) return true;
+  status("Unsaved changes must be resolved before leaving this note");
+  return false;
+}
 async function refresh(){ await flushSave(); try { snapshot=await call<Snapshot>("refresh_workspace",{editorHasUnsavedChanges:currentText!==savedText}); renderShell(); renderPage(); status("Workspace refreshed"); } catch(error){status(`Refresh failed: ${error}`)} }
-async function navigate(command:string){ await flushSave(); const note=await call<Note|null>(command); if(note) loadNote(note); }
-async function chooseLocal(){ try { const selected=await openDialog({directory:true,multiple:false}); if(typeof selected === "string") { snapshot=await call<Snapshot>("open_local_workspace",{path:selected}); page="main";renderShell();renderPage(); } } catch(error){ status(`Workspace selection failed: ${error}`); } }
-async function connectSmb(){ const value=(id:string) => document.querySelector<HTMLInputElement>(`#${id}`)!.value; try { snapshot=await call<Snapshot>("connect_smb",{request:{server:value("server"),share:value("share"),username:value("username"),password:value("password"),remotePath:value("remote")}}); page="main";renderShell();renderPage();status("SMB workspace connected"); } catch(error){status(`SMB connection failed: ${error}`)} }
+async function navigate(command:string){ if(!await saveBeforeChangingNote()) return; const note=await call<Note|null>(command); if(note) loadNote(note); }
+async function chooseLocal(){ if(!await saveBeforeChangingNote()) return; try { const selected=await openDialog({directory:true,multiple:false}); if(typeof selected === "string") { snapshot=await call<Snapshot>("open_local_workspace",{path:selected}); page="main";renderShell();renderPage(); } } catch(error){ status(`Workspace selection failed: ${error}`); } }
+async function connectSmb(){ if(!await saveBeforeChangingNote()) return; const value=(id:string) => document.querySelector<HTMLInputElement>(`#${id}`)!.value; try { snapshot=await call<Snapshot>("connect_smb",{request:{server:value("server"),share:value("share"),username:value("username"),password:value("password"),remotePath:value("remote")}}); page="main";renderShell();renderPage();status("SMB workspace connected"); } catch(error){status(`SMB connection failed: ${error}`)} }
 async function togglePin(){ try { snapshot=await call<Snapshot>("set_workspace_pinned",{pinned:!snapshot?.workspacePinned}); renderShell();renderPage(); }catch(error){status(String(error))} }
 async function createAtRoot(){
   const type = await chooseAction("Create in workspace", [{ id: "note", label: "New note" }, { id: "folder", label: "New folder" }]);
   if(type === "note") return createEntry("",true);
   if(type === "folder") return createEntry("",false);
 }
-async function createEntry(parent:string,note:boolean){ const name=await requestName(note?"New note":"New folder"); if(!name)return; try { if(note){loadNote(await call<Note>("create_note",{parent,name}));} else {snapshot=await call<Snapshot>("create_folder",{parent,name});renderShell();renderPage();} }catch(error){status(String(error))} }
+async function createEntry(parent:string,note:boolean){ if(!await saveBeforeChangingNote()) return; const name=await requestName(note?"New note":"New folder"); if(!name)return; try { if(note){loadNote(await call<Note>("create_note",{parent,name}));} else {snapshot=await call<Snapshot>("create_folder",{parent,name});renderShell();renderPage();} }catch(error){status(String(error))} }
 async function entryActions(id:string,isDirectory:boolean){
   const actions: ModalAction[] = [];
   if (isDirectory) actions.push({ id: "new-note", label: "New note" }, { id: "new-folder", label: "New folder" });
@@ -177,6 +230,7 @@ async function entryActions(id:string,isDirectory:boolean){
   if(!action)return;
   if(action==="new-note")return createEntry(id,true);
   if(action==="new-folder")return createEntry(id,false);
+  if(!await saveBeforeChangingNote()) return;
   try {
     if(action==="rename"){
       const name=await requestName("Rename", id.split("/").pop() ?? "");
@@ -198,7 +252,7 @@ async function renderPreview(){ const preview=document.querySelector<HTMLElement
       catch(error) { status(`Could not open link: ${error}`); }
       return;
     }
-    await flushSave();
+    if (!await saveBeforeChangingNote()) return;
     try { openNoteView(await call<Note>("navigate_markdown_link", {link: href})); }
     catch(error) { status(`Open failed: ${error}`); }
   }));
