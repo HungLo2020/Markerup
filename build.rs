@@ -44,7 +44,6 @@ fn generate_app_icon() {
     ] {
         let mut pixmap =
             tiny_skia::Pixmap::new(size, size).expect("failed to allocate app icon canvas");
-        pixmap.fill(tiny_skia::Color::from_rgba8(234, 244, 255, 255));
         let scale = size as f32 / tree.size().width();
         resvg::render(
             &tree,
