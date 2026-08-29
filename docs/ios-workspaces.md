@@ -7,7 +7,7 @@ Markerup must treat an iOS workspace as a user-granted document-provider directo
 1. Present `UIDocumentPickerViewController` configured for directory selection.
 2. Accept the returned security-scoped URL for the selected directory.
 3. Call `startAccessingSecurityScopedResource()` before touching the directory.
-4. Create bookmark data for the selected URL when the user pins the workspace.
+4. Create bookmark data for the selected URL when the user adds the workspace to Favorites.
 5. On a later launch, resolve the bookmark and re-enter the security scope.
 6. Use `NSFileCoordinator` for reads, writes, creates, renames, and deletes to provider-backed content.
 7. Release security-scoped access when the workspace is closed or the application no longer needs it.
@@ -27,7 +27,7 @@ The device acceptance test is specifically an SMB share mounted through Apple's 
 5. Edit and save a note, then verify the same bytes from Linux on the server.
 6. Create, rename, and delete a note/folder from Markerup and verify those operations on the server.
 7. Follow a relative `.md` link to another note.
-8. Pin the workspace, force-quit Markerup, relaunch, and verify the security-scoped bookmark restores access without manually navigating back to the share.
+8. Add the workspace to Favorites, force-quit Markerup, relaunch, and verify the security-scoped bookmark restores access without manually navigating back to the share.
 9. Modify a note externally and verify Markerup reconciles it when foregrounded/refreshed.
 10. Revoke Files/Folders permission and verify Markerup reports loss of access rather than silently showing an empty workspace.
 

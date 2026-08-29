@@ -14,7 +14,8 @@ const settingsIcon = new URL("../../resources/icon_preview_settings.svg", import
 const folderIcon = new URL("../../resources/icon_folder.svg", import.meta.url).href;
 
 type Entry = { id: string; name: string; kind: "File" | "Directory"; depth: number };
-type Snapshot = { workspaceOpen: boolean; workspacePath: string; workspaceIsSmb: boolean; workspacePinned: boolean; entries: Entry[]; currentFile?: string; canGoBack: boolean; canGoForward: boolean; externalConflict: boolean };
+type Favorite = { index: number; label: string; workspaceIsSmb: boolean };
+type Snapshot = { workspaceOpen: boolean; workspacePath: string; workspaceIsSmb: boolean; workspaceFavorited: boolean; favorites: Favorite[]; entries: Entry[]; currentFile?: string; canGoBack: boolean; canGoForward: boolean; externalConflict: boolean };
 type Note = { id: string; contents: string; snapshot: Snapshot };
 type Block = { kind: unknown; markdown: string; taskOffset?: number; image?: { alt: string; destination: string } };
 
@@ -53,7 +54,18 @@ function renderShell() {
 function renderPage() {
   const content = document.querySelector<HTMLElement>("#content")!;
   if (page === "settings") { content.innerHTML = panel("Settings", `<button id="location-settings">Location</button><button id="about">About</button>`); document.querySelector("#location-settings")!.addEventListener("click",()=>{page="location";renderPage()}); document.querySelector("#about")!.addEventListener("click",()=>{page="about";renderPage()}); return; }
-  if (page === "location") { content.innerHTML = panel("Location", `<p>${snapshot?.workspaceOpen ? `${snapshot.workspaceIsSmb ? "SMB" : "Local"} workspace: ${escape(snapshot.workspacePath)}` : "No workspace selected."}</p><button id="browse">Browse local folders</button><button id="smb">Connect to SMB</button><button id="pin">${snapshot?.workspacePinned ? "Unpin workspace" : "Pin workspace"}</button>`); document.querySelector("#browse")!.addEventListener("click", chooseLocal); document.querySelector("#smb")!.addEventListener("click",()=>{page="smb";renderPage()}); document.querySelector("#pin")!.addEventListener("click",togglePin); return; }
+  if (page === "location") {
+    const favorites = snapshot?.favorites ?? [];
+    const favoriteList = favorites.length
+      ? favorites.map(favorite => `<button class="favorite-workspace" data-index="${favorite.index}">${favorite.workspaceIsSmb ? "SMB · " : "Local · "}${escape(favorite.label)}</button>`).join("")
+      : `<p class="muted">No favorite workspaces yet.</p>`;
+    content.innerHTML = panel("Location", `<p>${snapshot?.workspaceOpen ? `${snapshot.workspaceIsSmb ? "SMB" : "Local"} workspace: ${escape(snapshot.workspacePath)}` : "No workspace selected."}</p><button id="browse">Browse local folders</button><button id="smb">Connect to SMB</button><button id="favorite">${snapshot?.workspaceFavorited ? "Remove from Favorites" : "Add to Favorites"}</button><h2>Favorites</h2><div class="favorites-list">${favoriteList}</div>`);
+    document.querySelector("#browse")!.addEventListener("click", chooseLocal);
+    document.querySelector("#smb")!.addEventListener("click",()=>{page="smb";renderPage()});
+    document.querySelector("#favorite")!.addEventListener("click",toggleFavorite);
+    document.querySelectorAll<HTMLButtonElement>(".favorite-workspace").forEach(button => button.addEventListener("click", () => openFavorite(Number(button.dataset.index))));
+    return;
+  }
   if (page === "smb") { content.innerHTML = panel("Connect to SMB", `<label>Server<input id="server" placeholder="server or IP"></label><label>Share<input id="share"></label><label>Username<input id="username"></label><label>Password<input id="password" type="password"></label><label>Remote folder<input id="remote" placeholder="Notes"></label><button id="connect">Connect</button>`); document.querySelector("#connect")!.addEventListener("click",connectSmb); return; }
   if (page === "about") { content.innerHTML = panel("About Markerup", `<p>Version 0.4.0</p><button id="privacy">Privacy Policy</button>`); document.querySelector("#privacy")!.addEventListener("click",async()=>openExternal(await call<string>("privacy_policy_url"))); return; }
   const viewControls = mobileLayout()
@@ -240,7 +252,28 @@ async function chooseLocal(){
   }
 }
 async function connectSmb(){ if(!await saveBeforeChangingNote()) return; const value=(id:string) => document.querySelector<HTMLInputElement>(`#${id}`)!.value; try { snapshot=await call<Snapshot>("connect_smb",{request:{server:value("server"),share:value("share"),username:value("username"),password:value("password"),remotePath:value("remote")}}); page="main";renderShell();renderPage();status("SMB workspace connected"); } catch(error){status(`SMB connection failed: ${error}`)} }
-async function togglePin(){ try { snapshot=await call<Snapshot>("set_workspace_pinned",{pinned:!snapshot?.workspacePinned}); renderShell();renderPage(); }catch(error){status(String(error))} }
+async function toggleFavorite(){
+  try {
+    snapshot=await call<Snapshot>("set_workspace_favorite",{favorited:!snapshot?.workspaceFavorited});
+    renderShell();
+    renderPage();
+    status(snapshot.workspaceFavorited ? "Workspace added to Favorites" : "Workspace removed from Favorites");
+  } catch(error) {
+    status(String(error));
+  }
+}
+async function openFavorite(index: number) {
+  if(!await saveBeforeChangingNote()) return;
+  try {
+    snapshot=await call<Snapshot>("open_favorite_workspace",{index});
+    page="main";
+    renderShell();
+    renderPage();
+    status("Favorite workspace selected");
+  } catch(error) {
+    status(`Could not open favorite workspace: ${error}`);
+  }
+}
 async function createAtRoot(){
   const type = await chooseAction("Create in workspace", [{ id: "note", label: "New note" }, { id: "folder", label: "New folder" }]);
   if(type === "note") return createEntry("",true);

@@ -18,7 +18,7 @@ database or a second canonical copy.
 
 The password is held in memory for the active connection only. It is not put
 in Markdown, logs, diagnostics, session preferences, GitHub Actions, or app
-metadata. On iOS, pinning an SMB workspace stores only the password in
+metadata. On iOS, adding an SMB workspace to Favorites stores only the password in
 Keychain; its server/share/username/folder metadata is retained in the normal
 session file. On Linux, direct SMB connections remain session-only until an
 equivalent secure-secret store is available.

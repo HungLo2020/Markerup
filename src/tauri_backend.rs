@@ -2,7 +2,9 @@ use crate::markdown::{
     PreviewBlock, preview_document as parse_preview_document, toggle_task_at_offset,
 };
 use crate::navigation::NavigationState;
-use crate::persistence::{SavedSmbConfig, clear_session, load_session, save_session};
+use crate::persistence::{
+    SavedFavorite, SavedSmbConfig, SavedWorkspace, clear_session, load_session, save_session,
+};
 use crate::smb_workspace::{SmbConnectionConfig, SmbWorkspace};
 #[cfg(not(target_os = "ios"))]
 use crate::workspace::LocalWorkspace;
@@ -24,8 +26,9 @@ const PRIVACY_POLICY_URL: &str = "https://hunglo2020.github.io/Markerup/privacy-
 struct BackendInner {
     workspace: WorkspaceSlot,
     entries: Vec<WorkspaceEntry>,
-    pinned: bool,
     bookmark: Option<Vec<u8>>,
+    favorites: Vec<SavedFavorite>,
+    active_favorite: Option<usize>,
     current_file: Option<EntryId>,
     disk_text: String,
     external_conflict: bool,
@@ -51,12 +54,21 @@ pub struct WorkspaceSnapshot {
     pub workspace_open: bool,
     pub workspace_path: String,
     pub workspace_is_smb: bool,
-    pub workspace_pinned: bool,
+    pub workspace_favorited: bool,
+    pub favorites: Vec<FavoritePayload>,
     pub entries: Vec<WorkspaceEntry>,
     pub current_file: Option<EntryId>,
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub external_conflict: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FavoritePayload {
+    pub index: usize,
+    pub label: String,
+    pub workspace_is_smb: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,7 +108,17 @@ impl MarkerupBackend {
             workspace_open,
             workspace_path: inner.workspace.root_display(),
             workspace_is_smb: matches!(inner.workspace, WorkspaceSlot::Smb(_)),
-            workspace_pinned: inner.pinned,
+            workspace_favorited: inner.active_favorite.is_some(),
+            favorites: inner
+                .favorites
+                .iter()
+                .enumerate()
+                .map(|(index, favorite)| FavoritePayload {
+                    index,
+                    label: Self::favorite_label(favorite),
+                    workspace_is_smb: matches!(favorite.workspace, SavedWorkspace::Smb(_)),
+                })
+                .collect(),
             entries: inner.entries.clone(),
             current_file: inner.current_file.clone(),
             can_go_back: inner.navigation.can_go_back(),
@@ -118,39 +140,80 @@ impl MarkerupBackend {
     }
 
     fn persist(inner: &BackendInner) {
-        if !inner.pinned {
+        if inner.favorites.is_empty() {
             let _ = clear_session();
             return;
         }
-        let smb = inner.workspace.smb_config().map(|config| SavedSmbConfig {
-            server: config.server,
-            share: config.share,
-            username: config.username,
-            remote_path: config.remote_path,
-        });
         let _ = save_session(
-            inner.workspace.root_path(),
-            inner.current_file.as_deref(),
-            inner.bookmark.as_deref(),
-            smb.as_ref(),
+            &inner.favorites,
+            inner.active_favorite,
+            inner
+                .active_favorite
+                .is_some()
+                .then_some(inner.current_file.as_deref())
+                .flatten(),
         );
     }
 
     fn install_workspace(
         inner: &mut BackendInner,
         workspace: WorkspaceSlot,
-        pinned: bool,
         bookmark: Option<Vec<u8>>,
     ) {
+        inner.active_favorite = Self::favorite_index_for(&inner.favorites, &workspace, &bookmark);
         inner.workspace = workspace;
         inner.entries.clear();
-        inner.pinned = pinned;
         inner.bookmark = bookmark;
         inner.current_file = None;
         inner.disk_text.clear();
         inner.external_conflict = false;
         inner.navigation = NavigationState::default();
         Self::persist(inner);
+    }
+
+    fn favorite_label(favorite: &SavedFavorite) -> String {
+        match &favorite.workspace {
+            SavedWorkspace::Local { path, .. } => path.to_string_lossy().into_owned(),
+            SavedWorkspace::Smb(config) => {
+                let folder = config.remote_path.trim_matches('/');
+                if folder.is_empty() {
+                    format!("smb://{}/{}", config.server, config.share)
+                } else {
+                    format!("smb://{}/{}/{}", config.server, config.share, folder)
+                }
+            }
+        }
+    }
+
+    fn workspace_favorite(
+        workspace: &WorkspaceSlot,
+        bookmark: Option<&[u8]>,
+    ) -> Option<SavedFavorite> {
+        if let Some(config) = workspace.smb_config() {
+            return Some(SavedFavorite {
+                workspace: SavedWorkspace::Smb(SavedSmbConfig {
+                    server: config.server,
+                    share: config.share,
+                    username: config.username,
+                    remote_path: config.remote_path,
+                }),
+            });
+        }
+        workspace.root_path().map(|path| SavedFavorite {
+            workspace: SavedWorkspace::Local {
+                path: path.to_path_buf(),
+                bookmark: bookmark.map(ToOwned::to_owned),
+            },
+        })
+    }
+
+    fn favorite_index_for(
+        favorites: &[SavedFavorite],
+        workspace: &WorkspaceSlot,
+        bookmark: &Option<Vec<u8>>,
+    ) -> Option<usize> {
+        let current = Self::workspace_favorite(workspace, bookmark.as_deref())?;
+        favorites.iter().position(|favorite| favorite == &current)
     }
 
     fn open_note_locked(
@@ -232,10 +295,19 @@ impl MarkerupBackend {
         let Ok(mut inner) = self.locked() else {
             return;
         };
+        inner.favorites = session.favorites;
+        let Some(index) = session.active_favorite else {
+            return;
+        };
+        let Some(favorite) = inner.favorites.get(index).cloned() else {
+            return;
+        };
         #[cfg(not(target_os = "ios"))]
         {
-            if let Ok(workspace) = LocalWorkspace::open(&session.pinned_workspace) {
-                Self::install_workspace(&mut inner, WorkspaceSlot::local(workspace), true, None);
+            if let SavedWorkspace::Local { path, .. } = favorite.workspace
+                && let Ok(workspace) = LocalWorkspace::open(path)
+            {
+                Self::install_workspace(&mut inner, WorkspaceSlot::local(workspace), None);
                 let _ = Self::refresh_entries(&mut inner);
                 if let Some(id) = session.current_file {
                     let _ = Self::open_note_locked(&mut inner, id, false);
@@ -244,7 +316,7 @@ impl MarkerupBackend {
         }
         #[cfg(target_os = "ios")]
         {
-            if let Some(smb) = session.smb {
+            if let SavedWorkspace::Smb(smb) = favorite.workspace {
                 let account = format!(
                     "{}\n{}\n{}\n{}",
                     smb.server, smb.share, smb.username, smb.remote_path
@@ -258,25 +330,18 @@ impl MarkerupBackend {
                         remote_path: smb.remote_path,
                     };
                     if let Ok(workspace) = SmbWorkspace::connect(config) {
-                        Self::install_workspace(
-                            &mut inner,
-                            WorkspaceSlot::smb(workspace),
-                            true,
-                            None,
-                        );
+                        Self::install_workspace(&mut inner, WorkspaceSlot::smb(workspace), None);
                         let _ = Self::refresh_entries(&mut inner);
                     }
                 }
-            } else if let Some(bookmark) = session.bookmark
+            } else if let SavedWorkspace::Local {
+                bookmark: Some(bookmark),
+                ..
+            } = favorite.workspace
                 && let Ok(selection) = crate::ios_bridge::resolve_bookmark(&bookmark)
                 && let Ok(workspace) = crate::ios_workspace::IosWorkspace::open(selection)
             {
-                Self::install_workspace(
-                    &mut inner,
-                    WorkspaceSlot::ios(workspace),
-                    true,
-                    Some(bookmark),
-                );
+                Self::install_workspace(&mut inner, WorkspaceSlot::ios(workspace), Some(bookmark));
                 let _ = Self::refresh_entries(&mut inner);
             }
             if let Some(id) = session.current_file {
@@ -307,12 +372,7 @@ pub fn open_local_workspace(
             LocalWorkspace::open(PathBuf::from(path)).map_err(|error| error.to_string())?;
         let entries = workspace.entries().map_err(|error| error.to_string())?;
         let mut inner = state.locked()?;
-        MarkerupBackend::install_workspace(
-            &mut inner,
-            WorkspaceSlot::local(workspace),
-            false,
-            None,
-        );
+        MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::local(workspace), None);
         inner.entries = entries;
         Ok(MarkerupBackend::snapshot(&inner))
     }
@@ -344,12 +404,7 @@ pub async fn choose_ios_workspace(
         crate::ios_workspace::IosWorkspace::open(selection).map_err(|error| error.to_string())?;
     let entries = workspace.entries().map_err(|error| error.to_string())?;
     let mut inner = state.locked()?;
-    MarkerupBackend::install_workspace(
-        &mut inner,
-        WorkspaceSlot::ios(workspace),
-        false,
-        Some(bookmark),
-    );
+    MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::ios(workspace), Some(bookmark));
     inner.entries = entries;
     Ok(Some(MarkerupBackend::snapshot(&inner)))
 }
@@ -369,7 +424,7 @@ pub fn connect_smb(
     let workspace = SmbWorkspace::connect(config).map_err(|error| error.to_string())?;
     let entries = workspace.entries().map_err(|error| error.to_string())?;
     let mut inner = state.locked()?;
-    MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::smb(workspace), false, None);
+    MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::smb(workspace), None);
     inner.entries = entries;
     Ok(MarkerupBackend::snapshot(&inner))
 }
@@ -575,28 +630,121 @@ pub fn go_forward(state: tauri::State<'_, MarkerupBackend>) -> Result<Option<Not
 }
 
 #[tauri::command]
-pub fn set_workspace_pinned(
-    pinned: bool,
+pub fn set_workspace_favorite(
+    favorited: bool,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
     let mut inner = state.locked()?;
-    if matches!(inner.workspace, WorkspaceSlot::Smb(_)) {
-        #[cfg(target_os = "ios")]
-        if let Some(config) = inner.workspace.smb_config() {
-            if pinned {
-                crate::ios_bridge::save_smb_password(&config.keychain_account(), &config.password)?;
-            } else {
-                crate::ios_bridge::delete_smb_password(&config.keychain_account());
-            }
+    let current = MarkerupBackend::workspace_favorite(&inner.workspace, inner.bookmark.as_deref())
+        .ok_or_else(|| "Select a workspace before adding it to Favorites".to_string())?;
+    if favorited {
+        if let Some(index) = inner
+            .favorites
+            .iter()
+            .position(|favorite| favorite == &current)
+        {
+            inner.active_favorite = Some(index);
+            MarkerupBackend::persist(&inner);
+            return Ok(MarkerupBackend::snapshot(&inner));
         }
-        #[cfg(not(target_os = "ios"))]
-        if pinned {
+        if matches!(inner.workspace, WorkspaceSlot::Smb(_)) {
+            #[cfg(target_os = "ios")]
+            let config = inner
+                .workspace
+                .smb_config()
+                .ok_or_else(|| "SMB workspace configuration is unavailable".to_string())?;
+            #[cfg(target_os = "ios")]
+            crate::ios_bridge::save_smb_password(&config.keychain_account(), &config.password)?;
+            #[cfg(not(target_os = "ios"))]
             return Err("SMB credentials remain session-only on Linux".to_string());
         }
+        inner.favorites.push(current);
+        inner.active_favorite = Some(inner.favorites.len() - 1);
+    } else if let Some(index) = inner.active_favorite {
+        let removed = inner.favorites.remove(index);
+        #[cfg(target_os = "ios")]
+        if let SavedWorkspace::Smb(config) = removed.workspace {
+            crate::ios_bridge::delete_smb_password(&smb_keychain_account(&config));
+        }
+        #[cfg(not(target_os = "ios"))]
+        let _ = removed;
+        inner.active_favorite = None;
     }
-    inner.pinned = pinned;
     MarkerupBackend::persist(&inner);
     Ok(MarkerupBackend::snapshot(&inner))
+}
+
+#[tauri::command]
+pub fn open_favorite_workspace(
+    index: usize,
+    state: tauri::State<'_, MarkerupBackend>,
+) -> Result<WorkspaceSnapshot, String> {
+    let favorite = {
+        let inner = state.locked()?;
+        inner
+            .favorites
+            .get(index)
+            .cloned()
+            .ok_or_else(|| "Favorite workspace no longer exists".to_string())?
+    };
+    #[cfg(not(target_os = "ios"))]
+    {
+        let SavedWorkspace::Local { path, .. } = favorite.workspace else {
+            return Err("SMB favorites require iOS Keychain-backed credentials".to_string());
+        };
+        let workspace = LocalWorkspace::open(path).map_err(|error| error.to_string())?;
+        let entries = workspace.entries().map_err(|error| error.to_string())?;
+        let mut inner = state.locked()?;
+        MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::local(workspace), None);
+        inner.entries = entries;
+        Ok(MarkerupBackend::snapshot(&inner))
+    }
+    #[cfg(target_os = "ios")]
+    {
+        let (workspace, bookmark) = match favorite.workspace {
+            SavedWorkspace::Local {
+                bookmark: Some(bookmark),
+                ..
+            } => {
+                let selection = crate::ios_bridge::resolve_bookmark(&bookmark)?;
+                let workspace = crate::ios_workspace::IosWorkspace::open(selection)
+                    .map_err(|error| error.to_string())?;
+                (WorkspaceSlot::ios(workspace), Some(bookmark))
+            }
+            SavedWorkspace::Local { .. } => {
+                return Err("This favorite needs to be selected again so iOS can restore its folder permission".to_string());
+            }
+            SavedWorkspace::Smb(config) => {
+                let password = crate::ios_bridge::load_smb_password(&smb_keychain_account(&config))
+                    .ok_or_else(|| {
+                        "The saved SMB password is unavailable in Keychain; reconnect to this share"
+                            .to_string()
+                    })?;
+                let workspace = SmbWorkspace::connect(SmbConnectionConfig {
+                    server: config.server,
+                    share: config.share,
+                    username: config.username,
+                    password,
+                    remote_path: config.remote_path,
+                })
+                .map_err(|error| error.to_string())?;
+                (WorkspaceSlot::smb(workspace), None)
+            }
+        };
+        let entries = workspace.entries().map_err(|error| error.to_string())?;
+        let mut inner = state.locked()?;
+        MarkerupBackend::install_workspace(&mut inner, workspace, bookmark);
+        inner.entries = entries;
+        Ok(MarkerupBackend::snapshot(&inner))
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn smb_keychain_account(config: &SavedSmbConfig) -> String {
+    format!(
+        "{}\n{}\n{}\n{}",
+        config.server, config.share, config.username, config.remote_path
+    )
 }
 
 #[tauri::command]

@@ -6,9 +6,9 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 
 ## Linux workspace features
 
-- Starts with no workspace unless the user explicitly pinned one previously.
+- Starts with no workspace unless the user previously selected a favorite workspace.
 - **Choose Folder** opens the platform-native folder picker; no CLI path is required.
-- **Pin Workspace** makes the selected workspace reopen on the next launch; unpinned workspaces are session-only.
+- **Favorites** stores any number of selected workspaces and lets you reopen them from Location. Workspaces that are not favorites are session-only.
 - Hidden directories such as `.git` are excluded from the notes tree.
 - Recursively browse `.md` notes in a collapsible directory tree.
 - Create, rename, and delete notes and directories directly on disk.
@@ -37,7 +37,7 @@ python3 DevUtils/RunTauriDev.py
 a development server. Use the launcher above (or `cargo tauri dev`) when you
 want Tauri's frontend watch/rebuild loop.
 
-Choose the notes directory from Markerup itself. If you pin it, Markerup will reopen that workspace next time.
+Choose the notes directory from Markerup itself. Add it to Favorites if you want Markerup to offer it again after relaunch.
 
 On Ubuntu/Kubuntu you may need:
 
@@ -54,7 +54,7 @@ cargo run
 
 ## Storage invariant
 
-Markerup application state is disposable. Notes and organization live only in the selected filesystem tree. An unpinned workspace is not persisted. Pinning stores only enough application state to reopen the selected workspace and current note.
+Markerup application state is disposable. Notes and organization live only in the selected filesystem tree. A non-favorite workspace is not persisted. Favorites store only enough application state to reopen the selected workspace and current note.
 
 ## Architecture
 
