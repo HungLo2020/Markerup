@@ -324,7 +324,7 @@ pub fn open_local_workspace(
 #[tauri::command]
 pub async fn choose_ios_workspace(
     state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
+) -> Result<Option<WorkspaceSnapshot>, String> {
     let selection = tauri::async_runtime::spawn_blocking(|| {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         crate::ios_bridge::choose_workspace(move |result| {
@@ -335,8 +335,10 @@ pub async fn choose_ios_workspace(
             .map_err(|_| "iOS folder picker stopped unexpectedly".to_string())?
     })
     .await
-    .map_err(|error| error.to_string())??
-    .ok_or_else(|| "No workspace selected".to_string())?;
+    .map_err(|error| error.to_string())??;
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
     let bookmark = selection.bookmark.clone();
     let workspace =
         crate::ios_workspace::IosWorkspace::open(selection).map_err(|error| error.to_string())?;
@@ -349,7 +351,7 @@ pub async fn choose_ios_workspace(
         Some(bookmark),
     );
     inner.entries = entries;
-    Ok(MarkerupBackend::snapshot(&inner))
+    Ok(Some(MarkerupBackend::snapshot(&inner)))
 }
 
 #[tauri::command]

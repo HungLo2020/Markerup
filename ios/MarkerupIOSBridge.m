@@ -148,7 +148,9 @@ void markerup_ios_keychain_delete_password(const char *account) {
     self.callback(url.path.UTF8String, bookmark.bytes, bookmark.length, self.context);
 }
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
-    self.callback(NULL, NULL, 0, self.context);
+    // An empty path explicitly represents user cancellation. A null path is
+    // reserved for a genuine bridge/access failure.
+    self.callback("", NULL, 0, self.context);
 }
 @end
 

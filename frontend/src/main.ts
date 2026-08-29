@@ -34,6 +34,12 @@ const status = (message: string) => document.querySelector<HTMLElement>("#status
 const escape = (value: string) => value.replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]!));
 const call = <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 const mobileLayout = () => window.matchMedia("(max-width: 700px)").matches;
+// iPadOS can present a desktop-style user agent, so include its touch-capable
+// MacIntel form as well as the conventional iOS device identifiers. This must
+// be a platform check rather than a viewport check: desktop mobile-preview
+// windows still use Tauri's desktop dialog plugin.
+const iosDevice = () => /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 function renderShell() {
   app.innerHTML = `<header><button id="menu" class="icon-button" aria-label="Toggle workspace"><img src="${menuIcon}" alt=""></button><strong>Markerup</strong><span id="location">${escape(snapshot?.workspacePath ?? "No workspace")}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" class="icon-button" aria-label="Settings"><img src="${settingsIcon}" alt=""></button></header><main id="content"></main><footer id="status">Ready</footer>`;
@@ -213,7 +219,26 @@ async function saveBeforeChangingNote(): Promise<boolean> {
 }
 async function refresh(){ await flushSave(); try { snapshot=await call<Snapshot>("refresh_workspace",{editorHasUnsavedChanges:currentText!==savedText}); renderShell(); renderPage(); status("Workspace refreshed"); } catch(error){status(`Refresh failed: ${error}`)} }
 async function navigate(command:string){ if(!await saveBeforeChangingNote()) return; const note=await call<Note|null>(command); if(note) loadNote(note); }
-async function chooseLocal(){ if(!await saveBeforeChangingNote()) return; try { const selected=await openDialog({directory:true,multiple:false}); if(typeof selected === "string") { snapshot=await call<Snapshot>("open_local_workspace",{path:selected}); page="main";renderShell();renderPage(); } } catch(error){ status(`Workspace selection failed: ${error}`); } }
+async function chooseLocal(){
+  if(!await saveBeforeChangingNote()) return;
+  try {
+    if (iosDevice()) {
+      const selected = await call<Snapshot | null>("choose_ios_workspace");
+      if (!selected) return;
+      snapshot = selected;
+    } else {
+      const selected=await openDialog({directory:true,multiple:false});
+      if(typeof selected !== "string") return;
+      snapshot=await call<Snapshot>("open_local_workspace",{path:selected});
+    }
+    page="main";
+    renderShell();
+    renderPage();
+    status("Local workspace selected");
+  } catch(error) {
+    status(`Workspace selection failed: ${error}`);
+  }
+}
 async function connectSmb(){ if(!await saveBeforeChangingNote()) return; const value=(id:string) => document.querySelector<HTMLInputElement>(`#${id}`)!.value; try { snapshot=await call<Snapshot>("connect_smb",{request:{server:value("server"),share:value("share"),username:value("username"),password:value("password"),remotePath:value("remote")}}); page="main";renderShell();renderPage();status("SMB workspace connected"); } catch(error){status(`SMB connection failed: ${error}`)} }
 async function togglePin(){ try { snapshot=await call<Snapshot>("set_workspace_pinned",{pinned:!snapshot?.workspacePinned}); renderShell();renderPage(); }catch(error){status(String(error))} }
 async function createAtRoot(){

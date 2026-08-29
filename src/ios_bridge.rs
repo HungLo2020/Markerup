@@ -108,6 +108,10 @@ extern "C" fn picker_callback(
         let path = unsafe { CStr::from_ptr(path) }
             .to_string_lossy()
             .into_owned();
+        if path.is_empty() {
+            callback(Ok(None));
+            return;
+        }
         let bookmark = if bookmark.is_null() {
             Vec::new()
         } else {
