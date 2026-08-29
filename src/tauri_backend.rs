@@ -97,9 +97,18 @@ pub struct PreviewPayload {
 
 impl MarkerupBackend {
     fn locked(&self) -> Result<std::sync::MutexGuard<'_, BackendInner>, String> {
-        self.inner
-            .lock()
-            .map_err(|_| "Markerup workspace state is unavailable".to_string())
+        match self.inner.lock() {
+            Ok(inner) => Ok(inner),
+            Err(poisoned) => {
+                // A Rust panic in a command must not permanently prevent the
+                // user from opening a workspace. BackendInner has no partial
+                // transaction invariants: each command either updates its
+                // fields directly or reports an ordinary Result error. Keep
+                // the data and let the next command replace/reconcile it.
+                eprintln!("Markerup recovered workspace state after a prior command panic");
+                Ok(poisoned.into_inner())
+            }
+        }
     }
 
     fn snapshot(inner: &BackendInner) -> WorkspaceSnapshot {
@@ -861,4 +870,21 @@ fn normalize_mermaid_source(source: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MarkerupBackend;
+
+    #[test]
+    fn recovers_workspace_state_after_a_panicking_command() {
+        let backend = MarkerupBackend::default();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inner = backend.inner.lock().expect("fresh state lock");
+            panic!("simulated command failure");
+        }));
+
+        assert!(backend.inner.lock().is_err());
+        assert!(backend.locked().is_ok());
+    }
 }
