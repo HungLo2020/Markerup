@@ -86,7 +86,7 @@ def main() -> int:
         commit_sha = download_latest_manager(manager_path)
         print(f"Using LinuxScripts manager from commit {commit_sha}")
         subprocess.run(
-            [sys.executable, str(manager_path), "upload", str(package)],
+            [sys.executable, str(manager_path), "--repo", "mattpackages", "upload", str(package)],
             check=True,
         )
         print("Debian package uploaded through LinuxScripts.")
