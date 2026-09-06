@@ -87,5 +87,5 @@ jobs:
             --target "$GITHUB_SHA" \
             --title debian \
             --notes "Automated Debian package for ${GITHUB_SHA}. This release is independent of latest." \
-            release-assets/markerup_*.deb \
+            release-assets/Markerup_*.deb \
             release-assets/SHA256SUMS
