@@ -801,15 +801,11 @@ pub fn workspace_asset_data(
     let Some(id) = inner.workspace.resolve_asset_link(&current, &link) else {
         return Ok(None);
     };
-    let Some(path) = inner
+    let data = inner
         .workspace
-        .asset_path(&id)
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(None);
-    };
-    let data = std::fs::read(&path).map_err(|error| error.to_string())?;
-    let mime = match path
+        .asset_bytes(&id)
+        .map_err(|error| error.to_string())?;
+    let mime = match std::path::Path::new(&id)
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase)

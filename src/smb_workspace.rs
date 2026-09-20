@@ -622,6 +622,9 @@ impl Workspace for SmbWorkspace {
     fn asset_path(&self, _id: &str) -> io::Result<Option<PathBuf>> {
         Ok(None)
     }
+    fn asset_bytes(&self, id: &str) -> io::Result<Vec<u8>> {
+        self.read_remote(&self.remote_path(id)?)
+    }
 }
 
 fn is_transient_smb_error(error: &io::Error) -> bool {

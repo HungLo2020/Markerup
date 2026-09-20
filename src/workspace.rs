@@ -53,6 +53,7 @@ pub trait Workspace: Send + Sync {
     fn display_name(&self) -> String;
     fn identity(&self) -> String;
     fn asset_path(&self, id: &str) -> io::Result<Option<PathBuf>>;
+    fn asset_bytes(&self, id: &str) -> io::Result<Vec<u8>>;
 }
 
 #[allow(dead_code)]
@@ -409,6 +410,9 @@ impl Workspace for LocalWorkspace {
     fn asset_path(&self, id: &str) -> io::Result<Option<PathBuf>> {
         self.absolute_asset_path(id).map(Some)
     }
+    fn asset_bytes(&self, id: &str) -> io::Result<Vec<u8>> {
+        fs::read(self.absolute_asset_path(id)?)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -633,6 +637,15 @@ impl Workspace for WorkspaceSlot {
         match self {
             Self::Smb(workspace) => workspace.asset_path(id),
             _ => self.absolute_asset_path(id).map(Some),
+        }
+    }
+    fn asset_bytes(&self, id: &str) -> io::Result<Vec<u8>> {
+        match self {
+            Self::Smb(workspace) => workspace.asset_bytes(id),
+            _ => self
+                .asset_path(id)?
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "asset has no path"))
+                .and_then(fs::read),
         }
     }
 }

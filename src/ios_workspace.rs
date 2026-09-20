@@ -183,4 +183,7 @@ impl Workspace for IosWorkspace {
     fn asset_path(&self, id: &str) -> io::Result<Option<PathBuf>> {
         self.scoped_path(id).map(Some)
     }
+    fn asset_bytes(&self, id: &str) -> io::Result<Vec<u8>> {
+        read_file(&self.scoped_path(id)?).map_err(io::Error::other)
+    }
 }
