@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
-import { EditorState } from "@codemirror/state";
+import { EditorState, StateEffect, StateField } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { drawSelection, keymap, EditorView } from "@codemirror/view";
+import { Decoration, drawSelection, keymap, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import "./styles.css";
@@ -17,7 +17,8 @@ type Entry = { id: string; name: string; kind: "File" | "Directory"; depth: numb
 type Favorite = { index: number; label: string; workspaceIsSmb: boolean };
 type Snapshot = { workspaceOpen: boolean; workspacePath: string; workspaceIsSmb: boolean; workspaceFavorited: boolean; favorites: Favorite[]; entries: Entry[]; currentFile?: string; canGoBack: boolean; canGoForward: boolean; externalConflict: boolean };
 type Note = { id: string; contents: string; snapshot: Snapshot };
-type Block = { kind: unknown; markdown: string; taskOffset?: number; image?: { alt: string; destination: string } };
+type SourceRange = { start: number; end: number };
+type Block = { kind: unknown; markdown: string; taskOffset?: number; sourceRange?: SourceRange; image?: { alt: string; destination: string } };
 
 let snapshot: Snapshot | undefined;
 let currentText = "";
@@ -28,8 +29,23 @@ let retryTimer: number | undefined;
 let saveBlockedUntilReload = false;
 let editor: EditorView;
 let page: "main" | "settings" | "location" | "smb" | "about" = "main";
-let editorMode: "source" | "split" | "preview" = "split";
+let editorMode: "source" | "live" | "split" | "preview" = "split";
 const collapsedDirectories = new Set<string>();
+let previewGeneration = 0;
+let latestBlocks: Block[] = [];
+
+const setLiveDecorations = StateEffect.define<DecorationSet>();
+const liveDecorations = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, transaction) {
+    let next = value.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (effect.is(setLiveDecorations)) next = effect.value;
+    }
+    return next;
+  },
+  provide: field => EditorView.decorations.from(field),
+});
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const status = (message: string) => document.querySelector<HTMLElement>("#status")!.textContent = message;
@@ -68,19 +84,20 @@ function renderPage() {
     return;
   }
   if (page === "smb") { content.innerHTML = panel("Connect to SMB", `<label>Server<input id="server" placeholder="server or IP"></label><label>Share<input id="share"></label><label>Username<input id="username"></label><label>Password<input id="password" type="password"></label><label>Remote folder<input id="remote" placeholder="Notes"></label><button id="connect">Connect</button>`); document.querySelector("#connect")!.addEventListener("click",connectSmb); return; }
-  if (page === "about") { content.innerHTML = panel("About Markerup", `<p>Version 0.4.0</p><button id="privacy">Privacy Policy</button>`); document.querySelector("#privacy")!.addEventListener("click",async()=>openExternal(await call<string>("privacy_policy_url"))); return; }
+  if (page === "about") { content.innerHTML = panel("About Markerup", `<p>Version 0.4.2</p><button id="privacy">Privacy Policy</button>`); document.querySelector("#privacy")!.addEventListener("click",async()=>openExternal(await call<string>("privacy_policy_url"))); return; }
   const viewControls = mobileLayout()
-    ? `<button id="mobile-view-toggle">${editorMode === "source" ? "Preview" : "Source"}</button>`
-    : `<button data-mode="source">Source</button><button data-mode="split">Split</button><button data-mode="preview">Preview</button>`;
-  content.innerHTML = `<aside id="sidebar"><div class="row"><strong>Workspace</strong><button id="new" aria-label="Create">＋</button></div><input id="search" placeholder="Search all notes"><nav id="tree"></nav></aside><section id="document"><div class="document-bar"><strong>${escape(snapshot?.currentFile ?? "Choose a note")}</strong><span class="grow"></span>${viewControls}</div><div id="panes"><div id="editor-pane"><div id="editor"></div></div><article id="preview"></article></div></section>`;
+    ? `<button id="mobile-view-toggle">${editorMode === "source" ? "Live" : editorMode === "live" ? "Preview" : "Source"}</button>`
+    : `<button data-mode="source">Source</button><button data-mode="live">Live</button><button data-mode="split">Split</button><button data-mode="preview">Preview</button>`;
+  content.innerHTML = `<aside id="sidebar"><div class="row"><strong>Workspace</strong><button id="new" aria-label="Create">＋</button></div><input id="search" placeholder="Search all notes"><nav id="tree"></nav></aside><section id="document"><div class="document-bar"><strong>${escape(snapshot?.currentFile ?? "Choose a note")}</strong><span class="grow"></span>${snapshot?.currentFile ? `<button id="insert">Insert</button>` : ""}${viewControls}</div><div id="panes"><div id="editor-pane"><div id="editor"></div></div><article id="preview"></article></div></section>`;
   document.querySelector("#new")!.addEventListener("click",()=>createAtRoot());
   document.querySelector("#search")!.addEventListener("input", search);
+  document.querySelector("#insert")?.addEventListener("click", () => void showInsertMenu());
   document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach(button => button.addEventListener("click",()=>{editorMode=button.dataset.mode as typeof editorMode; applyMode()}));
   document.querySelector("#mobile-view-toggle")?.addEventListener("click", () => {
-    editorMode = editorMode === "source" ? "preview" : "source";
+    editorMode = editorMode === "source" ? "live" : editorMode === "live" ? "preview" : "source";
     renderPage();
   });
-  renderTree(); setupEditor(); renderPreview(); applyMode();
+  renderTree(); setupEditor(); void refreshPreview(); applyMode();
 }
 function panel(title:string, body:string) { return `<section class="panel"><button id="panel-back">← Back</button><h1>${title}</h1>${body}</section>`; }
 document.addEventListener("click", event => {
@@ -147,6 +164,26 @@ function requestName(title: string, initialValue = ""): Promise<string | undefin
   });
 }
 
+function requestValue(title: string, label: string, initialValue = "", type = "text"): Promise<string | undefined> {
+  return new Promise(resolve => {
+    const modal = modalSurface<string>(title, resolve);
+    const form = document.createElement("form");
+    form.className = "modal-form";
+    form.innerHTML = `<label>${escape(label)}<input name="value" type="${type}" autocomplete="off" required></label><div class="modal-actions"><button type="button" class="secondary">Cancel</button><button type="submit">Insert</button></div>`;
+    const input = form.elements.namedItem("value") as HTMLInputElement;
+    input.value = initialValue;
+    form.querySelector<HTMLButtonElement>(".secondary")!.addEventListener("click", () => modal.dismiss());
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      const value = input.value.trim();
+      if (!value) { input.focus(); return; }
+      modal.dismiss(value);
+    });
+    modal.body.append(form);
+    requestAnimationFrame(() => input.focus());
+  });
+}
+
 async function confirmAction(title: string, message: string): Promise<boolean> {
   const answer = await chooseAction(title, [{ id: "cancel", label: "Cancel" }, { id: "confirm", label: message, destructive: true }]);
   return answer === "confirm";
@@ -178,9 +215,18 @@ function renderTree(entries = snapshot?.entries ?? []) {
 }
 function setupEditor() {
   const host=document.querySelector<HTMLElement>("#editor")!;
-  editor = new EditorView({ state: EditorState.create({ doc: currentText, extensions: [history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();scheduleSave();renderPreview()}})] }), parent:host });
+  editor = new EditorView({ state: EditorState.create({ doc: currentText, extensions: [liveDecorations, history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();clearLiveDecorations();scheduleSave();void refreshPreview();} else if(update.selectionSet && editorMode === "live"){updateLiveDecorations(latestBlocks);}})] }), parent:host });
+  if (!iosDevice()) host.addEventListener("contextmenu", event => {
+    event.preventDefault();
+    void showInsertMenu();
+  });
 }
-function applyMode(){ const panes=document.querySelector("#panes"); if(panes) panes.className=editorMode; }
+function applyMode(){
+  const panes=document.querySelector("#panes");
+  if(panes) panes.className=editorMode;
+  if (editorMode === "live") void updateLiveDecorations(latestBlocks);
+  else clearLiveDecorations();
+}
 async function openNote(id:string){
   if(!await saveBeforeChangingNote()) return;
   try {
@@ -190,7 +236,7 @@ async function openNote(id:string){
 }
 function openNoteView(note: Note) {
   if (mobileLayout()) {
-    editorMode="preview";
+    editorMode="live";
     document.body.classList.add("sidebar-hidden");
   }
   loadNote(note);
@@ -299,6 +345,124 @@ async function createAtRoot(){
   if(type === "folder") return createEntry("",false);
 }
 async function createEntry(parent:string,note:boolean){ if(!await saveBeforeChangingNote()) return; const name=await requestName(note?"New note":"New folder"); if(!name)return; try { if(note){loadNote(await call<Note>("create_note",{parent,name}));} else {snapshot=await call<Snapshot>("create_folder",{parent,name});renderShell();renderPage();} }catch(error){status(String(error))} }
+function selectedText() {
+  if (!editor) return "";
+  const selection = editor.state.selection.main;
+  return editor.state.sliceDoc(selection.from, selection.to).trim();
+}
+function encodeMarkdownPath(path: string) {
+  return path.split("/").map(part => encodeURIComponent(part)).join("/");
+}
+function relativeMarkdownPath(target: string) {
+  const current = snapshot?.currentFile ?? "";
+  const currentParts = current.split("/");
+  currentParts.pop();
+  const targetParts = target.split("/");
+  while (currentParts.length && targetParts.length && currentParts[0] === targetParts[0]) {
+    currentParts.shift();
+    targetParts.shift();
+  }
+  return encodeMarkdownPath([...currentParts.map(() => ".."), ...targetParts].join("/") || ".");
+}
+function insertAtSelection(text: string) {
+  const selection = editor.state.selection.main;
+  editor.dispatch({
+    changes: { from: selection.from, to: selection.to, insert: text },
+    selection: { anchor: selection.from + text.length },
+    userEvent: "input.insert",
+  });
+  editor.focus();
+}
+function chooseNoteTarget(): Promise<Entry | undefined> {
+  return new Promise(resolve => {
+    const modal = modalSurface<Entry>("Insert link to note", resolve);
+    const list = document.createElement("div");
+    list.className = "insert-selector";
+    const notes = (snapshot?.entries ?? []).filter(entry => entry.kind === "File");
+    if (!notes.length) {
+      list.innerHTML = `<p class="muted">No Markdown notes found.</p>`;
+    } else {
+      for (const note of notes) {
+        const button = document.createElement("button");
+        button.className = "insert-selector-entry";
+        button.style.paddingLeft = `${note.depth * 16 + 12}px`;
+        button.textContent = note.name;
+        button.title = note.id;
+        button.addEventListener("click", () => modal.dismiss(note));
+        list.append(button);
+      }
+    }
+    modal.body.append(list);
+  });
+}
+async function chooseWorkspaceAsset(): Promise<Entry | undefined> {
+  try {
+    const assets = await call<Entry[]>("workspace_assets");
+    return await new Promise(resolve => {
+      const modal = modalSurface<Entry>("Insert workspace image", resolve);
+      const list = document.createElement("div");
+      list.className = "insert-selector";
+      if (!assets.length) {
+        list.innerHTML = `<p class="muted">No supported images found in this workspace.</p>`;
+      } else {
+        for (const asset of assets) {
+          const button = document.createElement("button");
+          button.className = "insert-selector-entry";
+          button.style.paddingLeft = `${asset.depth * 16 + 12}px`;
+          button.textContent = asset.name;
+          button.title = asset.id;
+          button.addEventListener("click", () => modal.dismiss(asset));
+          list.append(button);
+        }
+      }
+      modal.body.append(list);
+    });
+  } catch (error) {
+    status(`Image list failed: ${error}`);
+    return undefined;
+  }
+}
+async function insertNoteLink() {
+  const target = await chooseNoteTarget();
+  if (!target) return;
+  const label = await requestValue("Link text", "Text", selectedText() || target.name.replace(/\.md$/i, ""));
+  if (label === undefined) return;
+  insertAtSelection(`[${label}](${relativeMarkdownPath(target.id)})`);
+}
+async function insertUrlLink() {
+  const url = await requestValue("Insert web link", "URL", "https://", "url");
+  if (url === undefined) return;
+  const label = await requestValue("Link text", "Text", selectedText() || url);
+  if (label === undefined) return;
+  insertAtSelection(`[${label}](${url})`);
+}
+async function insertWorkspaceImage() {
+  const asset = await chooseWorkspaceAsset();
+  if (!asset) return;
+  const alt = await requestValue("Image description", "Alt text", selectedText() || asset.name.replace(/\.[^.]+$/, ""));
+  if (alt === undefined) return;
+  insertAtSelection(`![${alt}](${relativeMarkdownPath(asset.id)})`);
+}
+async function insertUrlImage() {
+  const url = await requestValue("Insert web image", "Image URL", "https://", "url");
+  if (url === undefined) return;
+  const alt = await requestValue("Image description", "Alt text", selectedText() || "Image");
+  if (alt === undefined) return;
+  insertAtSelection(`![${alt}](${url})`);
+}
+async function showInsertMenu() {
+  if (!snapshot?.currentFile || !editor) return;
+  const action = await chooseAction("Insert Markdown", [
+    { id: "note-link", label: "Link to note" },
+    { id: "web-link", label: "Web link" },
+    { id: "workspace-image", label: "Workspace image" },
+    { id: "web-image", label: "Web image" },
+  ]);
+  if (action === "note-link") return insertNoteLink();
+  if (action === "web-link") return insertUrlLink();
+  if (action === "workspace-image") return insertWorkspaceImage();
+  if (action === "web-image") return insertUrlImage();
+}
 function chooseDestinationFolder(sourceId: string): Promise<string | undefined> {
   return new Promise(resolve => {
     const modal = modalSurface<string>("Move to folder", resolve);
@@ -376,20 +540,142 @@ async function renderMarkdown(markdownSource: string): Promise<string> {
   }));
   return container.innerHTML;
 }
-async function renderPreview(){ const preview=document.querySelector<HTMLElement>("#preview"); if(!preview)return; const {blocks}=await call<{blocks:Block[]}>("preview_document",{source:currentText}); preview.innerHTML=""; for(const block of blocks){const element=document.createElement("section"); const kind=JSON.stringify(block.kind); if(kind.includes("Task")){const checked=kind.includes("true");element.innerHTML=`<label class="task"><input type="checkbox" ${checked?"checked":""}>${await renderMarkdown(block.markdown)}</label>`; element.querySelector("input")!.addEventListener("change",async()=>{try{if(typeof block.taskOffset !== "number") throw new Error("Markdown task has no source offset");const source=await call<string>("toggle_markdown_task",{source:currentText,taskOffset:block.taskOffset});currentText=source;editor.dispatch({changes:{from:0,to:editor.state.doc.length,insert:source}});await flushSave();}catch(error){status(String(error))}});} else if(kind.includes("Mermaid")){element.className="mermaid";try{element.innerHTML=DOMPurify.sanitize(await call<string>("render_mermaid",{source:block.markdown}),{USE_PROFILES:{svg:true,svgFilters:true}});}catch(error){element.className="mermaid-error";element.textContent=`Mermaid error: ${error}`;}} else if(kind.includes("Image") && block.image){const image=document.createElement("img");image.alt=block.image.alt;image.src=await imageSource(block.image.destination);element.append(image);} else {element.innerHTML=await renderMarkdown(block.markdown);} preview.append(element); }
-  preview.querySelectorAll<HTMLAnchorElement>("a[href]").forEach(link => link.addEventListener("click", async event => {
-    const href=link.getAttribute("href") ?? "";
+function clearLiveDecorations() {
+  if (editor && editor.state.field(liveDecorations, false)) {
+    editor.dispatch({ effects: setLiveDecorations.of(Decoration.none) });
+  }
+}
+function byteOffsetToJsOffset(source: string, byteOffset: number) {
+  const encoder = new TextEncoder();
+  let bytes = 0;
+  let offset = 0;
+  for (const character of source) {
+    if (bytes >= byteOffset) break;
+    bytes += encoder.encode(character).length;
+    offset += character.length;
+  }
+  return offset;
+}
+function blockKind(block: Block) {
+  return JSON.stringify(block.kind);
+}
+async function toggleLiveTask(block: Block) {
+  try {
+    if (typeof block.taskOffset !== "number") throw new Error("Markdown task has no source offset");
+    const source = await call<string>("toggle_markdown_task", { source: currentText, taskOffset: block.taskOffset });
+    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: source }, userEvent: "input.toggleTask" });
+    await flushSave();
+  } catch (error) {
+    status(String(error));
+  }
+}
+async function renderLiveBlock(block: Block, container: HTMLElement) {
+  const kind = blockKind(block);
+  container.className = "live-block";
+  if (kind.includes("Task")) {
+    const label = document.createElement("label");
+    label.className = "task";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = kind.includes("true");
+    const text = document.createElement("span");
+    label.append(checkbox, text);
+    container.append(label);
+    text.innerHTML = await renderMarkdown(block.markdown);
+    checkbox.addEventListener("change", () => void toggleLiveTask(block));
+  } else if (kind.includes("Mermaid")) {
+    container.className = "live-block mermaid";
+    try {
+      container.innerHTML = DOMPurify.sanitize(await call<string>("render_mermaid", { source: block.markdown }), { USE_PROFILES: { svg: true, svgFilters: true } });
+    } catch (error) {
+      container.className = "live-block mermaid-error";
+      container.textContent = "Mermaid error: " + error;
+    }
+  } else if (kind.includes("Image") && block.image) {
+    const image = document.createElement("img");
+    image.alt = block.image.alt;
+    image.src = await imageSource(block.image.destination);
+    container.append(image);
+  } else if (kind.includes("Heading")) {
+    const match = kind.match(/Heading[^0-9]*(\d+)/);
+    const heading = document.createElement("h" + Math.min(6, Math.max(1, Number(match?.[1] ?? 1))));
+    heading.innerHTML = await renderMarkdown(block.markdown);
+    container.append(heading);
+  } else if (kind.includes("Rule")) {
+    container.innerHTML = "<hr>";
+  } else if (kind.includes("Quote")) {
+    const quote = document.createElement("blockquote");
+    quote.innerHTML = await renderMarkdown(block.markdown);
+    container.append(quote);
+  } else if (kind.includes("Code")) {
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = block.markdown;
+    pre.append(code);
+    container.append(pre);
+  } else {
+    container.innerHTML = await renderMarkdown(block.markdown);
+  }
+  attachRenderedLinks(container);
+}
+class LiveBlockWidget extends WidgetType {
+  constructor(private readonly block: Block) { super(); }
+  toDOM() {
+    const container = document.createElement("div");
+    void renderLiveBlock(this.block, container);
+    return container;
+  }
+  ignoreEvent() { return true; }
+}
+function updateLiveDecorations(blocks: Block[]) {
+  if (!editor || editorMode !== "live") return;
+  const activeLine = editor.state.doc.lineAt(editor.state.selection.main.head);
+  const ranges: { from: number; to: number; value: ReturnType<typeof Decoration.replace> }[] = [];
+  let lastTo = -1;
+  for (const block of blocks) {
+    if (!block.sourceRange) continue;
+    const from = byteOffsetToJsOffset(currentText, block.sourceRange.start);
+    let to = byteOffsetToJsOffset(currentText, block.sourceRange.end);
+    if (to <= from || (from < activeLine.to && to >= activeLine.from)) continue;
+    if (currentText[to] === "\r") to += 1;
+    if (currentText[to] === "\n") to += 1;
+    if (from < lastTo || to > editor.state.doc.length) continue;
+    ranges.push({ from, to, value: Decoration.replace({ widget: new LiveBlockWidget(block), block: true }) });
+    lastTo = to;
+  }
+  editor.dispatch({ effects: setLiveDecorations.of(Decoration.set(ranges, true)) });
+}
+function attachRenderedLinks(root: HTMLElement) {
+  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach(link => link.addEventListener("click", async event => {
+    const href = link.getAttribute("href") ?? "";
     if (!href || href.startsWith("#")) return;
     event.preventDefault();
+    event.stopPropagation();
     if (/^(https?:|mailto:)/i.test(href)) {
       try { await openExternal(href); }
-      catch(error) { status(`Could not open link: ${error}`); }
+      catch(error) { status("Could not open link: " + error); }
       return;
     }
     if (!await saveBeforeChangingNote()) return;
-    try { openNoteView(await call<Note>("navigate_markdown_link", {link: href})); }
-    catch(error) { status(`Open failed: ${error}`); }
+    try { openNoteView(await call<Note>("navigate_markdown_link", { link: href })); }
+    catch(error) { status("Open failed: " + error); }
   }));
+}
+async function refreshPreview() {
+  const preview = document.querySelector<HTMLElement>("#preview");
+  const generation = ++previewGeneration;
+  const result = await call<{blocks: Block[]}>("preview_document", { source: currentText });
+  if (generation !== previewGeneration) return;
+  latestBlocks = result.blocks;
+  if (editorMode === "live") updateLiveDecorations(result.blocks);
+  if (!preview) return;
+  preview.innerHTML = "";
+  for (const block of result.blocks) {
+    const element = document.createElement("section");
+    await renderLiveBlock(block, element);
+    preview.append(element);
+  }
+  attachRenderedLinks(preview);
 }
 window.addEventListener("beforeunload",()=>void flushSave()); document.addEventListener("visibilitychange",()=>{if(document.hidden)void flushSave()});
 async function start(){ renderShell(); try{snapshot=await call<Snapshot>("workspace_snapshot");renderShell();renderPage();}catch(error){status(`Startup failed: ${error}`)} }

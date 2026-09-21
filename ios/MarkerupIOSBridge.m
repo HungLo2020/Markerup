@@ -547,6 +547,13 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
                     }
                 } else if ([name.lowercaseString hasSuffix:@".md"]) {
                     [serialized appendFormat:@"F:%@\n", MarkerupEscapedRelativePath(relative)];
+                } else if ([name.pathExtension.lowercaseString isEqualToString:@"png"] ||
+                           [name.pathExtension.lowercaseString isEqualToString:@"jpg"] ||
+                           [name.pathExtension.lowercaseString isEqualToString:@"jpeg"] ||
+                           [name.pathExtension.lowercaseString isEqualToString:@"gif"] ||
+                           [name.pathExtension.lowercaseString isEqualToString:@"webp"] ||
+                           [name.pathExtension.lowercaseString isEqualToString:@"svg"]) {
+                    [serialized appendFormat:@"A:%@\n", MarkerupEscapedRelativePath(relative)];
                 }
                 if (itemScope) [item stopAccessingSecurityScopedResource];
             }

@@ -530,6 +530,17 @@ pub fn search_workspace(
 }
 
 #[tauri::command]
+pub fn workspace_assets(
+    state: tauri::State<'_, MarkerupBackend>,
+) -> Result<Vec<WorkspaceEntry>, String> {
+    state
+        .locked()?
+        .workspace
+        .asset_entries()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn create_note(
     parent: String,
     name: String,

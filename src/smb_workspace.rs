@@ -310,6 +310,60 @@ impl SmbWorkspace {
         Ok(())
     }
 
+    fn collect_assets(
+        &self,
+        directory: &str,
+        relative_directory: &str,
+        depth: usize,
+        deadline: Instant,
+        output: &mut Vec<WorkspaceEntry>,
+    ) -> io::Result<()> {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "SMB asset scan timed out",
+            ));
+        }
+        if depth > MAX_SMB_SCAN_DEPTH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "SMB asset scan exceeded the maximum depth of {}",
+                    MAX_SMB_SCAN_DEPTH
+                ),
+            ));
+        }
+        let mut children = self.list_directory(directory)?;
+        children.sort_by_key(|entry| entry.name.to_lowercase());
+        for child in children {
+            if child.name == "." || child.name == ".." || child.name.starts_with('.') {
+                continue;
+            }
+            let id = if relative_directory.is_empty() {
+                child.name.clone()
+            } else {
+                format!("{relative_directory}/{}", child.name)
+            };
+            if child.is_directory {
+                let child_directory = if directory.is_empty() {
+                    child.name.clone()
+                } else {
+                    format!("{directory}/{}", child.name)
+                };
+                self.collect_assets(&child_directory, &id, depth + 1, deadline, output)?;
+            } else if is_supported_asset_name(&child.name) {
+                ensure_scan_capacity(output.len())?;
+                output.push(WorkspaceEntry {
+                    id,
+                    name: child.name,
+                    kind: EntryKind::File,
+                    depth,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_relative(current_file: &str, link: &str) -> Option<String> {
         let (path, fragment) = link.split_once('#').unwrap_or((link, ""));
         let decoded_path = percent_decode_str(path).decode_utf8().ok()?;
@@ -432,6 +486,18 @@ fn validate_remote_id(id: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn is_supported_asset_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg"
+            )
+        })
+}
+
 impl Workspace for SmbWorkspace {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
         let root = self.remote_path("")?;
@@ -442,6 +508,19 @@ impl Workspace for SmbWorkspace {
             0,
             Instant::now() + SMB_SCAN_TIMEOUT,
             None,
+            &mut entries,
+        )?;
+        Ok(entries)
+    }
+
+    fn asset_entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
+        let root = self.remote_path("")?;
+        let mut entries = Vec::new();
+        self.collect_assets(
+            &root,
+            "",
+            0,
+            Instant::now() + SMB_SCAN_TIMEOUT,
             &mut entries,
         )?;
         Ok(entries)

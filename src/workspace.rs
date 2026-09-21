@@ -34,6 +34,7 @@ pub struct LinkTarget {
 #[allow(dead_code)] // Kept for provider cancellation and identity-aware backends.
 pub trait Workspace: Send + Sync {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>>;
+    fn asset_entries(&self) -> io::Result<Vec<WorkspaceEntry>>;
     fn entries_with_cancel(
         &self,
         should_cancel: &dyn Fn() -> bool,
@@ -221,6 +222,36 @@ impl LocalWorkspace {
         Ok(true)
     }
 
+    fn scan_assets(
+        &self,
+        directory: &Path,
+        depth: usize,
+        entries: &mut Vec<WorkspaceEntry>,
+    ) -> io::Result<()> {
+        let mut children = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+        children.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
+        for child in children {
+            let name = child.file_name();
+            let name_text = name.to_string_lossy();
+            if name_text.starts_with('.') {
+                continue;
+            }
+            let path = child.path();
+            let ty = child.file_type()?;
+            if ty.is_dir() {
+                self.scan_assets(&path, depth + 1, entries)?;
+            } else if ty.is_file() && is_supported_asset(&path) {
+                entries.push(WorkspaceEntry {
+                    id: self.id_for_path(&path)?,
+                    name: name_text.into_owned(),
+                    kind: EntryKind::File,
+                    depth,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn entries_with_cancel<F>(
         &self,
         should_cancel: F,
@@ -257,6 +288,12 @@ impl Workspace for LocalWorkspace {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
         let mut entries = Vec::new();
         self.scan_dir(&self.root, 0, &mut entries, None)?;
+        Ok(entries)
+    }
+
+    fn asset_entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
+        let mut entries = Vec::new();
+        self.scan_assets(&self.root, 0, &mut entries)?;
         Ok(entries)
     }
 
@@ -545,6 +582,17 @@ fn no_workspace() -> io::Error {
     io::Error::new(io::ErrorKind::NotConnected, "no workspace selected")
 }
 
+fn is_supported_asset(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg"
+            )
+        })
+}
+
 impl Workspace for WorkspaceSlot {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
         match self {
@@ -552,6 +600,15 @@ impl Workspace for WorkspaceSlot {
             Self::Smb(workspace) => workspace.entries(),
             #[cfg(target_os = "ios")]
             Self::Ios(workspace) => workspace.entries(),
+            Self::Empty => Err(no_workspace()),
+        }
+    }
+    fn asset_entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
+        match self {
+            Self::Local(workspace) => workspace.asset_entries(),
+            Self::Smb(workspace) => workspace.asset_entries(),
+            #[cfg(target_os = "ios")]
+            Self::Ios(workspace) => workspace.asset_entries(),
             Self::Empty => Err(no_workspace()),
         }
     }
@@ -723,6 +780,29 @@ mod tests {
                 .iter()
                 .any(|e| e.id == "nested/Other.md" && e.depth == 1)
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scans_supported_assets_without_treating_them_as_notes() {
+        let root = temp();
+        fs::write(root.join("diagram.SVG"), "<svg></svg>").unwrap();
+        fs::write(root.join("nested/photo.JPG"), b"image").unwrap();
+        fs::write(root.join("nested/readme.txt"), "not an image").unwrap();
+        let w = LocalWorkspace::open(&root).unwrap();
+
+        let assets = w.asset_entries().unwrap();
+        assert!(assets.iter().any(|entry| entry.id == "diagram.SVG"));
+        assert!(assets.iter().any(|entry| entry.id == "nested/photo.JPG"));
+        assert!(assets.iter().all(|entry| entry.kind == EntryKind::File));
+        assert!(!assets.iter().any(|entry| entry.id.ends_with("readme.txt")));
+        assert!(
+            !w.entries()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.id == "diagram.SVG")
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 

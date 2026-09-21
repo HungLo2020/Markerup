@@ -52,15 +52,54 @@ impl IosWorkspace {
                 continue;
             };
             let depth = path.components().count().saturating_sub(1);
+            if kind == "D" {
+                entries.push(WorkspaceEntry {
+                    id,
+                    name,
+                    kind: crate::workspace::EntryKind::Directory,
+                    depth,
+                });
+            } else if kind == "F" {
+                entries.push(WorkspaceEntry {
+                    id,
+                    name,
+                    kind: crate::workspace::EntryKind::File,
+                    depth,
+                });
+            }
+        }
+        entries.sort_by_key(|entry| entry.id.to_lowercase());
+        Ok(entries)
+    }
+
+    fn coordinated_assets(&self) -> io::Result<Vec<WorkspaceEntry>> {
+        let bytes = list_entries(self.local.root_path()).map_err(io::Error::other)?;
+        let text = String::from_utf8(bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let mut entries = Vec::new();
+        for line in text.lines() {
+            let Some((kind, encoded_id)) = line.split_once(':') else {
+                continue;
+            };
+            if kind != "A" {
+                continue;
+            }
+            let id = percent_encoding::percent_decode_str(encoded_id)
+                .decode_utf8()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+                .into_owned();
+            let path = Path::new(&id);
+            let Some(name) = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+            else {
+                continue;
+            };
             entries.push(WorkspaceEntry {
                 id,
                 name,
-                kind: if kind == "D" {
-                    crate::workspace::EntryKind::Directory
-                } else {
-                    crate::workspace::EntryKind::File
-                },
-                depth,
+                kind: crate::workspace::EntryKind::File,
+                depth: path.components().count().saturating_sub(1),
             });
         }
         entries.sort_by_key(|entry| entry.id.to_lowercase());
@@ -77,6 +116,9 @@ impl Drop for IosWorkspace {
 impl Workspace for IosWorkspace {
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
         self.coordinated_entries()
+    }
+    fn asset_entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
+        self.coordinated_assets()
     }
     fn entries_with_cancel(
         &self,

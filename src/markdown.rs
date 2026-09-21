@@ -8,6 +8,13 @@ pub struct ImageReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRange {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum PreviewBlockKind {
     Body,
     Heading(u8),
@@ -28,6 +35,7 @@ pub struct PreviewBlock {
     pub markdown: String,
     pub image: Option<ImageReference>,
     pub task_offset: Option<usize>,
+    pub source_range: Option<SourceRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -61,8 +69,12 @@ pub fn preview_document(source: &str) -> PreviewDocument {
     let mut images = Vec::new();
     collect_images(&tree, &definitions, &mut images);
     let parsed_blocks: Vec<PreviewBlock> = match &tree {
-        Node::Root(root) => root.children.iter().flat_map(block_from_node).collect(),
-        node => block_from_node(node).collect(),
+        Node::Root(root) => root
+            .children
+            .iter()
+            .flat_map(|node| block_from_node(node, source))
+            .collect(),
+        node => block_from_node(node, source).collect(),
     };
     PreviewDocument {
         blocks: parsed_blocks,
@@ -70,13 +82,15 @@ pub fn preview_document(source: &str) -> PreviewDocument {
     }
 }
 
-fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
+fn block_from_node(node: &Node, source: &str) -> std::vec::IntoIter<PreviewBlock> {
+    let source_range = source_range(node);
     let block = match node {
         Node::Heading(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Heading(value.depth),
             markdown: inline_markdown(&value.children),
             image: None,
             task_offset: None,
+            source_range: source_range.clone(),
         }),
         Node::Paragraph(value)
             if value.children.len() == 1 && matches!(value.children[0], Node::Image(_)) =>
@@ -92,6 +106,7 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                     destination: image.url.clone(),
                 }),
                 task_offset: None,
+                source_range: source_range.clone(),
             })
         }
         Node::Paragraph(value) => Some(PreviewBlock {
@@ -99,6 +114,7 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
             markdown: inline_markdown(&value.children),
             image: None,
             task_offset: None,
+            source_range: source_range.clone(),
         }),
         Node::Code(value)
             if value
@@ -111,6 +127,7 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                 markdown: value.value.clone(),
                 image: None,
                 task_offset: None,
+                source_range: source_range.clone(),
             })
         }
         Node::Code(value) => Some(PreviewBlock {
@@ -118,16 +135,18 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
             markdown: value.value.clone(),
             image: None,
             task_offset: None,
+            source_range: source_range.clone(),
         }),
         Node::List(value) => {
             if is_task_list(value) {
-                return task_blocks_from_list(value).into_iter();
+                return task_blocks_from_list(value, source).into_iter();
             }
             Some(PreviewBlock {
                 kind: PreviewBlockKind::List(value.ordered),
                 markdown: list_markdown(value),
                 image: None,
                 task_offset: None,
+                source_range: source_range.clone(),
             })
         }
         Node::Blockquote(value) => Some(PreviewBlock {
@@ -140,12 +159,14 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                 .join("\n"),
             image: None,
             task_offset: None,
+            source_range: source_range.clone(),
         }),
         Node::ThematicBreak(_) => Some(PreviewBlock {
             kind: PreviewBlockKind::Rule,
             markdown: String::new(),
             image: None,
             task_offset: None,
+            source_range: source_range.clone(),
         }),
         Node::Image(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Image,
@@ -155,24 +176,28 @@ fn block_from_node(node: &Node) -> std::vec::IntoIter<PreviewBlock> {
                 destination: value.url.clone(),
             }),
             task_offset: None,
+            source_range: source_range.clone(),
         }),
         Node::Table(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Table,
             markdown: table_markdown(value),
             image: None,
             task_offset: None,
+            source_range: source_range.clone(),
         }),
         Node::Yaml(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Code,
             markdown: value.value.clone(),
             image: None,
             task_offset: None,
+            source_range: source_range.clone(),
         }),
         Node::Toml(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Code,
             markdown: value.value.clone(),
             image: None,
             task_offset: None,
+            source_range,
         }),
         _ => None,
     };
@@ -188,6 +213,14 @@ fn collect_definitions(node: &Node, definitions: &mut std::collections::HashMap<
             collect_definitions(child, definitions);
         }
     }
+}
+
+fn source_range(node: &Node) -> Option<SourceRange> {
+    let position = node.position()?;
+    Some(SourceRange {
+        start: position.start.offset,
+        end: position.end.offset,
+    })
 }
 
 fn collect_images(
@@ -225,7 +258,7 @@ fn is_task_list(list: &markdown::mdast::List) -> bool {
             .all(|child| matches!(child, Node::ListItem(item) if item.checked.is_some()))
 }
 
-fn task_blocks_from_list(list: &markdown::mdast::List) -> Vec<PreviewBlock> {
+fn task_blocks_from_list(list: &markdown::mdast::List, source: &str) -> Vec<PreviewBlock> {
     let mut blocks = Vec::new();
     for child in &list.children {
         let Node::ListItem(item) = child else {
@@ -246,6 +279,14 @@ fn task_blocks_from_list(list: &markdown::mdast::List) -> Vec<PreviewBlock> {
             markdown: label,
             image: None,
             task_offset: item.position.as_ref().map(|position| position.start.offset),
+            source_range: item.position.as_ref().map(|position| {
+                let start = position.start.offset;
+                let end = source[start..]
+                    .find('\n')
+                    .map(|offset| start + offset)
+                    .unwrap_or(source.len());
+                SourceRange { start, end }
+            }),
         });
 
         for nested in item.children.iter().filter_map(|child| match child {
@@ -253,7 +294,7 @@ fn task_blocks_from_list(list: &markdown::mdast::List) -> Vec<PreviewBlock> {
             _ => None,
         }) {
             if is_task_list(nested) {
-                blocks.extend(task_blocks_from_list(nested));
+                blocks.extend(task_blocks_from_list(nested, source));
             }
         }
     }
@@ -504,6 +545,27 @@ mod tests {
     }
 
     #[test]
+    fn serializes_source_ranges_as_utf8_offsets() {
+        let source = "# Café\n\nA paragraph with naïve text.";
+        let document = preview_document(source);
+        let heading = &document.blocks[0];
+        let range = heading
+            .source_range
+            .as_ref()
+            .expect("heading should have a source range");
+
+        assert_eq!(range.start, 0);
+        assert!(range.end > range.start);
+        let value = serde_json::to_value(document).expect("preview document should serialize");
+        assert_eq!(value["blocks"][0]["sourceRange"]["start"], 0);
+        assert!(
+            value["blocks"][0]["sourceRange"]
+                .get("source_range")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn renders_nested_tasks_as_individual_checkboxes() {
         let source = "- [x] Parent\n  - [ ] Child one\n  - [x] Child two\n- [ ] Sibling";
         let blocks = preview_document(source).blocks;
@@ -521,6 +583,17 @@ mod tests {
         );
         assert_eq!(blocks[1].task_offset, source.find("- [ ] Child one"));
         assert_eq!(blocks[2].task_offset, source.find("- [x] Child two"));
+        assert_eq!(
+            blocks[0]
+                .source_range
+                .as_ref()
+                .map(|range| (range.start, range.end)),
+            Some((0, source.find('\n').unwrap()))
+        );
+        assert!(
+            blocks[1].source_range.as_ref().unwrap().end
+                <= blocks[2].source_range.as_ref().unwrap().start
+        );
     }
 
     #[test]
@@ -529,6 +602,15 @@ mod tests {
         assert_eq!(
             refs.iter().map(|r| r.alt.as_str()).collect::<Vec<_>>(),
             vec!["one", "two"]
+        );
+    }
+
+    #[test]
+    fn preserves_link_markdown_for_frontend_rendering() {
+        let blocks = preview_document("A [link](https://example.com) and [note](Other.md)").blocks;
+        assert_eq!(
+            blocks[0].markdown,
+            "A [link](https://example.com) and [note](Other.md)"
         );
     }
 
