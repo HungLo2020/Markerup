@@ -29,6 +29,7 @@ let saveBlockedUntilReload = false;
 let editor: EditorView;
 let page: "main" | "settings" | "location" | "smb" | "about" = "main";
 let editorMode: "source" | "split" | "preview" = "split";
+const collapsedDirectories = new Set<string>();
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const status = (message: string) => document.querySelector<HTMLElement>("#status")!.textContent = message;
@@ -151,10 +152,28 @@ async function confirmAction(title: string, message: string): Promise<boolean> {
   return answer === "confirm";
 }
 
+function visibleTreeEntries(entries: Entry[]) {
+  const visible: Entry[] = [];
+  for (const entry of entries) {
+    const parts = entry.id.split("/");
+    const hidden = parts.slice(0, -1).some((_, index) => collapsedDirectories.has(parts.slice(0, index + 1).join("/")));
+    if (!hidden) visible.push(entry);
+  }
+  return visible;
+}
 function renderTree(entries = snapshot?.entries ?? []) {
   const tree=document.querySelector("#tree"); if (!tree) return;
-  tree.innerHTML=entries.map(entry=>`<div class="entry" style="padding-left:${entry.depth * 16 + 6}px"><button class="entry-main" data-id="${escape(entry.id)}">${entry.kind === "Directory" ? `<img class="entry-folder-icon" src="${folderIcon}" alt="">` : "·"} ${escape(entry.name)}</button><button class="entry-actions" data-id="${escape(entry.id)}" data-kind="${entry.kind}">…</button></div>`).join("") || "<p class=muted>No Markdown notes found.</p>";
-  tree.querySelectorAll<HTMLButtonElement>(".entry-main").forEach(b=>b.addEventListener("click",()=>openNote(b.dataset.id!)));
+  tree.innerHTML=visibleTreeEntries(entries).map(entry=>`<div class="entry" style="padding-left:${entry.depth * 16 + 6}px"><button class="entry-main" data-id="${escape(entry.id)}" aria-expanded="${entry.kind === "Directory" ? !collapsedDirectories.has(entry.id) : undefined}">${entry.kind === "Directory" ? `<span class="entry-disclosure">${collapsedDirectories.has(entry.id) ? "▸" : "▾"}</span><img class="entry-folder-icon" src="${folderIcon}" alt="">` : "·"} ${escape(entry.name)}</button><button class="entry-actions" data-id="${escape(entry.id)}" data-kind="${entry.kind}">…</button></div>`).join("") || "<p class=muted>No Markdown notes found.</p>";
+  tree.querySelectorAll<HTMLButtonElement>(".entry-main").forEach(b=>b.addEventListener("click",()=>{
+    const entry = entries.find(candidate => candidate.id === b.dataset.id);
+    if (entry?.kind === "Directory") {
+      if (collapsedDirectories.has(entry.id)) collapsedDirectories.delete(entry.id);
+      else collapsedDirectories.add(entry.id);
+      renderTree(entries);
+      return;
+    }
+    void openNote(b.dataset.id!);
+  }));
   tree.querySelectorAll<HTMLButtonElement>(".entry-actions").forEach(b=>b.addEventListener("click",()=>entryActions(b.dataset.id!, b.dataset.kind === "Directory")));
 }
 function setupEditor() {
@@ -280,14 +299,58 @@ async function createAtRoot(){
   if(type === "folder") return createEntry("",false);
 }
 async function createEntry(parent:string,note:boolean){ if(!await saveBeforeChangingNote()) return; const name=await requestName(note?"New note":"New folder"); if(!name)return; try { if(note){loadNote(await call<Note>("create_note",{parent,name}));} else {snapshot=await call<Snapshot>("create_folder",{parent,name});renderShell();renderPage();} }catch(error){status(String(error))} }
+function chooseDestinationFolder(sourceId: string): Promise<string | undefined> {
+  return new Promise(resolve => {
+    const modal = modalSurface<string>("Move to folder", resolve);
+    const list = document.createElement("div");
+    list.className = "folder-selector";
+    const folders = (snapshot?.entries ?? []).filter(entry => {
+      if (entry.kind !== "Directory") return false;
+      return entry.id !== sourceId && !entry.id.startsWith(`${sourceId}/`);
+    });
+    const destinations: Array<{ id: string; label: string; depth: number }> = [{ id: "", label: "Workspace root", depth: 0 }];
+    destinations.push(...folders.map(folder => ({ id: folder.id, label: folder.name, depth: folder.depth + 1 })));
+    for (const destination of destinations) {
+      const button = document.createElement("button");
+      button.className = "folder-selector-entry";
+      button.style.paddingLeft = `${destination.depth * 16 + 12}px`;
+      button.textContent = destination.label;
+      button.addEventListener("click", () => modal.dismiss(destination.id));
+      list.append(button);
+    }
+    modal.body.append(list);
+  });
+}
+async function moveEntry(id: string) {
+  if(!await saveBeforeChangingNote()) return;
+  const destination = await chooseDestinationFolder(id);
+  if(destination === undefined) return;
+  try {
+    snapshot = await call<Snapshot>("move_entry", { id, destinationParent: destination });
+    const movedName = id.split("/").pop() ?? id;
+    const newId = destination ? `${destination}/${movedName}` : movedName;
+    for (const collapsed of [...collapsedDirectories]) {
+      if (collapsed === id || collapsed.startsWith(`${id}/`)) {
+        collapsedDirectories.delete(collapsed);
+        collapsedDirectories.add(`${newId}${collapsed.slice(id.length)}`);
+      }
+    }
+    renderShell();
+    renderPage();
+    status("Entry moved");
+  } catch(error) {
+    status(`Move failed: ${error}`);
+  }
+}
 async function entryActions(id:string,isDirectory:boolean){
   const actions: ModalAction[] = [];
   if (isDirectory) actions.push({ id: "new-note", label: "New note" }, { id: "new-folder", label: "New folder" });
-  actions.push({ id: "rename", label: "Rename" }, { id: "delete", label: "Delete", destructive: true });
+  actions.push({ id: "move", label: "Move" }, { id: "rename", label: "Rename" }, { id: "delete", label: "Delete", destructive: true });
   const action = await chooseAction(id.split("/").pop() ?? "Actions", actions);
   if(!action)return;
   if(action==="new-note")return createEntry(id,true);
   if(action==="new-folder")return createEntry(id,false);
+  if(action==="move")return moveEntry(id);
   if(!await saveBeforeChangingNote()) return;
   try {
     if(action==="rename"){

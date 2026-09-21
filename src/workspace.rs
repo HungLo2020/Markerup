@@ -45,6 +45,7 @@ pub trait Workspace: Send + Sync {
     fn create_note(&self, parent: &str, name: &str) -> io::Result<EntryId>;
     fn create_directory(&self, parent: &str, name: &str) -> io::Result<EntryId>;
     fn rename(&self, id: &str, new_name: &str) -> io::Result<EntryId>;
+    fn move_entry(&self, id: &str, destination_parent: &str) -> io::Result<EntryId>;
     fn delete(&self, id: &str) -> io::Result<()>;
     #[allow(dead_code)]
     fn search_markdown(&self, query: &str) -> io::Result<Vec<EntryId>>;
@@ -343,6 +344,35 @@ impl Workspace for LocalWorkspace {
         self.id_for_path(&destination)
     }
 
+    fn move_entry(&self, id: &str, destination_parent: &str) -> io::Result<EntryId> {
+        let source = self.absolute_existing(id)?;
+        let destination_directory = self.absolute_parent(destination_parent)?;
+        if source.is_dir() && destination_directory.starts_with(&source) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a folder cannot be moved into itself",
+            ));
+        }
+        let name = source
+            .file_name()
+            .ok_or_else(|| io::Error::other("entry has no name"))?;
+        let destination = destination_directory.join(name);
+        if destination == source {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "entry is already in that folder",
+            ));
+        }
+        if destination.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "an entry with that name already exists in the destination folder",
+            ));
+        }
+        fs::rename(&source, &destination)?;
+        self.id_for_path(&destination)
+    }
+
     fn delete(&self, id: &str) -> io::Result<()> {
         let path = self.absolute_existing(id)?;
         if path.is_dir() {
@@ -591,6 +621,15 @@ impl Workspace for WorkspaceSlot {
             Self::Empty => Err(no_workspace()),
         }
     }
+    fn move_entry(&self, id: &str, destination_parent: &str) -> io::Result<EntryId> {
+        match self {
+            Self::Local(workspace) => workspace.move_entry(id, destination_parent),
+            Self::Smb(workspace) => workspace.move_entry(id, destination_parent),
+            #[cfg(target_os = "ios")]
+            Self::Ios(workspace) => workspace.move_entry(id, destination_parent),
+            Self::Empty => Err(no_workspace()),
+        }
+    }
     fn delete(&self, id: &str) -> io::Result<()> {
         match self {
             Self::Local(workspace) => workspace.delete(id),
@@ -714,6 +753,20 @@ mod tests {
         assert_eq!(renamed, "New/Renamed.md");
         w.delete(&folder).unwrap();
         assert!(!root.join("New").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moves_notes_and_folders() {
+        let root = temp();
+        let w = LocalWorkspace::open(&root).unwrap();
+        let destination = w.create_directory("", "Destination").unwrap();
+        let note = w.move_entry("Root.md", &destination).unwrap();
+        assert_eq!(note, "Destination/Root.md");
+        let folder = w.move_entry("nested", &destination).unwrap();
+        assert_eq!(folder, "Destination/nested");
+        assert!(root.join("Destination/nested/deeper/Deep.md").exists());
+        assert!(w.move_entry("Destination", "Destination/nested").is_err());
         fs::remove_dir_all(root).unwrap();
     }
 

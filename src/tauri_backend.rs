@@ -580,6 +580,35 @@ pub fn rename_entry(
 }
 
 #[tauri::command]
+pub fn move_entry(
+    id: String,
+    destination_parent: String,
+    state: tauri::State<'_, MarkerupBackend>,
+) -> Result<WorkspaceSnapshot, String> {
+    let mut inner = state.locked()?;
+    let new_id = inner
+        .workspace
+        .move_entry(&id, &destination_parent)
+        .map_err(|error| error.to_string())?;
+    inner.navigation.rebase(&id, &new_id);
+    if inner.current_file.as_deref() == Some(id.as_str()) {
+        inner.current_file = Some(new_id.clone());
+    } else if inner
+        .current_file
+        .as_deref()
+        .is_some_and(|file| file.starts_with(&(id.clone() + "/")))
+    {
+        inner.current_file = inner
+            .current_file
+            .take()
+            .map(|file| format!("{}{}", new_id, &file[id.len()..]));
+    }
+    MarkerupBackend::persist(&inner);
+    MarkerupBackend::refresh_entries(&mut inner)?;
+    Ok(MarkerupBackend::snapshot(&inner))
+}
+
+#[tauri::command]
 pub fn delete_entry(
     id: String,
     state: tauri::State<'_, MarkerupBackend>,

@@ -559,6 +559,33 @@ impl Workspace for SmbWorkspace {
         Ok(destination_id)
     }
 
+    fn move_entry(&self, id: &str, destination_parent: &str) -> io::Result<EntryId> {
+        validate_remote_id(id)?;
+        validate_remote_id(destination_parent)?;
+        if id == destination_parent || destination_parent.starts_with(&(id.to_string() + "/")) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a folder cannot be moved into itself",
+            ));
+        }
+        let name = Path::new(id)
+            .file_name()
+            .ok_or_else(|| io::Error::other("entry has no name"))?
+            .to_string_lossy();
+        let destination_id = if destination_parent.is_empty() {
+            name.into_owned()
+        } else {
+            format!("{destination_parent}/{name}")
+        };
+        let source = self.remote_path(id)?;
+        let destination = self.remote_path(&destination_id)?;
+        self.mutate(|client, tree| {
+            self.run_smb("move", || client.rename(tree, &source, &destination))
+        })
+        .map_err(mark_ambiguous_mutation)?;
+        Ok(destination_id)
+    }
+
     fn delete(&self, id: &str) -> io::Result<()> {
         let path = self.remote_path(id)?;
         let is_directory = self.list_directory(&path).is_ok();

@@ -141,6 +141,28 @@ impl Workspace for IosWorkspace {
         mutate(&source, Some(&destination), 2, &[]).map_err(io::Error::other)?;
         self.local.id_for_path(&destination)
     }
+    fn move_entry(&self, id: &str, destination_parent: &str) -> io::Result<EntryId> {
+        let source = self.scoped_path(id)?;
+        let destination_directory = self.scoped_path(destination_parent)?;
+        if source.is_dir() && destination_directory.starts_with(&source) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a folder cannot be moved into itself",
+            ));
+        }
+        let name = source
+            .file_name()
+            .ok_or_else(|| io::Error::other("entry has no name"))?;
+        let destination = destination_directory.join(name);
+        if destination == source {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "entry is already in that folder",
+            ));
+        }
+        mutate(&source, Some(&destination), 2, &[]).map_err(io::Error::other)?;
+        self.local.id_for_path(&destination)
+    }
     fn delete(&self, id: &str) -> io::Result<()> {
         let path = self.scoped_path(id)?;
         mutate(&path, None, 3, &[]).map_err(io::Error::other)
