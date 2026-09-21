@@ -85,17 +85,19 @@ function renderPage() {
   }
   if (page === "smb") { content.innerHTML = panel("Connect to SMB", `<label>Server<input id="server" placeholder="server or IP"></label><label>Share<input id="share"></label><label>Username<input id="username"></label><label>Password<input id="password" type="password"></label><label>Remote folder<input id="remote" placeholder="Notes"></label><button id="connect">Connect</button>`); document.querySelector("#connect")!.addEventListener("click",connectSmb); return; }
   if (page === "about") { content.innerHTML = panel("About Markerup", `<p>Version 0.4.2</p><button id="privacy">Privacy Policy</button>`); document.querySelector("#privacy")!.addEventListener("click",async()=>openExternal(await call<string>("privacy_policy_url"))); return; }
-  const viewControls = mobileLayout()
-    ? `<button id="mobile-view-toggle">${editorMode === "source" ? "Live" : editorMode === "live" ? "Preview" : "Source"}</button>`
-    : `<button data-mode="source">Source</button><button data-mode="live">Live</button><button data-mode="split">Split</button><button data-mode="preview">Preview</button>`;
+  const viewControls = `<select id="view-mode" aria-label="Editor view">${[
+    ["source", "Source"],
+    ["live", "Live"],
+    ["split", "Split"],
+    ["preview", "Preview"],
+  ].map(([value, label]) => `<option value="${value}"${editorMode === value ? " selected" : ""}>${label}</option>`).join("")}</select>`;
   content.innerHTML = `<aside id="sidebar"><div class="row"><strong>Workspace</strong><button id="new" aria-label="Create">＋</button></div><input id="search" placeholder="Search all notes"><nav id="tree"></nav></aside><section id="document"><div class="document-bar"><strong>${escape(snapshot?.currentFile ?? "Choose a note")}</strong><span class="grow"></span>${snapshot?.currentFile ? `<button id="insert">Insert</button>` : ""}${viewControls}</div><div id="panes"><div id="editor-pane"><div id="editor"></div></div><article id="preview"></article></div></section>`;
   document.querySelector("#new")!.addEventListener("click",()=>createAtRoot());
   document.querySelector("#search")!.addEventListener("input", search);
   document.querySelector("#insert")?.addEventListener("click", () => void showInsertMenu());
-  document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach(button => button.addEventListener("click",()=>{editorMode=button.dataset.mode as typeof editorMode; applyMode()}));
-  document.querySelector("#mobile-view-toggle")?.addEventListener("click", () => {
-    editorMode = editorMode === "source" ? "live" : editorMode === "live" ? "preview" : "source";
-    renderPage();
+  document.querySelector<HTMLSelectElement>("#view-mode")!.addEventListener("change", event => {
+    editorMode = (event.target as HTMLSelectElement).value as typeof editorMode;
+    applyMode();
   });
   renderTree(); setupEditor(); void refreshPreview(); applyMode();
 }
@@ -646,20 +648,25 @@ function updateLiveDecorations(blocks: Block[]) {
   editor.dispatch({ effects: setLiveDecorations.of(Decoration.set(ranges, true)) });
 }
 function attachRenderedLinks(root: HTMLElement) {
-  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach(link => link.addEventListener("click", async event => {
-    const href = link.getAttribute("href") ?? "";
-    if (!href || href.startsWith("#")) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (/^(https?:|mailto:)/i.test(href)) {
-      try { await openExternal(href); }
-      catch(error) { status("Could not open link: " + error); }
-      return;
-    }
-    if (!await saveBeforeChangingNote()) return;
-    try { openNoteView(await call<Note>("navigate_markdown_link", { link: href })); }
-    catch(error) { status("Open failed: " + error); }
-  }));
+  root.querySelectorAll<HTMLAnchorElement>("a[href]").forEach(link => {
+    // The link lives inside a CodeMirror replacement widget. Keep pointer
+    // events on the anchor so the editor cannot turn them into cursor moves.
+    link.addEventListener("pointerdown", event => event.stopPropagation());
+    link.addEventListener("click", async event => {
+      const href = link.getAttribute("href") ?? "";
+      if (!href || href.startsWith("#")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (/^(https?:|mailto:)/i.test(href)) {
+        try { await openExternal(href); }
+        catch(error) { status("Could not open link: " + error); }
+        return;
+      }
+      if (!await saveBeforeChangingNote()) return;
+      try { openNoteView(await call<Note>("navigate_markdown_link", { link: href })); }
+      catch(error) { status("Open failed: " + error); }
+    });
+  });
 }
 async function refreshPreview() {
   const preview = document.querySelector<HTMLElement>("#preview");
