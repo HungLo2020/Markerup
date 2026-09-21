@@ -95,11 +95,12 @@ impl IosWorkspace {
             else {
                 continue;
             };
+            let depth = path.components().count().saturating_sub(1);
             entries.push(WorkspaceEntry {
                 id,
                 name,
                 kind: crate::workspace::EntryKind::File,
-                depth: path.components().count().saturating_sub(1),
+                depth,
             });
         }
         entries.sort_by_key(|entry| entry.id.to_lowercase());
