@@ -16,6 +16,7 @@ use merman::MermaidConfig;
 use merman::render::HeadlessRenderer;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 #[cfg(not(target_os = "ios"))]
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -41,12 +42,82 @@ struct BackendInner {
 #[derive(Default)]
 pub struct MarkerupBackend {
     inner: Mutex<BackendInner>,
+    asset_cache: Mutex<AssetCache>,
 }
 
 struct SaveRequest {
     workspace: WorkspaceRef,
     file: EntryId,
     baseline: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AssetCacheKey {
+    workspace: String,
+    id: EntryId,
+}
+
+struct CachedAsset {
+    data_url: String,
+    size: usize,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct AssetCache {
+    entries: HashMap<AssetCacheKey, CachedAsset>,
+    used_bytes: usize,
+    clock: u64,
+}
+
+const MAX_CACHED_ASSETS: usize = 64;
+const MAX_CACHED_ASSET_BYTES: usize = 32 * 1024 * 1024;
+
+impl AssetCache {
+    fn get(&mut self, key: &AssetCacheKey) -> Option<String> {
+        let asset = self.entries.get_mut(key)?;
+        self.clock = self.clock.wrapping_add(1);
+        asset.last_used = self.clock;
+        Some(asset.data_url.clone())
+    }
+
+    fn insert(&mut self, key: AssetCacheKey, data_url: String) {
+        let size = data_url.len();
+        if size > MAX_CACHED_ASSET_BYTES {
+            return;
+        }
+        if let Some(previous) = self.entries.remove(&key) {
+            self.used_bytes = self.used_bytes.saturating_sub(previous.size);
+        }
+        self.clock = self.clock.wrapping_add(1);
+        self.used_bytes += size;
+        self.entries.insert(
+            key,
+            CachedAsset {
+                data_url,
+                size,
+                last_used: self.clock,
+            },
+        );
+        while self.entries.len() > MAX_CACHED_ASSETS || self.used_bytes > MAX_CACHED_ASSET_BYTES {
+            let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, asset)| asset.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some(oldest) = self.entries.remove(&oldest_key) {
+                self.used_bytes = self.used_bytes.saturating_sub(oldest.size);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.used_bytes = 0;
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,6 +168,27 @@ pub struct PreviewPayload {
 }
 
 impl MarkerupBackend {
+    fn cached_asset(&self, key: &AssetCacheKey) -> Option<String> {
+        self.asset_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key)
+    }
+
+    fn cache_asset(&self, key: AssetCacheKey, data_url: String) {
+        self.asset_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, data_url);
+    }
+
+    fn clear_asset_cache(&self) {
+        self.asset_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
     fn locked(&self) -> Result<std::sync::MutexGuard<'_, BackendInner>, String> {
         match self.inner.lock() {
             Ok(inner) => Ok(inner),
@@ -386,6 +478,7 @@ impl MarkerupBackend {
         Self::install_workspace(&mut inner, workspace, bookmark);
         inner.entries = entries;
         drop(inner);
+        self.clear_asset_cache();
 
         if let Some(id) = session.current_file {
             if let Ok(mut inner) = self.locked() {
@@ -418,6 +511,9 @@ pub fn open_local_workspace(
         let mut inner = state.locked()?;
         MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::local(workspace), None);
         inner.entries = entries;
+        drop(inner);
+        state.clear_asset_cache();
+        let inner = state.locked()?;
         Ok(MarkerupBackend::snapshot(&inner))
     }
     #[cfg(target_os = "ios")]
@@ -450,6 +546,9 @@ pub async fn choose_ios_workspace(
     let mut inner = state.locked()?;
     MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::ios(workspace), Some(bookmark));
     inner.entries = entries;
+    drop(inner);
+    state.clear_asset_cache();
+    let inner = state.locked()?;
     Ok(Some(MarkerupBackend::snapshot(&inner)))
 }
 
@@ -470,6 +569,9 @@ pub fn connect_smb(
     let mut inner = state.locked()?;
     MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::smb(workspace), None);
     inner.entries = entries;
+    drop(inner);
+    state.clear_asset_cache();
+    let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
 }
 
@@ -570,6 +672,9 @@ pub fn refresh_workspace(
         }
     }
     inner.entries = entries;
+    drop(inner);
+    state.clear_asset_cache();
+    let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
 }
 
@@ -615,6 +720,7 @@ pub fn create_note(
         MarkerupBackend::mark_workspace_changed(&mut inner);
         id
     };
+    state.clear_asset_cache();
     state.refresh_entries()?;
     let mut inner = state.locked()?;
     MarkerupBackend::open_note_locked(&mut inner, id, true)
@@ -634,6 +740,7 @@ pub fn create_folder(
             .map_err(|error| error.to_string())?;
         MarkerupBackend::mark_workspace_changed(&mut inner);
     }
+    state.clear_asset_cache();
     state.refresh_entries()?;
     let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
@@ -658,6 +765,7 @@ pub fn rename_entry(
         MarkerupBackend::mark_workspace_changed(&mut inner);
         MarkerupBackend::persist(&inner);
     }
+    state.clear_asset_cache();
     state.refresh_entries()?;
     let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
@@ -691,6 +799,7 @@ pub fn move_entry(
         MarkerupBackend::mark_workspace_changed(&mut inner);
         MarkerupBackend::persist(&inner);
     }
+    state.clear_asset_cache();
     state.refresh_entries()?;
     let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
@@ -720,6 +829,7 @@ pub fn delete_entry(
         MarkerupBackend::mark_workspace_changed(&mut inner);
         MarkerupBackend::persist(&inner);
     }
+    state.clear_asset_cache();
     state.refresh_entries()?;
     let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
@@ -827,6 +937,9 @@ pub fn open_favorite_workspace(
         let mut inner = state.locked()?;
         MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::local(workspace), None);
         inner.entries = entries;
+        drop(inner);
+        state.clear_asset_cache();
+        let inner = state.locked()?;
         Ok(MarkerupBackend::snapshot(&inner))
     }
     #[cfg(target_os = "ios")]
@@ -865,6 +978,9 @@ pub fn open_favorite_workspace(
         let mut inner = state.locked()?;
         MarkerupBackend::install_workspace(&mut inner, workspace, bookmark);
         inner.entries = entries;
+        drop(inner);
+        state.clear_asset_cache();
+        let inner = state.locked()?;
         Ok(MarkerupBackend::snapshot(&inner))
     }
 }
@@ -930,6 +1046,13 @@ pub fn workspace_asset_data(
     let Some(id) = workspace.resolve_asset_link(&current, &link) else {
         return Ok(None);
     };
+    let key = AssetCacheKey {
+        workspace: workspace.identity(),
+        id: id.clone(),
+    };
+    if let Some(cached) = state.cached_asset(&key) {
+        return Ok(Some(cached));
+    }
     let data = workspace
         .asset_bytes(&id)
         .map_err(|error| error.to_string())?;
@@ -946,10 +1069,12 @@ pub fn workspace_asset_data(
         Some("svg") => "image/svg+xml",
         _ => "application/octet-stream",
     };
-    Ok(Some(format!(
+    let data_url = format!(
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(data)
-    )))
+    );
+    state.cache_asset(key, data_url.clone());
+    Ok(Some(data_url))
 }
 
 #[tauri::command]
@@ -998,7 +1123,7 @@ fn normalize_mermaid_source(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::MarkerupBackend;
+    use super::{AssetCache, AssetCacheKey, MAX_CACHED_ASSETS, MarkerupBackend};
 
     #[test]
     fn recovers_workspace_state_after_a_panicking_command() {
@@ -1010,5 +1135,35 @@ mod tests {
 
         assert!(backend.inner.lock().is_err());
         assert!(backend.locked().is_ok());
+    }
+
+    #[test]
+    fn asset_cache_reuses_entries_and_evicts_oldest_entries() {
+        let mut cache = AssetCache::default();
+        let first = AssetCacheKey {
+            workspace: "workspace".to_string(),
+            id: "first.png".to_string(),
+        };
+        cache.insert(first.clone(), "data:image/png;base64,first".to_string());
+        assert_eq!(
+            cache.get(&first).as_deref(),
+            Some("data:image/png;base64,first")
+        );
+
+        for index in 0..MAX_CACHED_ASSETS {
+            cache.insert(
+                AssetCacheKey {
+                    workspace: "workspace".to_string(),
+                    id: format!("asset-{index}.png"),
+                },
+                format!("data:image/png;base64,{index}"),
+            );
+        }
+
+        assert!(cache.entries.len() <= MAX_CACHED_ASSETS);
+        assert!(cache.get(&first).is_none());
+        cache.clear();
+        assert!(cache.entries.is_empty());
+        assert_eq!(cache.used_bytes, 0);
     }
 }
