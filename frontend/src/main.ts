@@ -84,7 +84,7 @@ function renderPage() {
     return;
   }
   if (page === "smb") { content.innerHTML = panel("Connect to SMB", `<label>Server<input id="server" placeholder="server or IP"></label><label>Share<input id="share"></label><label>Username<input id="username"></label><label>Password<input id="password" type="password"></label><label>Remote folder<input id="remote" placeholder="Notes"></label><button id="connect">Connect</button>`); document.querySelector("#connect")!.addEventListener("click",connectSmb); return; }
-  if (page === "about") { content.innerHTML = panel("About Markerup", `<p>Version 0.4.2</p><button id="privacy">Privacy Policy</button>`); document.querySelector("#privacy")!.addEventListener("click",async()=>openExternal(await call<string>("privacy_policy_url"))); return; }
+  if (page === "about") { content.innerHTML = panel("About Markerup", `<p>Version ${__MARKERUP_VERSION__}</p><button id="privacy">Privacy Policy</button>`); document.querySelector("#privacy")!.addEventListener("click",async()=>openExternal(await call<string>("privacy_policy_url"))); return; }
   const viewControls = `<select id="view-mode" aria-label="Editor view">${[
     ["source", "Source"],
     ["live", "Live"],
