@@ -665,82 +665,90 @@ async function toggleLiveTask(block: Block) {
 async function renderLiveBlock(block: Block, container: HTMLElement, isCurrent = () => true) {
   if (!isCurrent()) return false;
   const kind = blockKind(block);
-  container.className = "live-block";
-  if (kind.includes("Task")) {
-    const label = document.createElement("label");
-    label.className = "task";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = kind.includes("true");
-    const text = document.createElement("span");
-    label.append(checkbox, text);
-    container.append(label);
-    const html = await renderInlineMarkdown(block.markdown);
-    if (!isCurrent()) return false;
-    text.innerHTML = html;
-    checkbox.addEventListener("change", () => void toggleLiveTask(block));
-  } else if (kind.includes("Mermaid")) {
-    container.className = "live-block mermaid";
-    try {
+  try {
+    container.className = "live-block";
+    if (kind.includes("Task")) {
+      const label = document.createElement("label");
+      label.className = "task";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = kind.includes("true");
+      const text = document.createElement("span");
+      label.append(checkbox, text);
+      container.append(label);
+      const html = await renderInlineMarkdown(block.markdown);
+      if (!isCurrent()) return false;
+      text.innerHTML = html;
+      checkbox.addEventListener("change", () => void toggleLiveTask(block));
+    } else if (kind.includes("Mermaid")) {
+      container.className = "live-block mermaid";
       const svg = await rememberRenderPromise(mermaidCache, block.markdown, async () =>
         DOMPurify.sanitize(await call<string>("render_mermaid", { source: block.markdown }), { USE_PROFILES: { svg: true, svgFilters: true } })
       );
       if (!isCurrent()) return false;
       container.innerHTML = svg;
-    } catch (error) {
+    } else if (kind.includes("Image") && block.image) {
+      const image = document.createElement("img");
+      image.alt = block.image.alt;
+      image.addEventListener("error", () => {
+        if (!isCurrent()) return;
+        container.className = "live-block render-error";
+        container.textContent = `Image unavailable: ${block.image?.alt || block.image?.destination || "unknown asset"}`;
+      });
+      const source = await imageSource(block.image.destination);
       if (!isCurrent()) return false;
-      container.className = "live-block mermaid-error";
-      container.textContent = "Mermaid error: " + error;
+      image.src = source;
+      container.append(image);
+    } else if (kind.includes("Heading")) {
+      const match = kind.match(/Heading[^0-9]*(\d+)/);
+      const heading = document.createElement("h" + Math.min(6, Math.max(1, Number(match?.[1] ?? 1))));
+      const html = await renderInlineMarkdown(block.markdown);
+      if (!isCurrent()) return false;
+      heading.innerHTML = html;
+      container.append(heading);
+    } else if (kind.includes("Rule")) {
+      container.innerHTML = "<hr>";
+    } else if (kind.includes("Quote")) {
+      const quote = document.createElement("blockquote");
+      const html = await renderMarkdown(block.markdown);
+      if (!isCurrent()) return false;
+      quote.innerHTML = html;
+      container.append(quote);
+    } else if (kind.includes("Code")) {
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = block.markdown;
+      pre.append(code);
+      container.append(pre);
+    } else {
+      const html = await renderMarkdown(blockMarkdownSource(block));
+      if (!isCurrent()) return false;
+      container.innerHTML = html;
     }
-  } else if (kind.includes("Image") && block.image) {
-    const image = document.createElement("img");
-    image.alt = block.image.alt;
-    const source = await imageSource(block.image.destination);
     if (!isCurrent()) return false;
-    image.src = source;
-    container.append(image);
-  } else if (kind.includes("Heading")) {
-    const match = kind.match(/Heading[^0-9]*(\d+)/);
-    const heading = document.createElement("h" + Math.min(6, Math.max(1, Number(match?.[1] ?? 1))));
-    const html = await renderInlineMarkdown(block.markdown);
+    attachRenderedLinks(container);
+    return true;
+  } catch (error) {
     if (!isCurrent()) return false;
-    heading.innerHTML = html;
-    container.append(heading);
-  } else if (kind.includes("Rule")) {
-    container.innerHTML = "<hr>";
-  } else if (kind.includes("Quote")) {
-    const quote = document.createElement("blockquote");
-    const html = await renderMarkdown(block.markdown);
-    if (!isCurrent()) return false;
-    quote.innerHTML = html;
-    container.append(quote);
-  } else if (kind.includes("Code")) {
-    const pre = document.createElement("pre");
-    const code = document.createElement("code");
-    code.textContent = block.markdown;
-    pre.append(code);
-    container.append(pre);
-  } else {
-    const html = await renderMarkdown(blockMarkdownSource(block));
-    if (!isCurrent()) return false;
-    container.innerHTML = html;
+    container.className = "live-block render-error";
+    container.textContent = "Preview error: " + (error instanceof Error ? error.message : String(error));
+    return true;
   }
-  if (!isCurrent()) return false;
-  attachRenderedLinks(container);
-  return true;
 }
 class LiveBlockWidget extends WidgetType {
+  private disposed = false;
   constructor(private readonly block: Block, private readonly generation: number) { super(); }
   toDOM() {
     const container = document.createElement("div");
-    const isCurrent = () => this.generation === previewGeneration && editorMode === "live";
+    const isCurrent = () => !this.disposed && this.generation === previewGeneration && editorMode === "live";
     void renderLiveBlock(this.block, container, isCurrent).catch(error => {
       if (!isCurrent()) return;
       container.className = "live-block render-error";
-      container.textContent = "Preview error: " + error;
+      container.textContent = "Preview error: " + (error instanceof Error ? error.message : String(error));
     });
     return container;
   }
+  destroy() { this.disposed = true; }
   ignoreEvent(event: Event) {
     // Let clicks on rendered text reach CodeMirror so it can place the
     // cursor in the replaced source range. Interactive rendered controls

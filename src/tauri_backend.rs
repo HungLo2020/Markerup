@@ -25,6 +25,7 @@ const PRIVACY_POLICY_URL: &str = "https://hunglo2020.github.io/Markerup/privacy-
 #[derive(Default)]
 struct BackendInner {
     workspace: WorkspaceSlot,
+    workspace_revision: u64,
     entries: Vec<WorkspaceEntry>,
     bookmark: Option<Vec<u8>>,
     favorites: Vec<SavedFavorite>,
@@ -136,16 +137,32 @@ impl MarkerupBackend {
         }
     }
 
-    fn refresh_entries(inner: &mut BackendInner) -> Result<(), String> {
-        inner.entries = if inner.workspace.is_open() {
-            inner
-                .workspace
-                .entries()
-                .map_err(|error| error.to_string())?
-        } else {
-            Vec::new()
-        };
-        Ok(())
+    fn refresh_entries(&self) -> Result<(), String> {
+        for _ in 0..2 {
+            // Workspace providers perform recursive/local/SMB I/O here. Keep
+            // only a cheap handle snapshot under the state mutex.
+            let (workspace, revision) = {
+                let inner = self.locked()?;
+                (inner.workspace.shared_clone(), inner.workspace_revision)
+            };
+            let entries = match workspace {
+                Some(workspace) => workspace.entries().map_err(|error| error.to_string())?,
+                None => Vec::new(),
+            };
+            let mut inner = self.locked()?;
+            // A workspace mutation or switch may have happened while the
+            // provider was scanning. Never publish an obsolete scan.
+            if inner.workspace_revision != revision {
+                continue;
+            }
+            inner.entries = entries;
+            return Ok(());
+        }
+        Err("Workspace changed while refreshing; please try again".to_string())
+    }
+
+    fn mark_workspace_changed(inner: &mut BackendInner) {
+        inner.workspace_revision = inner.workspace_revision.wrapping_add(1);
     }
 
     fn persist(inner: &BackendInner) {
@@ -171,6 +188,7 @@ impl MarkerupBackend {
     ) {
         inner.active_favorite = Self::favorite_index_for(&inner.favorites, &workspace, &bookmark);
         inner.workspace = workspace;
+        Self::mark_workspace_changed(inner);
         inner.entries.clear();
         inner.bookmark = bookmark;
         inner.current_file = None;
@@ -301,59 +319,76 @@ impl MarkerupBackend {
         let Some(session) = load_session() else {
             return;
         };
-        let Ok(mut inner) = self.locked() else {
-            return;
+        let favorite = {
+            let Ok(mut inner) = self.locked() else {
+                return;
+            };
+            inner.favorites = session.favorites.clone();
+            let Some(index) = session.active_favorite else {
+                return;
+            };
+            let Some(favorite) = inner.favorites.get(index).cloned() else {
+                return;
+            };
+            favorite
         };
-        inner.favorites = session.favorites;
-        let Some(index) = session.active_favorite else {
-            return;
-        };
-        let Some(favorite) = inner.favorites.get(index).cloned() else {
-            return;
-        };
+
         #[cfg(not(target_os = "ios"))]
-        {
-            if let SavedWorkspace::Local { path, .. } = favorite.workspace
-                && let Ok(workspace) = LocalWorkspace::open(path)
-            {
-                Self::install_workspace(&mut inner, WorkspaceSlot::local(workspace), None);
-                let _ = Self::refresh_entries(&mut inner);
-                if let Some(id) = session.current_file {
-                    let _ = Self::open_note_locked(&mut inner, id, false);
-                }
+        let installed = match favorite.workspace {
+            SavedWorkspace::Local { path, .. } => {
+                LocalWorkspace::open(path).ok().and_then(|workspace| {
+                    let entries = workspace.entries().ok()?;
+                    Some((WorkspaceSlot::local(workspace), None, entries))
+                })
             }
-        }
+            SavedWorkspace::Smb(_) => None,
+        };
+
         #[cfg(target_os = "ios")]
-        {
-            if let SavedWorkspace::Smb(smb) = favorite.workspace {
+        let installed = match favorite.workspace {
+            SavedWorkspace::Smb(smb) => {
                 let account = format!(
                     "{}\n{}\n{}\n{}",
                     smb.server, smb.share, smb.username, smb.remote_path
                 );
-                if let Some(password) = crate::ios_bridge::load_smb_password(&account) {
-                    let config = SmbConnectionConfig {
+                crate::ios_bridge::load_smb_password(&account).and_then(|password| {
+                    let workspace = SmbWorkspace::connect(SmbConnectionConfig {
                         server: smb.server,
                         share: smb.share,
                         username: smb.username,
                         password,
                         remote_path: smb.remote_path,
-                    };
-                    if let Ok(workspace) = SmbWorkspace::connect(config) {
-                        Self::install_workspace(&mut inner, WorkspaceSlot::smb(workspace), None);
-                        let _ = Self::refresh_entries(&mut inner);
-                    }
-                }
-            } else if let SavedWorkspace::Local {
+                    })
+                    .ok()?;
+                    let entries = workspace.entries().ok()?;
+                    Some((WorkspaceSlot::smb(workspace), None, entries))
+                })
+            }
+            SavedWorkspace::Local {
                 bookmark: Some(bookmark),
                 ..
-            } = favorite.workspace
-                && let Ok(selection) = crate::ios_bridge::resolve_bookmark(&bookmark)
-                && let Ok(workspace) = crate::ios_workspace::IosWorkspace::open(selection)
-            {
-                Self::install_workspace(&mut inner, WorkspaceSlot::ios(workspace), Some(bookmark));
-                let _ = Self::refresh_entries(&mut inner);
-            }
-            if let Some(id) = session.current_file {
+            } => crate::ios_bridge::resolve_bookmark(&bookmark)
+                .ok()
+                .and_then(|selection| {
+                    let workspace = crate::ios_workspace::IosWorkspace::open(selection).ok()?;
+                    let entries = workspace.entries().ok()?;
+                    Some((WorkspaceSlot::ios(workspace), Some(bookmark), entries))
+                }),
+            SavedWorkspace::Local { bookmark: None, .. } => None,
+        };
+
+        let Some((workspace, bookmark, entries)) = installed else {
+            return;
+        };
+        let Ok(mut inner) = self.locked() else {
+            return;
+        };
+        Self::install_workspace(&mut inner, workspace, bookmark);
+        inner.entries = entries;
+        drop(inner);
+
+        if let Some(id) = session.current_file {
+            if let Ok(mut inner) = self.locked() {
                 let _ = Self::open_note_locked(&mut inner, id, false);
             }
         }
@@ -500,20 +535,41 @@ pub fn refresh_workspace(
     editor_has_unsaved_changes: bool,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
+    let (workspace, revision, current_file, baseline) = {
+        let inner = state.locked()?;
+        (
+            inner.workspace.shared_clone(),
+            inner.workspace_revision,
+            inner.current_file.clone(),
+            inner.disk_text.clone(),
+        )
+    };
+    let disk = match (&workspace, &current_file) {
+        (Some(workspace), Some(file)) => {
+            Some(workspace.read(file).map_err(|error| error.to_string())?)
+        }
+        _ => None,
+    };
+    let entries = match workspace {
+        Some(workspace) => workspace.entries().map_err(|error| error.to_string())?,
+        None => Vec::new(),
+    };
     let mut inner = state.locked()?;
-    if let Some(file) = inner.current_file.clone() {
-        let disk = inner
-            .workspace
-            .read(&file)
-            .map_err(|error| error.to_string())?;
-        if disk != inner.disk_text && editor_has_unsaved_changes {
+    if inner.workspace_revision != revision
+        || inner.current_file != current_file
+        || inner.disk_text != baseline
+    {
+        return Ok(MarkerupBackend::snapshot(&inner));
+    }
+    if let Some(disk) = disk {
+        if disk != baseline && editor_has_unsaved_changes {
             inner.external_conflict = true;
-        } else if disk != inner.disk_text {
+        } else if disk != baseline {
             inner.disk_text = disk;
             inner.external_conflict = false;
         }
     }
-    MarkerupBackend::refresh_entries(&mut inner)?;
+    inner.entries = entries;
     Ok(MarkerupBackend::snapshot(&inner))
 }
 
@@ -522,9 +578,12 @@ pub fn search_workspace(
     query: String,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<Vec<EntryId>, String> {
-    state
+    let workspace = state
         .locked()?
         .workspace
+        .shared_clone()
+        .ok_or_else(|| "No workspace is open".to_string())?;
+    workspace
         .search_markdown(&query)
         .map_err(|error| error.to_string())
 }
@@ -533,11 +592,12 @@ pub fn search_workspace(
 pub fn workspace_assets(
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<Vec<WorkspaceEntry>, String> {
-    state
+    let workspace = state
         .locked()?
         .workspace
-        .asset_entries()
-        .map_err(|error| error.to_string())
+        .shared_clone()
+        .ok_or_else(|| "No workspace is open".to_string())?;
+    workspace.asset_entries().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -546,12 +606,17 @@ pub fn create_note(
     name: String,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<NotePayload, String> {
+    let id = {
+        let mut inner = state.locked()?;
+        let id = inner
+            .workspace
+            .create_note(&parent, &name)
+            .map_err(|error| error.to_string())?;
+        MarkerupBackend::mark_workspace_changed(&mut inner);
+        id
+    };
+    state.refresh_entries()?;
     let mut inner = state.locked()?;
-    let id = inner
-        .workspace
-        .create_note(&parent, &name)
-        .map_err(|error| error.to_string())?;
-    MarkerupBackend::refresh_entries(&mut inner)?;
     MarkerupBackend::open_note_locked(&mut inner, id, true)
 }
 
@@ -561,12 +626,16 @@ pub fn create_folder(
     name: String,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
-    let mut inner = state.locked()?;
-    inner
-        .workspace
-        .create_directory(&parent, &name)
-        .map_err(|error| error.to_string())?;
-    MarkerupBackend::refresh_entries(&mut inner)?;
+    {
+        let mut inner = state.locked()?;
+        inner
+            .workspace
+            .create_directory(&parent, &name)
+            .map_err(|error| error.to_string())?;
+        MarkerupBackend::mark_workspace_changed(&mut inner);
+    }
+    state.refresh_entries()?;
+    let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
 }
 
@@ -576,17 +645,21 @@ pub fn rename_entry(
     name: String,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
-    let mut inner = state.locked()?;
-    let new_id = inner
-        .workspace
-        .rename(&id, &name)
-        .map_err(|error| error.to_string())?;
-    inner.navigation.rebase(&id, &new_id);
-    if inner.current_file.as_deref() == Some(id.as_str()) {
-        inner.current_file = Some(new_id);
+    {
+        let mut inner = state.locked()?;
+        let new_id = inner
+            .workspace
+            .rename(&id, &name)
+            .map_err(|error| error.to_string())?;
+        inner.navigation.rebase(&id, &new_id);
+        if inner.current_file.as_deref() == Some(id.as_str()) {
+            inner.current_file = Some(new_id);
+        }
+        MarkerupBackend::mark_workspace_changed(&mut inner);
+        MarkerupBackend::persist(&inner);
     }
-    MarkerupBackend::persist(&inner);
-    MarkerupBackend::refresh_entries(&mut inner)?;
+    state.refresh_entries()?;
+    let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
 }
 
@@ -596,26 +669,30 @@ pub fn move_entry(
     destination_parent: String,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
-    let mut inner = state.locked()?;
-    let new_id = inner
-        .workspace
-        .move_entry(&id, &destination_parent)
-        .map_err(|error| error.to_string())?;
-    inner.navigation.rebase(&id, &new_id);
-    if inner.current_file.as_deref() == Some(id.as_str()) {
-        inner.current_file = Some(new_id.clone());
-    } else if inner
-        .current_file
-        .as_deref()
-        .is_some_and(|file| file.starts_with(&(id.clone() + "/")))
     {
-        inner.current_file = inner
+        let mut inner = state.locked()?;
+        let new_id = inner
+            .workspace
+            .move_entry(&id, &destination_parent)
+            .map_err(|error| error.to_string())?;
+        inner.navigation.rebase(&id, &new_id);
+        if inner.current_file.as_deref() == Some(id.as_str()) {
+            inner.current_file = Some(new_id.clone());
+        } else if inner
             .current_file
-            .take()
-            .map(|file| format!("{}{}", new_id, &file[id.len()..]));
+            .as_deref()
+            .is_some_and(|file| file.starts_with(&(id.clone() + "/")))
+        {
+            inner.current_file = inner
+                .current_file
+                .take()
+                .map(|file| format!("{}{}", new_id, &file[id.len()..]));
+        }
+        MarkerupBackend::mark_workspace_changed(&mut inner);
+        MarkerupBackend::persist(&inner);
     }
-    MarkerupBackend::persist(&inner);
-    MarkerupBackend::refresh_entries(&mut inner)?;
+    state.refresh_entries()?;
+    let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
 }
 
@@ -624,23 +701,27 @@ pub fn delete_entry(
     id: String,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<WorkspaceSnapshot, String> {
-    let mut inner = state.locked()?;
-    inner
-        .workspace
-        .delete(&id)
-        .map_err(|error| error.to_string())?;
-    inner.navigation.remove(&id);
-    if inner.current_file.as_deref() == Some(id.as_str())
-        || inner
-            .current_file
-            .as_deref()
-            .is_some_and(|file| file.starts_with(&(id.clone() + "/")))
     {
-        inner.current_file = None;
-        inner.disk_text.clear();
+        let mut inner = state.locked()?;
+        inner
+            .workspace
+            .delete(&id)
+            .map_err(|error| error.to_string())?;
+        inner.navigation.remove(&id);
+        if inner.current_file.as_deref() == Some(id.as_str())
+            || inner
+                .current_file
+                .as_deref()
+                .is_some_and(|file| file.starts_with(&(id.clone() + "/")))
+        {
+            inner.current_file = None;
+            inner.disk_text.clear();
+        }
+        MarkerupBackend::mark_workspace_changed(&mut inner);
+        MarkerupBackend::persist(&inner);
     }
-    MarkerupBackend::persist(&inner);
-    MarkerupBackend::refresh_entries(&mut inner)?;
+    state.refresh_entries()?;
+    let inner = state.locked()?;
     Ok(MarkerupBackend::snapshot(&inner))
 }
 
@@ -836,13 +917,20 @@ pub fn workspace_asset_data(
     link: String,
     state: tauri::State<'_, MarkerupBackend>,
 ) -> Result<Option<String>, String> {
-    let inner = state.locked()?;
-    let current = MarkerupBackend::current_file(&inner)?;
-    let Some(id) = inner.workspace.resolve_asset_link(&current, &link) else {
+    let (workspace, current) = {
+        let inner = state.locked()?;
+        (
+            inner
+                .workspace
+                .shared_clone()
+                .ok_or_else(|| "No workspace is open".to_string())?,
+            MarkerupBackend::current_file(&inner)?,
+        )
+    };
+    let Some(id) = workspace.resolve_asset_link(&current, &link) else {
         return Ok(None);
     };
-    let data = inner
-        .workspace
+    let data = workspace
         .asset_bytes(&id)
         .map_err(|error| error.to_string())?;
     let mime = match std::path::Path::new(&id)
