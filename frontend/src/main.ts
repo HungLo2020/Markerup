@@ -27,7 +27,8 @@ let saveTimer: number | undefined;
 let saveInFlight: Promise<void> | undefined;
 let retryTimer: number | undefined;
 let saveBlockedUntilReload = false;
-let editor: EditorView;
+let editor: EditorView | undefined;
+let editorState: EditorState | undefined;
 let page: "main" | "settings" | "location" | "smb" | "about" = "main";
 let editorMode: "source" | "live" | "split" | "preview" = "split";
 const collapsedDirectories = new Set<string>();
@@ -60,6 +61,7 @@ const iosDevice = () => /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 function renderShell() {
+  disposeEditor();
   app.innerHTML = `<header><button id="menu" class="icon-button" aria-label="Toggle workspace"><img src="${menuIcon}" alt=""></button><strong>Markerup</strong><span id="location">${escape(snapshot?.workspacePath ?? "No workspace")}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" class="icon-button" aria-label="Settings"><img src="${settingsIcon}" alt=""></button></header><main id="content"></main><footer id="status">Ready</footer>`;
   document.querySelector("#menu")!.addEventListener("click", () => document.body.classList.toggle("sidebar-hidden"));
   document.querySelector("#settings")!.addEventListener("click", () => { page = "settings"; renderPage(); });
@@ -69,6 +71,7 @@ function renderShell() {
 }
 
 function renderPage() {
+  disposeEditor();
   const content = document.querySelector<HTMLElement>("#content")!;
   if (page === "settings") { content.innerHTML = panel("Settings", `<button id="location-settings">Location</button><button id="about">About</button>`); document.querySelector("#location-settings")!.addEventListener("click",()=>{page="location";renderPage()}); document.querySelector("#about")!.addEventListener("click",()=>{page="about";renderPage()}); return; }
   if (page === "location") {
@@ -215,9 +218,19 @@ function renderTree(entries = snapshot?.entries ?? []) {
   }));
   tree.querySelectorAll<HTMLButtonElement>(".entry-actions").forEach(b=>b.addEventListener("click",()=>entryActions(b.dataset.id!, b.dataset.kind === "Directory")));
 }
+function disposeEditor() {
+  if (!editor) return;
+  editorState = editor.state;
+  editor.destroy();
+  editor = undefined;
+}
 function setupEditor() {
   const host=document.querySelector<HTMLElement>("#editor")!;
-  editor = new EditorView({ state: EditorState.create({ doc: currentText, extensions: [liveDecorations, history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();clearLiveDecorations();scheduleSave();void refreshPreview();} else if(update.selectionSet && editorMode === "live"){updateLiveDecorations(latestBlocks);}})] }), parent:host });
+  const state = editorState && editorState.doc.toString() === currentText
+    ? editorState
+    : EditorState.create({ doc: currentText, extensions: [liveDecorations, history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();editorState=update.state;clearLiveDecorations();scheduleSave();void refreshPreview();} else if(update.selectionSet && editorMode === "live"){editorState=update.state;updateLiveDecorations(latestBlocks);}})] });
+  editor = new EditorView({ state, parent:host });
+  editorState = editor.state;
   if (!iosDevice()) host.addEventListener("contextmenu", event => {
     event.preventDefault();
     void showInsertMenu();
@@ -243,7 +256,7 @@ function openNoteView(note: Note) {
   }
   loadNote(note);
 }
-function loadNote(note:Note){ if(saveTimer) clearTimeout(saveTimer); if(retryTimer) clearTimeout(retryTimer); saveBlockedUntilReload=false; snapshot=note.snapshot; currentText=savedText=note.contents; renderShell(); renderPage(); status("Saved"); }
+function loadNote(note:Note){ if(saveTimer) clearTimeout(saveTimer); if(retryTimer) clearTimeout(retryTimer); saveBlockedUntilReload=false; snapshot=note.snapshot; currentText=savedText=note.contents; editorState=undefined; renderShell(); renderPage(); status("Saved"); }
 function scheduleSave(delay=750){
   if(saveBlockedUntilReload) {
     status("Reload this note before saving again");
@@ -367,13 +380,15 @@ function relativeMarkdownPath(target: string) {
   return encodeMarkdownPath([...currentParts.map(() => ".."), ...targetParts].join("/") || ".");
 }
 function insertAtSelection(text: string) {
-  const selection = editor.state.selection.main;
-  editor.dispatch({
+  const currentEditor = editor;
+  if (!currentEditor) return;
+  const selection = currentEditor.state.selection.main;
+  currentEditor.dispatch({
     changes: { from: selection.from, to: selection.to, insert: text },
     selection: { anchor: selection.from + text.length },
     userEvent: "input.insert",
   });
-  editor.focus();
+  currentEditor.focus();
 }
 function chooseNoteTarget(): Promise<Entry | undefined> {
   return new Promise(resolve => {
@@ -565,7 +580,9 @@ async function toggleLiveTask(block: Block) {
   try {
     if (typeof block.taskOffset !== "number") throw new Error("Markdown task has no source offset");
     const source = await call<string>("toggle_markdown_task", { source: currentText, taskOffset: block.taskOffset });
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: source }, userEvent: "input.toggleTask" });
+    const currentEditor = editor;
+    if (!currentEditor) throw new Error("The editor is no longer available");
+    currentEditor.dispatch({ changes: { from: 0, to: currentEditor.state.doc.length, insert: source }, userEvent: "input.toggleTask" });
     await flushSave();
   } catch (error) {
     status(String(error));
