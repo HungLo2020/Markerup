@@ -29,11 +29,16 @@ let retryTimer: number | undefined;
 let saveBlockedUntilReload = false;
 let editor: EditorView | undefined;
 let editorState: EditorState | undefined;
+let previewTimer: number | undefined;
 let page: "main" | "settings" | "location" | "smb" | "about" = "main";
 let editorMode: "source" | "live" | "split" | "preview" = "split";
 const collapsedDirectories = new Set<string>();
 let previewGeneration = 0;
 let latestBlocks: Block[] = [];
+const markdownHtmlCache = new Map<string, string>();
+const mermaidCache = new Map<string, Promise<string>>();
+const assetSourceCache = new Map<string, Promise<string>>();
+const MAX_RENDER_CACHE_ENTRIES = 64;
 
 const setLiveDecorations = StateEffect.define<DecorationSet>();
 const liveDecorations = StateField.define<DecorationSet>({
@@ -60,6 +65,23 @@ const mobileLayout = () => window.matchMedia("(max-width: 700px)").matches;
 const iosDevice = () => /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
+function cancelScheduledPreview() {
+  previewGeneration += 1;
+  if (previewTimer !== undefined) {
+    clearTimeout(previewTimer);
+    previewTimer = undefined;
+  }
+}
+
+function schedulePreview(delay = 150) {
+  cancelScheduledPreview();
+  const generation = previewGeneration;
+  previewTimer = window.setTimeout(() => {
+    previewTimer = undefined;
+    void refreshPreview(generation);
+  }, delay);
+}
+
 function renderShell() {
   disposeEditor();
   app.innerHTML = `<header><button id="menu" class="icon-button" aria-label="Toggle workspace"><img src="${menuIcon}" alt=""></button><strong>Markerup</strong><span id="location">${escape(snapshot?.workspacePath ?? "No workspace")}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" class="icon-button" aria-label="Settings"><img src="${settingsIcon}" alt=""></button></header><main id="content"></main><footer id="status">Ready</footer>`;
@@ -71,6 +93,8 @@ function renderShell() {
 }
 
 function renderPage() {
+  cancelScheduledPreview();
+  latestBlocks = [];
   disposeEditor();
   const content = document.querySelector<HTMLElement>("#content")!;
   if (page === "settings") { content.innerHTML = panel("Settings", `<button id="location-settings">Location</button><button id="about">About</button>`); document.querySelector("#location-settings")!.addEventListener("click",()=>{page="location";renderPage()}); document.querySelector("#about")!.addEventListener("click",()=>{page="about";renderPage()}); return; }
@@ -102,7 +126,7 @@ function renderPage() {
     editorMode = (event.target as HTMLSelectElement).value as typeof editorMode;
     applyMode();
   });
-  renderTree(); setupEditor(); void refreshPreview(); applyMode();
+  renderTree(); setupEditor(); schedulePreview(0); applyMode();
 }
 function panel(title:string, body:string) { return `<section class="panel"><button id="panel-back">← Back</button><h1>${title}</h1>${body}</section>`; }
 document.addEventListener("click", event => {
@@ -228,7 +252,7 @@ function setupEditor() {
   const host=document.querySelector<HTMLElement>("#editor")!;
   const state = editorState && editorState.doc.toString() === currentText
     ? editorState
-    : EditorState.create({ doc: currentText, extensions: [liveDecorations, history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();editorState=update.state;clearLiveDecorations();scheduleSave();void refreshPreview();} else if(update.selectionSet && editorMode === "live"){editorState=update.state;updateLiveDecorations(latestBlocks);}})] });
+    : EditorState.create({ doc: currentText, extensions: [liveDecorations, history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();editorState=update.state;clearLiveDecorations();scheduleSave();schedulePreview();} else if(update.selectionSet && editorMode === "live"){editorState=update.state;updateLiveDecorations(latestBlocks);}})] });
   editor = new EditorView({ state, parent:host });
   editorState = editor.state;
   if (!iosDevice()) host.addEventListener("contextmenu", event => {
@@ -309,7 +333,7 @@ async function saveBeforeChangingNote(): Promise<boolean> {
   status("Unsaved changes must be resolved before leaving this note");
   return false;
 }
-async function refresh(){ await flushSave(); try { snapshot=await call<Snapshot>("refresh_workspace",{editorHasUnsavedChanges:currentText!==savedText}); renderShell(); renderPage(); status("Workspace refreshed"); } catch(error){status(`Refresh failed: ${error}`)} }
+async function refresh(){ await flushSave(); try { assetSourceCache.clear(); snapshot=await call<Snapshot>("refresh_workspace",{editorHasUnsavedChanges:currentText!==savedText}); renderShell(); renderPage(); status("Workspace refreshed"); } catch(error){status(`Refresh failed: ${error}`)} }
 async function navigate(command:string){ if(!await saveBeforeChangingNote()) return; const note=await call<Note|null>(command); if(note) loadNote(note); }
 async function chooseLocal(){
   if(!await saveBeforeChangingNote()) return;
@@ -544,12 +568,47 @@ async function entryActions(id:string,isDirectory:boolean){
   }catch(error){status(String(error))}
 }
 async function search(){ const query=(document.querySelector<HTMLInputElement>("#search")?.value ?? "").trim(); if(!query)return renderTree(); try {const ids=await call<string[]>("search_workspace",{query});renderTree((snapshot?.entries??[]).filter(e=>ids.includes(e.id)));}catch(error){status(String(error))} }
+function rememberRenderPromise(cache: Map<string, Promise<string>>, key: string, create: () => Promise<string>) {
+  const cached = cache.get(key);
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached;
+  }
+  const promise = create().catch(error => {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, promise);
+  while (cache.size > MAX_RENDER_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  return promise;
+}
+
 async function imageSource(link: string): Promise<string> {
   if (/^(data:|https?:|blob:)/i.test(link)) return link;
-  return await call<string | null>("workspace_asset_data", {link}) ?? link;
+  const key = `${snapshot?.workspacePath ?? ""}\0${snapshot?.currentFile ?? ""}\0${link}`;
+  return rememberRenderPromise(assetSourceCache, key, async () =>
+    await call<string | null>("workspace_asset_data", {link}) ?? link
+  );
 }
 async function renderMarkdown(markdownSource: string): Promise<string> {
-  const html = DOMPurify.sanitize(await marked.parse(markdownSource));
+  let html = markdownHtmlCache.get(markdownSource);
+  if (html === undefined) {
+    html = DOMPurify.sanitize(await marked.parse(markdownSource));
+    markdownHtmlCache.set(markdownSource, html);
+    while (markdownHtmlCache.size > MAX_RENDER_CACHE_ENTRIES) {
+      const oldest = markdownHtmlCache.keys().next().value;
+      if (oldest === undefined) break;
+      markdownHtmlCache.delete(oldest);
+    }
+  } else {
+    markdownHtmlCache.delete(markdownSource);
+    markdownHtmlCache.set(markdownSource, html);
+  }
   const container = document.createElement("div");
   container.innerHTML = html;
   await Promise.all(Array.from(container.querySelectorAll<HTMLImageElement>("img[src]")).map(async image => {
@@ -588,7 +647,8 @@ async function toggleLiveTask(block: Block) {
     status(String(error));
   }
 }
-async function renderLiveBlock(block: Block, container: HTMLElement) {
+async function renderLiveBlock(block: Block, container: HTMLElement, isCurrent = () => true) {
+  if (!isCurrent()) return false;
   const kind = blockKind(block);
   container.className = "live-block";
   if (kind.includes("Task")) {
@@ -600,31 +660,44 @@ async function renderLiveBlock(block: Block, container: HTMLElement) {
     const text = document.createElement("span");
     label.append(checkbox, text);
     container.append(label);
-    text.innerHTML = await renderMarkdown(block.markdown);
+    const html = await renderMarkdown(block.markdown);
+    if (!isCurrent()) return false;
+    text.innerHTML = html;
     checkbox.addEventListener("change", () => void toggleLiveTask(block));
   } else if (kind.includes("Mermaid")) {
     container.className = "live-block mermaid";
     try {
-      container.innerHTML = DOMPurify.sanitize(await call<string>("render_mermaid", { source: block.markdown }), { USE_PROFILES: { svg: true, svgFilters: true } });
+      const svg = await rememberRenderPromise(mermaidCache, block.markdown, async () =>
+        DOMPurify.sanitize(await call<string>("render_mermaid", { source: block.markdown }), { USE_PROFILES: { svg: true, svgFilters: true } })
+      );
+      if (!isCurrent()) return false;
+      container.innerHTML = svg;
     } catch (error) {
+      if (!isCurrent()) return false;
       container.className = "live-block mermaid-error";
       container.textContent = "Mermaid error: " + error;
     }
   } else if (kind.includes("Image") && block.image) {
     const image = document.createElement("img");
     image.alt = block.image.alt;
-    image.src = await imageSource(block.image.destination);
+    const source = await imageSource(block.image.destination);
+    if (!isCurrent()) return false;
+    image.src = source;
     container.append(image);
   } else if (kind.includes("Heading")) {
     const match = kind.match(/Heading[^0-9]*(\d+)/);
     const heading = document.createElement("h" + Math.min(6, Math.max(1, Number(match?.[1] ?? 1))));
-    heading.innerHTML = await renderMarkdown(block.markdown);
+    const html = await renderMarkdown(block.markdown);
+    if (!isCurrent()) return false;
+    heading.innerHTML = html;
     container.append(heading);
   } else if (kind.includes("Rule")) {
     container.innerHTML = "<hr>";
   } else if (kind.includes("Quote")) {
     const quote = document.createElement("blockquote");
-    quote.innerHTML = await renderMarkdown(block.markdown);
+    const html = await renderMarkdown(block.markdown);
+    if (!isCurrent()) return false;
+    quote.innerHTML = html;
     container.append(quote);
   } else if (kind.includes("Code")) {
     const pre = document.createElement("pre");
@@ -633,15 +706,24 @@ async function renderLiveBlock(block: Block, container: HTMLElement) {
     pre.append(code);
     container.append(pre);
   } else {
-    container.innerHTML = await renderMarkdown(block.markdown);
+    const html = await renderMarkdown(block.markdown);
+    if (!isCurrent()) return false;
+    container.innerHTML = html;
   }
+  if (!isCurrent()) return false;
   attachRenderedLinks(container);
+  return true;
 }
 class LiveBlockWidget extends WidgetType {
-  constructor(private readonly block: Block) { super(); }
+  constructor(private readonly block: Block, private readonly generation: number) { super(); }
   toDOM() {
     const container = document.createElement("div");
-    void renderLiveBlock(this.block, container);
+    const isCurrent = () => this.generation === previewGeneration && editorMode === "live";
+    void renderLiveBlock(this.block, container, isCurrent).catch(error => {
+      if (!isCurrent()) return;
+      container.className = "live-block render-error";
+      container.textContent = "Preview error: " + error;
+    });
     return container;
   }
   ignoreEvent() { return true; }
@@ -659,7 +741,7 @@ function updateLiveDecorations(blocks: Block[]) {
     if (currentText[to] === "\r") to += 1;
     if (currentText[to] === "\n") to += 1;
     if (from < lastTo || to > editor.state.doc.length) continue;
-    ranges.push({ from, to, value: Decoration.replace({ widget: new LiveBlockWidget(block), block: true }) });
+    ranges.push({ from, to, value: Decoration.replace({ widget: new LiveBlockWidget(block, previewGeneration), block: true }) });
     lastTo = to;
   }
   editor.dispatch({ effects: setLiveDecorations.of(Decoration.set(ranges, true)) });
@@ -685,21 +767,30 @@ function attachRenderedLinks(root: HTMLElement) {
     });
   });
 }
-async function refreshPreview() {
+async function refreshPreview(generation: number) {
   const preview = document.querySelector<HTMLElement>("#preview");
-  const generation = ++previewGeneration;
-  const result = await call<{blocks: Block[]}>("preview_document", { source: currentText });
-  if (generation !== previewGeneration) return;
-  latestBlocks = result.blocks;
-  if (editorMode === "live") updateLiveDecorations(result.blocks);
-  if (!preview) return;
-  preview.innerHTML = "";
-  for (const block of result.blocks) {
-    const element = document.createElement("section");
-    await renderLiveBlock(block, element);
-    preview.append(element);
+  try {
+    const result = await call<{blocks: Block[]}>("preview_document", { source: currentText });
+    if (generation !== previewGeneration) return;
+    latestBlocks = result.blocks;
+    if (editorMode === "live") updateLiveDecorations(result.blocks);
+    if (!preview) return;
+    const fragment = document.createDocumentFragment();
+    for (const block of result.blocks) {
+      if (generation !== previewGeneration) return;
+      const element = document.createElement("section");
+      const rendered = await renderLiveBlock(block, element, () => generation === previewGeneration);
+      if (!rendered || generation !== previewGeneration) return;
+      fragment.append(element);
+    }
+    if (generation !== previewGeneration) return;
+    preview.className = "";
+    preview.replaceChildren(fragment);
+  } catch (error) {
+    if (generation !== previewGeneration || !preview) return;
+    preview.className = "preview-error";
+    preview.textContent = "Preview failed: " + error;
   }
-  attachRenderedLinks(preview);
 }
 window.addEventListener("beforeunload",()=>void flushSave()); document.addEventListener("visibilitychange",()=>{if(document.hidden)void flushSave()});
 async function start(){ renderShell(); try{snapshot=await call<Snapshot>("workspace_snapshot");renderShell();renderPage();}catch(error){status(`Startup failed: ${error}`)} }
