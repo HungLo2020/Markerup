@@ -595,10 +595,18 @@ async function imageSource(link: string): Promise<string> {
     await call<string | null>("workspace_asset_data", {link}) ?? link
   );
 }
+async function resolveRenderedImages(html: string): Promise<string> {
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  await Promise.all(Array.from(container.querySelectorAll<HTMLImageElement>("img[src]")).map(async image => {
+    image.src = await imageSource(image.getAttribute("src") ?? "");
+  }));
+  return container.innerHTML;
+}
 async function renderMarkdown(markdownSource: string): Promise<string> {
   let html = markdownHtmlCache.get(markdownSource);
   if (html === undefined) {
-    html = DOMPurify.sanitize(await marked.parse(markdownSource));
+    html = DOMPurify.sanitize(await marked.parse(markdownSource, { gfm: true, breaks: true }));
     markdownHtmlCache.set(markdownSource, html);
     while (markdownHtmlCache.size > MAX_RENDER_CACHE_ENTRIES) {
       const oldest = markdownHtmlCache.keys().next().value;
@@ -609,12 +617,11 @@ async function renderMarkdown(markdownSource: string): Promise<string> {
     markdownHtmlCache.delete(markdownSource);
     markdownHtmlCache.set(markdownSource, html);
   }
-  const container = document.createElement("div");
-  container.innerHTML = html;
-  await Promise.all(Array.from(container.querySelectorAll<HTMLImageElement>("img[src]")).map(async image => {
-    image.src = await imageSource(image.getAttribute("src") ?? "");
-  }));
-  return container.innerHTML;
+  return resolveRenderedImages(html);
+}
+async function renderInlineMarkdown(markdownSource: string): Promise<string> {
+  const html = DOMPurify.sanitize(await marked.parseInline(markdownSource, { gfm: true, breaks: true }));
+  return resolveRenderedImages(html);
 }
 function clearLiveDecorations() {
   if (editor && editor.state.field(liveDecorations, false)) {
@@ -634,6 +641,14 @@ function byteOffsetToJsOffset(source: string, byteOffset: number) {
 }
 function blockKind(block: Block) {
   return JSON.stringify(block.kind);
+}
+function blockMarkdownSource(block: Block) {
+  const kind = blockKind(block);
+  if (!kind.includes("List") && !kind.includes("Table")) return block.markdown;
+  if (!block.sourceRange) return block.markdown;
+  const from = byteOffsetToJsOffset(currentText, block.sourceRange.start);
+  const to = byteOffsetToJsOffset(currentText, block.sourceRange.end);
+  return currentText.slice(from, to);
 }
 async function toggleLiveTask(block: Block) {
   try {
@@ -660,7 +675,7 @@ async function renderLiveBlock(block: Block, container: HTMLElement, isCurrent =
     const text = document.createElement("span");
     label.append(checkbox, text);
     container.append(label);
-    const html = await renderMarkdown(block.markdown);
+    const html = await renderInlineMarkdown(block.markdown);
     if (!isCurrent()) return false;
     text.innerHTML = html;
     checkbox.addEventListener("change", () => void toggleLiveTask(block));
@@ -687,7 +702,7 @@ async function renderLiveBlock(block: Block, container: HTMLElement, isCurrent =
   } else if (kind.includes("Heading")) {
     const match = kind.match(/Heading[^0-9]*(\d+)/);
     const heading = document.createElement("h" + Math.min(6, Math.max(1, Number(match?.[1] ?? 1))));
-    const html = await renderMarkdown(block.markdown);
+    const html = await renderInlineMarkdown(block.markdown);
     if (!isCurrent()) return false;
     heading.innerHTML = html;
     container.append(heading);
@@ -706,7 +721,7 @@ async function renderLiveBlock(block: Block, container: HTMLElement, isCurrent =
     pre.append(code);
     container.append(pre);
   } else {
-    const html = await renderMarkdown(block.markdown);
+    const html = await renderMarkdown(blockMarkdownSource(block));
     if (!isCurrent()) return false;
     container.innerHTML = html;
   }
@@ -726,7 +741,13 @@ class LiveBlockWidget extends WidgetType {
     });
     return container;
   }
-  ignoreEvent() { return true; }
+  ignoreEvent(event: Event) {
+    // Let clicks on rendered text reach CodeMirror so it can place the
+    // cursor in the replaced source range. Interactive rendered controls
+    // handle their own events and must not move the source cursor underneath.
+    const target = event.target;
+    return target instanceof Element && !!target.closest("a,button,input,select,textarea");
+  }
 }
 function updateLiveDecorations(blocks: Block[]) {
   if (!editor || editorMode !== "live") return;

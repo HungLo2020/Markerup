@@ -72,9 +72,9 @@ pub fn preview_document(source: &str) -> PreviewDocument {
         Node::Root(root) => root
             .children
             .iter()
-            .flat_map(|node| block_from_node(node, source))
+            .flat_map(|node| block_from_node(node, source, &definitions))
             .collect(),
-        node => block_from_node(node, source).collect(),
+        node => block_from_node(node, source, &definitions).collect(),
     };
     PreviewDocument {
         blocks: parsed_blocks,
@@ -82,36 +82,37 @@ pub fn preview_document(source: &str) -> PreviewDocument {
     }
 }
 
-fn block_from_node(node: &Node, source: &str) -> std::vec::IntoIter<PreviewBlock> {
+fn block_from_node(
+    node: &Node,
+    source: &str,
+    definitions: &std::collections::HashMap<String, String>,
+) -> std::vec::IntoIter<PreviewBlock> {
     let source_range = source_range(node);
     let block = match node {
         Node::Heading(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Heading(value.depth),
-            markdown: inline_markdown(&value.children),
+            markdown: inline_markdown(&value.children, definitions),
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
         }),
         Node::Paragraph(value)
-            if value.children.len() == 1 && matches!(value.children[0], Node::Image(_)) =>
+            if value.children.len() == 1
+                && image_reference_from_node(&value.children[0], definitions).is_some() =>
         {
-            let Node::Image(image) = &value.children[0] else {
-                unreachable!()
-            };
+            let image = image_reference_from_node(&value.children[0], definitions)
+                .expect("image guard should provide an image reference");
             Some(PreviewBlock {
                 kind: PreviewBlockKind::Image,
                 markdown: image.alt.clone(),
-                image: Some(ImageReference {
-                    alt: image.alt.clone(),
-                    destination: image.url.clone(),
-                }),
+                image: Some(image),
                 task_offset: None,
                 source_range: source_range.clone(),
             })
         }
         Node::Paragraph(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Body,
-            markdown: inline_markdown(&value.children),
+            markdown: inline_markdown(&value.children, definitions),
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
@@ -139,11 +140,11 @@ fn block_from_node(node: &Node, source: &str) -> std::vec::IntoIter<PreviewBlock
         }),
         Node::List(value) => {
             if is_task_list(value) {
-                return task_blocks_from_list(value, source).into_iter();
+                return task_blocks_from_list(value, source, definitions).into_iter();
             }
             Some(PreviewBlock {
                 kind: PreviewBlockKind::List(value.ordered),
-                markdown: list_markdown(value),
+                markdown: list_markdown(value, definitions),
                 image: None,
                 task_offset: None,
                 source_range: source_range.clone(),
@@ -154,9 +155,9 @@ fn block_from_node(node: &Node, source: &str) -> std::vec::IntoIter<PreviewBlock
             markdown: value
                 .children
                 .iter()
-                .map(node_markdown)
+                .map(|node| node_markdown(node, definitions))
                 .collect::<Vec<_>>()
-                .join("\n"),
+                .join("\n\n"),
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
@@ -168,19 +169,17 @@ fn block_from_node(node: &Node, source: &str) -> std::vec::IntoIter<PreviewBlock
             task_offset: None,
             source_range: source_range.clone(),
         }),
-        Node::Image(value) => Some(PreviewBlock {
-            kind: PreviewBlockKind::Image,
-            markdown: value.alt.clone(),
-            image: Some(ImageReference {
-                alt: value.alt.clone(),
-                destination: value.url.clone(),
+        Node::Image(_) | Node::ImageReference(_) => image_reference_from_node(node, definitions)
+            .map(|image| PreviewBlock {
+                kind: PreviewBlockKind::Image,
+                markdown: image.alt.clone(),
+                image: Some(image),
+                task_offset: None,
+                source_range: source_range.clone(),
             }),
-            task_offset: None,
-            source_range: source_range.clone(),
-        }),
         Node::Table(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Table,
-            markdown: table_markdown(value),
+            markdown: table_markdown(value, definitions),
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
@@ -194,6 +193,13 @@ fn block_from_node(node: &Node, source: &str) -> std::vec::IntoIter<PreviewBlock
         }),
         Node::Toml(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Code,
+            markdown: value.value.clone(),
+            image: None,
+            task_offset: None,
+            source_range,
+        }),
+        Node::Html(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Body,
             markdown: value.value.clone(),
             image: None,
             task_offset: None,
@@ -250,6 +256,27 @@ fn collect_images(
     }
 }
 
+fn image_reference_from_node(
+    node: &Node,
+    definitions: &std::collections::HashMap<String, String>,
+) -> Option<ImageReference> {
+    match node {
+        Node::Image(image) => Some(ImageReference {
+            alt: image.alt.clone(),
+            destination: image.url.clone(),
+        }),
+        Node::ImageReference(image) => {
+            definitions
+                .get(&image.identifier)
+                .map(|destination| ImageReference {
+                    alt: image.alt.clone(),
+                    destination: destination.clone(),
+                })
+        }
+        _ => None,
+    }
+}
+
 fn is_task_list(list: &markdown::mdast::List) -> bool {
     !list.children.is_empty()
         && list
@@ -258,7 +285,11 @@ fn is_task_list(list: &markdown::mdast::List) -> bool {
             .all(|child| matches!(child, Node::ListItem(item) if item.checked.is_some()))
 }
 
-fn task_blocks_from_list(list: &markdown::mdast::List, source: &str) -> Vec<PreviewBlock> {
+fn task_blocks_from_list(
+    list: &markdown::mdast::List,
+    source: &str,
+    definitions: &std::collections::HashMap<String, String>,
+) -> Vec<PreviewBlock> {
     let mut blocks = Vec::new();
     for child in &list.children {
         let Node::ListItem(item) = child else {
@@ -271,7 +302,7 @@ fn task_blocks_from_list(list: &markdown::mdast::List, source: &str) -> Vec<Prev
             .children
             .iter()
             .filter(|child| !matches!(child, Node::List(_)))
-            .map(node_markdown)
+            .map(|node| node_markdown(node, definitions))
             .collect::<Vec<_>>()
             .join("\n");
         blocks.push(PreviewBlock {
@@ -294,7 +325,7 @@ fn task_blocks_from_list(list: &markdown::mdast::List, source: &str) -> Vec<Prev
             _ => None,
         }) {
             if is_task_list(nested) {
-                blocks.extend(task_blocks_from_list(nested, source));
+                blocks.extend(task_blocks_from_list(nested, source, definitions));
             }
         }
     }
@@ -351,7 +382,10 @@ pub fn toggle_task_at_offset(source: &str, task_offset: usize) -> Option<String>
     ))
 }
 
-fn list_markdown(list: &markdown::mdast::List) -> String {
+fn list_markdown(
+    list: &markdown::mdast::List,
+    definitions: &std::collections::HashMap<String, String>,
+) -> String {
     list.children
         .iter()
         .enumerate()
@@ -372,15 +406,21 @@ fn list_markdown(list: &markdown::mdast::List) -> String {
                 "{}{}{}",
                 marker,
                 check,
-                item.children.iter().map(node_markdown).collect::<String>()
+                item.children
+                    .iter()
+                    .map(|node| node_markdown(node, definitions))
+                    .collect::<String>()
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn table_markdown(table: &markdown::mdast::Table) -> String {
-    table
+fn table_markdown(
+    table: &markdown::mdast::Table,
+    definitions: &std::collections::HashMap<String, String>,
+) -> String {
+    let rows = table
         .children
         .iter()
         .map(|row| {
@@ -389,56 +429,99 @@ fn table_markdown(table: &markdown::mdast::Table) -> String {
             };
             row.children
                 .iter()
-                .map(node_markdown)
+                .map(|node| node_markdown(node, definitions))
                 .collect::<Vec<_>>()
                 .join(" | ")
         })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return String::new();
+    }
+    let separator = table
+        .align
+        .iter()
+        .map(|alignment| match alignment {
+            markdown::mdast::AlignKind::Left => ":---",
+            markdown::mdast::AlignKind::Right => "---:",
+            markdown::mdast::AlignKind::Center => ":---:",
+            markdown::mdast::AlignKind::None => "---",
+        })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join(" | ");
+    let mut output = Vec::with_capacity(rows.len() + 1);
+    output.push(rows[0].clone());
+    output.push(separator);
+    output.extend(rows.into_iter().skip(1));
+    output.join("\n")
 }
 
-fn inline_markdown(nodes: &[Node]) -> String {
-    nodes.iter().map(node_markdown).collect()
+fn inline_markdown(
+    nodes: &[Node],
+    definitions: &std::collections::HashMap<String, String>,
+) -> String {
+    nodes
+        .iter()
+        .map(|node| node_markdown(node, definitions))
+        .collect()
 }
 
-fn node_markdown(node: &Node) -> String {
+fn node_markdown(node: &Node, definitions: &std::collections::HashMap<String, String>) -> String {
     match node {
-        Node::Paragraph(value) => inline_markdown(&value.children),
-        Node::Heading(value) => inline_markdown(&value.children),
+        Node::Paragraph(value) => inline_markdown(&value.children, definitions),
+        Node::Heading(value) => inline_markdown(&value.children, definitions),
         Node::Blockquote(value) => value
             .children
             .iter()
-            .map(node_markdown)
+            .map(|node| node_markdown(node, definitions))
             .collect::<Vec<_>>()
-            .join("\n"),
-        Node::List(value) => list_markdown(value),
+            .join("\n\n"),
+        Node::List(value) => list_markdown(value, definitions),
         Node::ListItem(value) => value
             .children
             .iter()
-            .map(node_markdown)
+            .map(|node| node_markdown(node, definitions))
             .collect::<Vec<_>>()
             .join("\n"),
         Node::Code(value) => value.value.clone(),
         Node::ThematicBreak(_) => "---".to_string(),
-        Node::Table(value) => table_markdown(value),
+        Node::Table(value) => table_markdown(value, definitions),
         Node::TableRow(value) => value
             .children
             .iter()
-            .map(node_markdown)
+            .map(|node| node_markdown(node, definitions))
             .collect::<Vec<_>>()
             .join(" | "),
-        Node::TableCell(value) => inline_markdown(&value.children),
+        Node::TableCell(value) => inline_markdown(&value.children, definitions),
         Node::Text(value) => escape_styled_text(&value.value),
-        Node::Emphasis(value) => format!("*{}*", inline_markdown(&value.children)),
-        Node::Strong(value) => format!("**{}**", inline_markdown(&value.children)),
-        Node::Delete(value) => format!("~~{}~~", inline_markdown(&value.children)),
+        Node::Emphasis(value) => format!("*{}*", inline_markdown(&value.children, definitions)),
+        Node::Strong(value) => format!("**{}**", inline_markdown(&value.children, definitions)),
+        Node::Delete(value) => format!("~~{}~~", inline_markdown(&value.children, definitions)),
         Node::InlineCode(value) => format!("`{}`", value.value),
-        Node::Link(value) => format!("[{}]({})", inline_markdown(&value.children), value.url),
+        Node::Link(value) => format!(
+            "[{}]({})",
+            inline_markdown(&value.children, definitions),
+            value.url
+        ),
         Node::Image(value) => format!("![{}]({})", value.alt, value.url),
+        Node::LinkReference(value) => {
+            let label = inline_markdown(&value.children, definitions);
+            if let Some(url) = definitions.get(&value.identifier) {
+                format!("[{label}]({url})")
+            } else {
+                format!("[{label}][{}]", value.identifier)
+            }
+        }
+        Node::ImageReference(value) => {
+            if let Some(url) = definitions.get(&value.identifier) {
+                format!("![{}]({url})", value.alt)
+            } else {
+                format!("![{}][{}]", value.alt, value.identifier)
+            }
+        }
         Node::Break(_) => "\n".to_string(),
         Node::InlineMath(value) => value.value.clone(),
         Node::FootnoteReference(value) => format!("[{}]", value.identifier),
-        Node::Html(value) => escape_styled_text(&value.value),
+        Node::Html(value) => value.value.clone(),
         _ => String::new(),
     }
 }
@@ -612,6 +695,36 @@ mod tests {
             blocks[0].markdown,
             "A [link](https://example.com) and [note](Other.md)"
         );
+    }
+
+    #[test]
+    fn preserves_soft_breaks_between_links() {
+        let source = "[Index](../undefined)\n[MattMC Main Page](../undefined)";
+        let blocks = preview_document(source).blocks;
+        assert_eq!(blocks[0].markdown, source);
+    }
+
+    #[test]
+    fn resolves_reference_links_and_images_for_rendering() {
+        let document = preview_document(
+            "[Index][home]\n\n![Logo][logo]\n\n[home]: ../index.md\n[logo]: images/logo.png",
+        );
+        assert_eq!(document.blocks[0].markdown, "[Index](../index.md)");
+        assert_eq!(document.blocks[1].kind, PreviewBlockKind::Image);
+        assert_eq!(
+            document.blocks[1]
+                .image
+                .as_ref()
+                .map(|image| image.destination.as_str()),
+            Some("images/logo.png")
+        );
+    }
+
+    #[test]
+    fn keeps_html_available_for_frontend_sanitization() {
+        let blocks = preview_document("<mark>highlight</mark>").blocks;
+        assert_eq!(blocks[0].kind, PreviewBlockKind::Body);
+        assert_eq!(blocks[0].markdown, "<mark>highlight</mark>");
     }
 
     #[test]
