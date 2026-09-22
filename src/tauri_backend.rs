@@ -480,10 +480,10 @@ impl MarkerupBackend {
         drop(inner);
         self.clear_asset_cache();
 
-        if let Some(id) = session.current_file {
-            if let Ok(mut inner) = self.locked() {
-                let _ = Self::open_note_locked(&mut inner, id, false);
-            }
+        if let Some(id) = session.current_file
+            && let Ok(mut inner) = self.locked()
+        {
+            let _ = Self::open_note_locked(&mut inner, id, false);
         }
     }
 }
