@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a Debian package, upload it through LinuxScripts, and clean up."""
+"""Build a Debian package locally and optionally upload it through LinuxScripts."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ LINUX_SCRIPTS_REPOSITORY = "HungLo2020/LinuxScripts"
 LINUX_SCRIPTS_BRANCH = "master"
 LINUX_SCRIPTS_PATH = "GenericScripts/ManageMattOSRepository.py"
 LINUX_SCRIPTS_API = f"https://api.github.com/repos/{LINUX_SCRIPTS_REPOSITORY}"
-DEBIAN_WORKFLOW_SCRIPT = Path(__file__).with_name("release_debian.py")
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+DEBIAN_PACKAGE_DIRECTORY = REPOSITORY_ROOT / "target" / "release" / "bundle" / "deb"
 
 
 def download_latest_manager(target: Path) -> str:
@@ -58,30 +59,38 @@ def download_latest_manager(target: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", help="GitHub repository, for example HungLo2020/Markerup")
+    parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Build the Debian package locally without uploading it",
+    )
     args = parser.parse_args()
 
-    repo_args = ["--repo", args.repo] if args.repo else []
-    package_directory = tempfile.TemporaryDirectory(prefix="markerup-debian-upload-")
+    previous_packages = {
+        package: (package.stat().st_mtime_ns, package.stat().st_size)
+        for package in DEBIAN_PACKAGE_DIRECTORY.glob("*.deb")
+    } if DEBIAN_PACKAGE_DIRECTORY.exists() else {}
+    print("Building the Debian package from the local checkout...")
+    subprocess.run(
+        ["cargo", "tauri", "build", "--bundles", "deb", "--", "--locked"],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+    )
+    packages = sorted(
+        package
+        for package in DEBIAN_PACKAGE_DIRECTORY.glob("*.deb")
+        if (package.stat().st_mtime_ns, package.stat().st_size) != previous_packages.get(package)
+    )
+    if len(packages) != 1:
+        raise RuntimeError(f"Expected one locally built Debian package, found {len(packages)}")
+    package = packages[0]
+    print(f"Built Debian package: {package}")
+    if args.build_only:
+        print("Build-only mode selected; package was not uploaded.")
+        return 0
+
     manager_directory = tempfile.TemporaryDirectory(prefix="markerup-linuxscripts-")
     try:
-        print("Running the Debian-only workflow and downloading its package...")
-        subprocess.run(
-            [
-                sys.executable,
-                str(DEBIAN_WORKFLOW_SCRIPT),
-                *repo_args,
-                "--download-only",
-                "--output-dir",
-                package_directory.name,
-            ],
-            check=True,
-        )
-        packages = sorted(Path(package_directory.name).glob("*.deb"))
-        if len(packages) != 1:
-            raise RuntimeError(f"Expected one downloaded Debian package, found {len(packages)}")
-        package = packages[0]
-
         manager_path = Path(manager_directory.name) / "ManageMattOSRepository.py"
         commit_sha = download_latest_manager(manager_path)
         print(f"Using LinuxScripts manager from commit {commit_sha}")
@@ -92,8 +101,7 @@ def main() -> int:
         print("Debian package uploaded through LinuxScripts.")
         return 0
     finally:
-        print("Deleting downloaded Debian package and temporary manager script.")
-        package_directory.cleanup()
+        print("Deleting temporary manager script.")
         manager_directory.cleanup()
 
 
