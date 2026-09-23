@@ -27,6 +27,18 @@ let saveTimer: number | undefined;
 let saveInFlight: Promise<void> | undefined;
 let retryTimer: number | undefined;
 let saveBlockedUntilReload = false;
+const draftPrefix = "markerup-draft-v1:";
+function draftKey(note = snapshot?.currentFile, workspace = snapshot?.workspacePath) {
+  return note && workspace ? draftPrefix + JSON.stringify([workspace, note]) : undefined;
+}
+function storeDraft() {
+  const key = draftKey();
+  if (!key) return;
+  try {
+    if (currentText === savedText) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify({ contents: currentText, baseline: savedText }));
+  } catch (error) { status(`Could not store recovery draft: ${error}`); }
+}
 let editor: EditorView | undefined;
 let editorState: EditorState | undefined;
 let previewTimer: number | undefined;
@@ -118,7 +130,7 @@ function renderPage() {
     ["split", "Split"],
     ["preview", "Preview"],
   ].map(([value, label]) => `<option value="${value}"${editorMode === value ? " selected" : ""}>${label}</option>`).join("")}</select>`;
-  content.innerHTML = `<aside id="sidebar"><div class="row"><strong>Workspace</strong><button id="new" aria-label="Create">＋</button></div><input id="search" placeholder="Search all notes"><nav id="tree"></nav></aside><section id="document"><div class="document-bar"><strong>${escape(snapshot?.currentFile ?? "Choose a note")}</strong><span class="grow"></span>${snapshot?.currentFile ? `<button id="insert">Insert</button>` : ""}${viewControls}</div><div id="panes"><div id="editor-pane"><div id="editor"></div></div><article id="preview"></article></div></section>`;
+  content.innerHTML = `<aside id="sidebar"><div class="row"><strong>Workspace</strong><button id="new" aria-label="Create">＋</button></div><input id="search" placeholder="Search all notes"><nav id="tree"></nav></aside><section id="document"><div class="document-bar"><strong>${escape(snapshot?.currentFile ?? "Choose a note")}</strong><span class="grow"></span>${snapshot?.currentFile ? `<button id="insert">Insert</button>` : ""}${viewControls}</div><div id="save-conflict" role="alert"></div><div id="panes"><div id="editor-pane"><div id="editor"></div></div><article id="preview"></article></div></section>`;
   document.querySelector("#new")!.addEventListener("click",()=>createAtRoot());
   document.querySelector("#search")!.addEventListener("input", search);
   document.querySelector("#insert")?.addEventListener("click", () => void showInsertMenu());
@@ -126,7 +138,35 @@ function renderPage() {
     editorMode = (event.target as HTMLSelectElement).value as typeof editorMode;
     applyMode();
   });
-  renderTree(); setupEditor(); schedulePreview(0); applyMode();
+  renderTree(); setupEditor(); showConflict(); schedulePreview(0); applyMode();
+}
+function showConflict() {
+  const host = document.querySelector<HTMLElement>("#save-conflict");
+  if (!host) return;
+  if (!saveBlockedUntilReload && !snapshot?.externalConflict) { host.replaceChildren(); return; }
+  host.innerHTML = `<div class="conflict-banner">The note changed outside Markerup or its save could not be verified. Your edits are still in this editor. <button id="copy-conflict">Copy my text</button><button id="reload-conflict">Use disk version</button><button id="overwrite-conflict">Overwrite disk</button></div>`;
+  host.querySelector("#copy-conflict")!.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(currentText); status("Editor text copied"); }
+    catch (error) { status(`Copy failed: ${error}`); }
+  });
+  host.querySelector("#reload-conflict")!.addEventListener("click", async () => {
+    if (currentText !== savedText && !await confirmAction("Discard editor changes", "Discard my changes and load the disk version?")) return;
+    try { loadNote(await call<Note>("reload_note"), true); }
+    catch (error) { status(`Reload failed: ${error}`); }
+  });
+  host.querySelector("#overwrite-conflict")!.addEventListener("click", async () => {
+    if (!await confirmAction("Overwrite external changes", "Replace the disk version with my editor text?")) return;
+    try {
+      const contents = currentText;
+      snapshot = await call<Snapshot>("save_note", { contents, force: true });
+      savedText = contents;
+      storeDraft();
+      saveBlockedUntilReload = false;
+      showConflict();
+      status("Saved");
+      if (currentText !== savedText) scheduleSave();
+    } catch (error) { saveBlockedUntilReload = true; showConflict(); status(`Save failed: ${error}`); }
+  });
 }
 function panel(title:string, body:string) { return `<section class="panel"><button id="panel-back">← Back</button><h1>${title}</h1>${body}</section>`; }
 document.addEventListener("click", event => {
@@ -252,7 +292,7 @@ function setupEditor() {
   const host=document.querySelector<HTMLElement>("#editor")!;
   const state = editorState && editorState.doc.toString() === currentText
     ? editorState
-  : EditorState.create({ doc: currentText, extensions: [liveDecorations, history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();editorState=update.state;scheduleSave();schedulePreview();} else if(update.selectionSet && editorMode === "live"){editorState=update.state;updateLiveDecorations(latestBlocks);}})] });
+  : EditorState.create({ doc: currentText, extensions: [EditorView.editable.of(Boolean(snapshot?.currentFile)), liveDecorations, history(), markdown(), keymap.of([...defaultKeymap,...historyKeymap]), EditorView.lineWrapping, drawSelection({iosSelectionHandles:true}), EditorView.theme({"&":{height:"100%"},".cm-scroller":{overflow:"auto",fontFamily:"inherit",lineHeight:"1.28"},".cm-content":{lineHeight:"1.28",padding:"12px"},".cm-line":{lineHeight:"1.28"},".cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.30)"},"&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":{backgroundColor:"rgba(10, 132, 255, 0.52)"}}, {dark:true}), EditorView.updateListener.of(update=>{if(update.docChanged){currentText=update.state.doc.toString();editorState=update.state;storeDraft();scheduleSave();schedulePreview();} else if(update.selectionSet && editorMode === "live"){editorState=update.state;updateLiveDecorations(latestBlocks);}})] });
   editor = new EditorView({ state, parent:host });
   editorState = editor.state;
   if (!iosDevice()) host.addEventListener("contextmenu", event => {
@@ -280,7 +320,35 @@ function openNoteView(note: Note) {
   }
   loadNote(note);
 }
-function loadNote(note:Note){ if(saveTimer) clearTimeout(saveTimer); if(retryTimer) clearTimeout(retryTimer); saveBlockedUntilReload=false; snapshot=note.snapshot; currentText=savedText=note.contents; editorState=undefined; renderShell(); renderPage(); status("Saved"); }
+function loadNote(note:Note, discardDraft = false){
+  if(saveTimer) clearTimeout(saveTimer);
+  if(retryTimer) clearTimeout(retryTimer);
+  saveBlockedUntilReload=false;
+  snapshot=note.snapshot;
+  currentText=savedText=note.contents;
+  const key=draftKey();
+  try {
+    const raw=key && localStorage.getItem(key);
+    if(discardDraft && key) localStorage.removeItem(key);
+    else if(raw) {
+      const draft=JSON.parse(raw) as {contents:string;baseline:string};
+      if(typeof draft.contents === "string" && typeof draft.baseline === "string" && draft.contents !== note.contents) {
+        currentText=draft.contents;
+        saveBlockedUntilReload=draft.baseline !== note.contents;
+      } else if(key) localStorage.removeItem(key);
+    }
+  } catch(error){status(`Could not restore recovery draft: ${error}`)}
+  editorState=undefined; renderShell(); renderPage();
+  if(currentText !== savedText && !saveBlockedUntilReload) scheduleSave();
+  else status(saveBlockedUntilReload ? "Recovered draft conflicts with disk — resolve before saving" : "Saved");
+}
+function clearNoteView() {
+  if (saveTimer) clearTimeout(saveTimer);
+  if (retryTimer) clearTimeout(retryTimer);
+  currentText = savedText = "";
+  saveBlockedUntilReload = false;
+  editorState = undefined;
+}
 function scheduleSave(delay=750){
   if(saveBlockedUntilReload) {
     status("Reload this note before saving again");
@@ -294,6 +362,7 @@ function scheduleRetry(error: unknown){
   const message=String(error);
   if (/outcome unknown|external change conflict/i.test(message)) {
     saveBlockedUntilReload=true;
+    showConflict();
     status(message);
     return;
   }
@@ -315,6 +384,7 @@ function flushSave(): Promise<void> {
         if(snapshot?.currentFile!==file) return;
         snapshot=next;
         savedText=contents;
+        storeDraft();
         status("Saved");
       } catch(error) {
         scheduleRetry(error);
@@ -333,7 +403,20 @@ async function saveBeforeChangingNote(): Promise<boolean> {
   status("Unsaved changes must be resolved before leaving this note");
   return false;
 }
-async function refresh(){ await flushSave(); try { assetSourceCache.clear(); snapshot=await call<Snapshot>("refresh_workspace",{editorHasUnsavedChanges:currentText!==savedText}); renderShell(); renderPage(); status("Workspace refreshed"); } catch(error){status(`Refresh failed: ${error}`)} }
+async function refresh(){
+  await flushSave();
+  try {
+    assetSourceCache.clear();
+    const file = snapshot?.currentFile;
+    snapshot=await call<Snapshot>("refresh_workspace",{editorHasUnsavedChanges:currentText!==savedText});
+    if (file && snapshot.currentFile === file && currentText === savedText && snapshot.externalConflict) {
+      loadNote(await call<Note>("reload_note"));
+      status("External changes loaded");
+      return;
+    }
+    renderShell(); renderPage(); status(snapshot.externalConflict ? "External change conflict — resolve before saving" : "Workspace refreshed");
+  } catch(error){status(`Refresh failed: ${error}`)}
+}
 async function navigate(command:string){ if(!await saveBeforeChangingNote()) return; const note=await call<Note|null>(command); if(note) loadNote(note); }
 async function chooseLocal(){
   if(!await saveBeforeChangingNote()) return;
@@ -347,6 +430,7 @@ async function chooseLocal(){
       if(typeof selected !== "string") return;
       snapshot=await call<Snapshot>("open_local_workspace",{path:selected});
     }
+    clearNoteView();
     page="main";
     renderShell();
     renderPage();
@@ -355,7 +439,7 @@ async function chooseLocal(){
     status(`Workspace selection failed: ${error}`);
   }
 }
-async function connectSmb(){ if(!await saveBeforeChangingNote()) return; const value=(id:string) => document.querySelector<HTMLInputElement>(`#${id}`)!.value; try { snapshot=await call<Snapshot>("connect_smb",{request:{server:value("server"),share:value("share"),username:value("username"),password:value("password"),remotePath:value("remote")}}); page="main";renderShell();renderPage();status("SMB workspace connected"); } catch(error){status(`SMB connection failed: ${error}`)} }
+async function connectSmb(){ if(!await saveBeforeChangingNote()) return; const value=(id:string) => document.querySelector<HTMLInputElement>(`#${id}`)!.value; try { snapshot=await call<Snapshot>("connect_smb",{request:{server:value("server"),share:value("share"),username:value("username"),password:value("password"),remotePath:value("remote")}}); clearNoteView(); page="main";renderShell();renderPage();status("SMB workspace connected"); } catch(error){status(`SMB connection failed: ${error}`)} }
 async function toggleFavorite(){
   try {
     snapshot=await call<Snapshot>("set_workspace_favorite",{favorited:!snapshot?.workspaceFavorited});
@@ -370,6 +454,7 @@ async function openFavorite(index: number) {
   if(!await saveBeforeChangingNote()) return;
   try {
     snapshot=await call<Snapshot>("open_favorite_workspace",{index});
+    clearNoteView();
     page="main";
     renderShell();
     renderPage();
@@ -563,7 +648,10 @@ async function entryActions(id:string,isDirectory:boolean){
       if(!name)return;
       snapshot=await call<Snapshot>("rename_entry",{id,name});
     }
-    if(action==="delete" && await confirmAction("Delete entry", `Delete ${id.split("/").pop() ?? "this entry"}?`)) snapshot=await call<Snapshot>("delete_entry",{id});
+    if(action==="delete" && await confirmAction("Move to trash", `Move ${id.split("/").pop() ?? "this entry"} to .markerup-trash?`)) {
+      snapshot=await call<Snapshot>("delete_entry",{id});
+      if(!snapshot.currentFile) clearNoteView();
+    }
     renderShell();renderPage();
   }catch(error){status(String(error))}
 }
@@ -822,5 +910,17 @@ async function refreshPreview(generation: number) {
   }
 }
 window.addEventListener("beforeunload",()=>void flushSave()); document.addEventListener("visibilitychange",()=>{if(document.hidden)void flushSave()});
-async function start(){ renderShell(); try{snapshot=await call<Snapshot>("workspace_snapshot");renderShell();renderPage();}catch(error){status(`Startup failed: ${error}`)} }
+async function start(){
+  renderShell();
+  try {
+    snapshot=await call<Snapshot>("workspace_snapshot");
+    if (snapshot.currentFile) loadNote(await call<Note>("reload_note"));
+    else { renderShell(); renderPage(); }
+  } catch(error){
+    // Keep an inaccessible restored note out of the editor. Never let an empty
+    // buffer overwrite a note that could not be read during startup.
+    snapshot=undefined;
+    renderShell(); renderPage(); status(`Startup failed: ${error}`);
+  }
+}
 void start();
