@@ -66,3 +66,15 @@ test("recovered conflicting draft stays unsaved until explicitly resolved", asyn
   await vi.waitFor(() => expect(saves).toEqual([{ contents: "# My pending edits", force: true }]));
   expect(localStorage.getItem(key)).toBeNull();
 });
+
+test("failed note restore cannot leave an editable blank note", async () => {
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "workspace_snapshot") return { ...base };
+    if (command === "reload_note") throw new Error("provider unavailable");
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  await import("./main");
+  await vi.waitFor(() => expect(document.querySelector("#status")?.textContent).toContain("Startup failed"));
+  expect(document.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
+  expect(document.querySelector("#insert")).toBeNull();
+});
