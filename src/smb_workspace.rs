@@ -1,4 +1,6 @@
-use crate::workspace::{EntryId, EntryKind, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry};
+use crate::workspace::{
+    EntryId, EntryKind, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry, recovery_suffix,
+};
 use percent_encoding::percent_decode_str;
 use smb2::{ClientConfig, DirectoryEntry, SmbClient, Tree};
 use std::future::Future;
@@ -564,13 +566,58 @@ impl Workspace for SmbWorkspace {
 
     fn write(&self, id: &str, contents: &str) -> io::Result<()> {
         let path = self.remote_path(id)?;
+        // The SMB client's write_file replaces the target in place. Preserve
+        // the previous bytes before attempting that destructive operation.
+        let previous = self.read(id)?;
+        let parent = id.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+        let name = id.rsplit('/').next().unwrap_or(id);
+        let backup_id = if parent.is_empty() {
+            format!(".{name}.markerup-backup-{}", recovery_suffix()?)
+        } else {
+            format!("{parent}/.{name}.markerup-backup-{}", recovery_suffix()?)
+        };
+        let backup_path = self.remote_path(&backup_id)?;
+        self.mutate(|client, tree| {
+            self.run_smb("backup", || async {
+                let mut writer = client
+                    .create_file_writer_exclusive(tree, &backup_path)
+                    .await?;
+                writer.write_chunk(previous.as_bytes()).await?;
+                writer.finish().await.map(|_| ())
+            })
+        })
+        .map_err(mark_ambiguous_mutation)?;
         self.mutate(|client, tree| {
             self.run_smb("write", || {
                 client.write_file(tree, &path, contents.as_bytes())
             })
             .map(|_| ())
         })
-        .map_err(mark_ambiguous_mutation)
+        .map_err(mark_ambiguous_mutation)?;
+        // Bound recovery storage. Cleanup is best effort; a successful note
+        // write must not be reported as failed because pruning failed.
+        let directory = self.remote_path(parent)?;
+        if let Ok(children) = self.list_directory(&directory) {
+            let prefix = format!(".{name}.markerup-backup-");
+            let mut backups: Vec<_> = children
+                .into_iter()
+                .filter(|entry| entry.name.starts_with(&prefix) && !entry.is_directory)
+                .map(|entry| entry.name)
+                .collect();
+            backups.sort();
+            let prune = backups.len().saturating_sub(20);
+            for old in backups.into_iter().take(prune) {
+                let path = if directory.is_empty() {
+                    old
+                } else {
+                    format!("{directory}/{old}")
+                };
+                let _ = self.mutate(|client, tree| {
+                    self.run_smb("prune backup", || client.delete_file(tree, &path))
+                });
+            }
+        }
+        Ok(())
     }
 
     fn create_note(&self, parent: &str, name: &str) -> io::Result<EntryId> {
@@ -666,14 +713,23 @@ impl Workspace for SmbWorkspace {
     }
 
     fn delete(&self, id: &str) -> io::Result<()> {
-        let path = self.remote_path(id)?;
-        let is_directory = self.list_directory(&path).is_ok();
+        let source = self.remote_path(id)?;
+        let trash = self.remote_path(".markerup-trash")?;
+        let name = id
+            .rsplit('/')
+            .next()
+            .ok_or_else(|| io::Error::other("entry has no name"))?;
+        let destination =
+            self.remote_path(&format!(".markerup-trash/{}-{name}", recovery_suffix()?))?;
         self.mutate(|client, tree| {
-            if is_directory {
-                self.run_smb("directory delete", || client.delete_directory(tree, &path))
-            } else {
-                self.run_smb("file delete", || client.delete_file(tree, &path))
+            match self.run_smb("trash directory", || client.create_directory(tree, &trash)) {
+                Ok(()) => (),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(error) => return Err(error),
             }
+            self.run_smb("move to trash", || {
+                client.rename(tree, &source, &destination)
+            })
         })
         .map_err(mark_ambiguous_mutation)
     }

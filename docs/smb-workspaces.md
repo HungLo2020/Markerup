@@ -42,6 +42,11 @@ matching note is treated as saved, while a mismatch or unreadable result is
 reported as an **unknown save outcome**. That state requires a reload before a
 user retries, so the app never guesses whether a remote write happened.
 
+Before an SMB note is replaced, Markerup stores the previous contents in a hidden
+`.Note.md.markerup-backup-*` file beside it. The latest 20 versions are retained
+per note. Deleting a note or folder moves it into the workspace's hidden
+`.markerup-trash` directory. Include hidden files when backing up the share.
+
 Workspace scans are bounded to 50,000 visible entries and 64 directory levels,
 honor cancellation between directory operations, and return an explicit error
 when either safety bound is exceeded. This prevents an unavailable, cyclic, or

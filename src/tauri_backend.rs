@@ -257,6 +257,20 @@ impl MarkerupBackend {
         inner.workspace_revision = inner.workspace_revision.wrapping_add(1);
     }
 
+    fn reconcile_disk_change(
+        inner: &mut BackendInner,
+        disk: &str,
+        editor_has_unsaved_changes: bool,
+    ) {
+        if disk != inner.disk_text {
+            // Preserve the original save baseline until the frontend loads the
+            // new note. This also protects edits made during a refresh scan.
+            inner.external_conflict = true;
+        } else if !editor_has_unsaved_changes {
+            inner.external_conflict = false;
+        }
+    }
+
     fn persist(inner: &BackendInner) {
         if inner.favorites.is_empty() {
             let _ = clear_session();
@@ -664,12 +678,7 @@ pub fn refresh_workspace(
         return Ok(MarkerupBackend::snapshot(&inner));
     }
     if let Some(disk) = disk {
-        if disk != baseline && editor_has_unsaved_changes {
-            inner.external_conflict = true;
-        } else if disk != baseline {
-            inner.disk_text = disk;
-            inner.external_conflict = false;
-        }
+        MarkerupBackend::reconcile_disk_change(&mut inner, &disk, editor_has_unsaved_changes);
     }
     inner.entries = entries;
     drop(inner);
@@ -1123,7 +1132,20 @@ fn normalize_mermaid_source(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AssetCache, AssetCacheKey, MAX_CACHED_ASSETS, MarkerupBackend};
+    use super::{AssetCache, AssetCacheKey, BackendInner, MAX_CACHED_ASSETS, MarkerupBackend};
+
+    #[test]
+    fn external_refresh_never_advances_the_save_baseline_without_loading_the_editor() {
+        let mut inner = BackendInner {
+            disk_text: "# Original".into(),
+            ..Default::default()
+        };
+        MarkerupBackend::reconcile_disk_change(&mut inner, "# External update", false);
+        assert_eq!(inner.disk_text, "# Original");
+        assert!(inner.external_conflict);
+        MarkerupBackend::reconcile_disk_change(&mut inner, "# Original", false);
+        assert!(!inner.external_conflict);
+    }
 
     #[test]
     fn recovers_workspace_state_after_a_panicking_command() {

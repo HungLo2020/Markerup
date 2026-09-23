@@ -3,7 +3,9 @@
 use crate::ios_bridge::{
     WorkspaceSelection, list_entries, mutate, read_file, stop_access, write_file,
 };
-use crate::workspace::{EntryId, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry};
+use crate::workspace::{
+    EntryId, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry, recovery_suffix,
+};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -146,7 +148,32 @@ impl Workspace for IosWorkspace {
     }
     fn write(&self, id: &str, contents: &str) -> io::Result<()> {
         let path = self.scoped_path(id)?;
-        write_file(&path, contents.as_bytes()).map_err(io::Error::other)
+        let previous = read_file(&path).map_err(io::Error::other)?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("note has no name"))?
+            .to_string_lossy();
+        let prefix = format!(".{name}.markerup-backup-");
+        let backup = path.with_file_name(format!("{prefix}{}", recovery_suffix()?));
+        // Coordinated backup first: a provider rejecting the backup must not
+        // replace the only existing copy of a note.
+        mutate(&backup, None, 1, &previous).map_err(io::Error::other)?;
+        write_file(&path, contents.as_bytes()).map_err(io::Error::other)?;
+        if let Some(parent) = path.parent() {
+            if let Ok(entries) = std::fs::read_dir(parent) {
+                let mut backups: Vec<_> = entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+                    .map(|entry| entry.path())
+                    .collect();
+                backups.sort();
+                let prune = backups.len().saturating_sub(20);
+                for old in backups.into_iter().take(prune) {
+                    let _ = mutate(&old, None, 3, &[]);
+                }
+            }
+        }
+        Ok(())
     }
     fn create_note(&self, parent: &str, name: &str) -> io::Result<EntryId> {
         let mut name = LocalWorkspace::validate_name(name)?.to_string();
@@ -208,7 +235,13 @@ impl Workspace for IosWorkspace {
     }
     fn delete(&self, id: &str) -> io::Result<()> {
         let path = self.scoped_path(id)?;
-        mutate(&path, None, 3, &[]).map_err(io::Error::other)
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("entry has no name"))?
+            .to_string_lossy();
+        let destination =
+            self.scoped_path(&format!(".markerup-trash/{}-{name}", recovery_suffix()?))?;
+        mutate(&path, Some(&destination), 4, &[]).map_err(io::Error::other)
     }
     fn search_markdown(&self, query: &str) -> io::Result<Vec<EntryId>> {
         let query = query.trim().to_lowercase();

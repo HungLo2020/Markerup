@@ -5,6 +5,18 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+pub(crate) fn recovery_suffix() -> io::Result<String> {
+    Ok(format!(
+        "{:020}-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos(),
+        std::process::id()
+    ))
+}
 
 #[cfg(target_os = "ios")]
 use crate::ios_workspace::IosWorkspace;
@@ -330,7 +342,50 @@ impl Workspace for LocalWorkspace {
                 "entry is not a file",
             ));
         }
-        fs::write(path, contents)
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("note has no parent"))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("note has no name"))?
+            .to_string_lossy();
+        let prefix = format!(".{name}.markerup-backup-");
+        let backup = parent.join(format!("{prefix}{}", recovery_suffix()?));
+        fs::copy(&path, &backup)?;
+        fs::File::open(&backup)?.sync_all()?;
+        let temporary = parent.join(format!(".{name}.markerup-writing-{}", recovery_suffix()?));
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.set_permissions(fs::metadata(&path)?.permissions())?;
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, &path)?;
+            // The replacement is atomic; syncing the directory also makes its
+            // new directory entry durable across an abrupt power loss.
+            fs::File::open(parent)?.sync_all()
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result?;
+        // Keep the latest twenty versions per note. Backup cleanup must not
+        // turn a successful save into an apparent failure.
+        if let Ok(entries) = fs::read_dir(parent) {
+            let mut backups: Vec<_> = entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+                .map(|entry| entry.path())
+                .collect();
+            backups.sort();
+            let prune = backups.len().saturating_sub(20);
+            for old in backups.into_iter().take(prune) {
+                let _ = fs::remove_file(old);
+            }
+        }
+        Ok(())
     }
 
     fn create_note(&self, parent: &str, name: &str) -> io::Result<EntryId> {
@@ -412,11 +467,14 @@ impl Workspace for LocalWorkspace {
 
     fn delete(&self, id: &str) -> io::Result<()> {
         let path = self.absolute_existing(id)?;
-        if path.is_dir() {
-            fs::remove_dir_all(path)
-        } else {
-            fs::remove_file(path)
-        }
+        let trash = self.root.join(".markerup-trash");
+        fs::create_dir_all(&trash)?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("entry has no name"))?
+            .to_string_lossy();
+        let destination = trash.join(format!("{}-{name}", recovery_suffix()?));
+        fs::rename(path, destination)
     }
 
     fn search_markdown(&self, query: &str) -> io::Result<Vec<EntryId>> {
@@ -833,6 +891,61 @@ mod tests {
         assert_eq!(renamed, "New/Renamed.md");
         w.delete(&folder).unwrap();
         assert!(!root.join("New").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_is_atomic_and_keeps_the_previous_note_if_write_fails() {
+        let root = temp();
+        let w = LocalWorkspace::open(&root).unwrap();
+        w.write("Root.md", "# Updated").unwrap();
+        assert_eq!(w.read("Root.md").unwrap(), "# Updated");
+        let backup = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|item| {
+                item.file_name()
+                    .to_string_lossy()
+                    .starts_with(".Root.md.markerup-backup-")
+            })
+            .unwrap()
+            .path();
+        assert_eq!(fs::read_to_string(backup).unwrap(), "# Root");
+        assert!(!fs::read_dir(&root).unwrap().any(|item| {
+            item.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("markerup-writing")
+        }));
+        // An invalid note must not create a new file or touch another note.
+        assert!(w.write("Missing.md", "replacement").is_err());
+        assert_eq!(w.read("Root.md").unwrap(), "# Updated");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deleted_note_and_nested_folder_remain_recoverable() {
+        let root = temp();
+        let w = LocalWorkspace::open(&root).unwrap();
+        w.delete("Root.md").unwrap();
+        w.delete("nested").unwrap();
+        let trashed: Vec<_> = fs::read_dir(root.join(".markerup-trash"))
+            .unwrap()
+            .map(|item| item.unwrap().path())
+            .collect();
+        assert!(trashed.iter().any(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("-Root.md")
+                && fs::read_to_string(path).unwrap() == "# Root"
+        }));
+        assert!(
+            trashed
+                .iter()
+                .any(|path| path.join("deeper/Deep.md").exists())
+        );
+        assert!(w.entries().unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
