@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, test, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
+import { readFileSync } from "node:fs";
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -77,4 +78,35 @@ test("failed note restore cannot leave an editable blank note", async () => {
   await vi.waitFor(() => expect(document.querySelector("#status")?.textContent).toContain("Startup failed"));
   expect(document.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
   expect(document.querySelector("#insert")).toBeNull();
+});
+
+test("content panes get the flexible row beneath toolbar and conflict banner", async () => {
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "workspace_snapshot") return { ...base };
+    if (command === "reload_note") return { id: "Note.md", contents: "# Note", snapshot: { ...base } };
+    if (command === "preview_document") return { blocks: [] };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  await import("./main");
+  await vi.waitFor(() => expect(document.querySelector("#panes")).not.toBeNull());
+  const documentView = document.querySelector("#document")!;
+  expect(Array.from(documentView.children).map(child => child.id || child.className))
+    .toEqual(["document-bar", "save-conflict", "panes"]);
+
+  const stylesheet = document.createElement("style");
+  stylesheet.textContent = readFileSync("src/styles.css", "utf8");
+  document.head.append(stylesheet);
+  const mode = document.querySelector<HTMLSelectElement>("#view-mode")!;
+  const banner = document.querySelector("#save-conflict")!;
+  for (const hasConflict of [false, true]) {
+    banner.textContent = hasConflict ? "Conflict" : "";
+    for (const value of ["source", "live", "split", "preview"]) {
+      mode.value = value;
+      mode.dispatchEvent(new Event("change"));
+      expect(document.querySelector("#panes")?.className).toBe(value);
+      expect(getComputedStyle(documentView).gridTemplateRows.replaceAll(" ", ""))
+        .toBe("autoautominmax(0,1fr)");
+    }
+  }
+  stylesheet.remove();
 });
