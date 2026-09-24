@@ -142,6 +142,7 @@ function renderPage() {
   document.querySelector<HTMLSelectElement>("#view-mode")!.addEventListener("change", event => {
     editorMode = (event.target as HTMLSelectElement).value as typeof editorMode;
     applyMode();
+    if (editorMode === "live") schedulePreview(0);
   });
   renderTree(); setupEditor(); showConflict(); schedulePreview(0); applyMode();
 }
@@ -746,10 +747,26 @@ function blockMarkdownSource(block: Block) {
 async function toggleLiveTask(block: Block) {
   try {
     if (typeof block.taskOffset !== "number") throw new Error("Markdown task has no source offset");
-    const source = await call<string>("toggle_markdown_task", { source: currentText, taskOffset: block.taskOffset });
     const currentEditor = editor;
     if (!currentEditor) throw new Error("The editor is no longer available");
-    currentEditor.dispatch({ changes: { from: 0, to: currentEditor.state.doc.length, insert: source }, userEvent: "input.toggleTask" });
+    const before = currentEditor.state.doc.toString();
+    const source = await call<string>("toggle_markdown_task", { source: before, taskOffset: block.taskOffset });
+    // Do not apply a result based on stale editor contents if the user typed
+    // while the backend command was running.
+    if (editor !== currentEditor || currentEditor.state.doc.toString() !== before) {
+      throw new Error("The note changed while updating the task. Try again.");
+    }
+    // The backend toggles only the task marker. Dispatch that minimal change
+    // so CodeMirror can map the selection and keep its scroll position.
+    let from = 0;
+    while (from < before.length && from < source.length && before[from] === source[from]) from += 1;
+    let suffix = 0;
+    while (suffix < before.length - from && suffix < source.length - from
+      && before[before.length - suffix - 1] === source[source.length - suffix - 1]) suffix += 1;
+    currentEditor.dispatch({
+      changes: { from, to: before.length - suffix, insert: source.slice(from, source.length - suffix) },
+      userEvent: "input.toggleTask",
+    });
     await flushSave();
   } catch (error) {
     status(String(error));
@@ -830,10 +847,32 @@ async function renderLiveBlock(block: Block, container: HTMLElement, isCurrent =
 }
 class LiveBlockWidget extends WidgetType {
   private disposed = false;
-  constructor(private readonly block: Block, private readonly generation: number) { super(); }
+  private readonly renderKey: string;
+  constructor(private readonly block: Block) {
+    super();
+    const kind = blockKind(block);
+    const source = kind.includes("List") || kind.includes("Table")
+      ? blockMarkdownSource(block)
+      : block.markdown;
+    this.renderKey = JSON.stringify([
+      kind,
+      source,
+      block.image?.alt,
+      block.image?.destination,
+      // Task widgets capture the source offset in their checkbox handler.
+      // Recreate those when edits move the task, while keeping ordinary
+      // rendered blocks stable as source ranges shift around them.
+      kind.includes("Task") ? block.taskOffset : undefined,
+    ]);
+  }
+  eq(other: WidgetType) {
+    return other instanceof LiveBlockWidget && this.renderKey === other.renderKey;
+  }
   toDOM() {
     const container = document.createElement("div");
-    const isCurrent = () => !this.disposed && this.generation === previewGeneration && editorMode === "live";
+    // A preview refresh does not make an unchanged live widget stale. Its
+    // content key controls replacement; destruction invalidates pending work.
+    const isCurrent = () => !this.disposed && editorMode === "live";
     void renderLiveBlock(this.block, container, isCurrent).catch(error => {
       if (!isCurrent()) return;
       container.className = "live-block render-error";
@@ -863,7 +902,7 @@ function updateLiveDecorations(blocks: Block[]) {
     if (currentText[to] === "\r") to += 1;
     if (currentText[to] === "\n") to += 1;
     if (from < lastTo || to > editor.state.doc.length) continue;
-    ranges.push({ from, to, value: Decoration.replace({ widget: new LiveBlockWidget(block, previewGeneration), block: true }) });
+    ranges.push({ from, to, value: Decoration.replace({ widget: new LiveBlockWidget(block), block: true }) });
     lastTo = to;
   }
   editor.dispatch({ effects: setLiveDecorations.of(Decoration.set(ranges, true)) });
@@ -897,6 +936,9 @@ async function refreshPreview(generation: number) {
     latestBlocks = result.blocks;
     if (editorMode === "live") updateLiveDecorations(result.blocks);
     if (!preview) return;
+    // The preview pane is not visible in Source or Live mode. Avoid building
+    // a second copy of every rendered block while the user is editing.
+    if (editorMode !== "split" && editorMode !== "preview") return;
     const fragment = document.createDocumentFragment();
     for (const block of result.blocks) {
       if (generation !== previewGeneration) return;
@@ -906,8 +948,10 @@ async function refreshPreview(generation: number) {
       fragment.append(element);
     }
     if (generation !== previewGeneration) return;
+    const scrollTop = preview.scrollTop;
     preview.className = "";
     preview.replaceChildren(fragment);
+    preview.scrollTop = scrollTop;
   } catch (error) {
     if (generation !== previewGeneration || !preview) return;
     preview.className = "preview-error";

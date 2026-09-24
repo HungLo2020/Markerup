@@ -16,6 +16,8 @@ beforeEach(() => {
   document.body.innerHTML = '<div id="app"></div>';
   localStorage.clear();
   vi.resetModules();
+  Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [] });
+  Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect() });
   window.matchMedia = () => ({ matches: false, addListener: vi.fn(), removeListener: vi.fn() }) as unknown as MediaQueryList;
 });
 
@@ -109,6 +111,102 @@ test("content panes get the flexible row beneath toolbar and conflict banner", a
     }
   }
   stylesheet.remove();
+});
+
+test("live mode keeps an unchanged image mounted while editing below it", async () => {
+  const imageLine = "![Photo](data:image/png;base64,a)";
+  let source = `# Heading\n\n${imageLine}\n\nBelow`;
+  invoke.mockImplementation(async (command: string, args?: { source?: string }) => {
+    if (command === "workspace_snapshot") return { ...base };
+    if (command === "reload_note") return { id: "Note.md", contents: source, snapshot: { ...base } };
+    if (command === "preview_document") {
+      const start = (args?.source ?? source).indexOf(imageLine);
+      return { blocks: [{
+        kind: "Image",
+        markdown: "Photo",
+        image: { alt: "Photo", destination: "data:image/png;base64,a" },
+        sourceRange: { start, end: start + imageLine.length },
+      }] };
+    }
+    if (command === "save_note") return { ...base };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+
+  await import("./main");
+  await vi.waitFor(() => expect(document.querySelector(".cm-content")?.textContent).toContain("Below"));
+  const mode = document.querySelector<HTMLSelectElement>("#view-mode")!;
+  mode.value = "live";
+  mode.dispatchEvent(new Event("change"));
+
+  await vi.waitFor(() => expect(document.querySelector(".cm-editor .live-block img")).not.toBeNull());
+  const image = document.querySelector(".cm-editor .live-block img");
+  const view = EditorView.findFromDOM(document.querySelector(".cm-editor")!);
+  expect(view).toBeTruthy();
+
+  const below = source.indexOf("Below");
+  view!.dispatch({ selection: { anchor: below + 2 } });
+  expect(document.querySelector(".cm-editor .live-block img")).toBe(image);
+
+  view!.dispatch({ changes: { from: below + 2, insert: "!" }, selection: { anchor: below + 3 } });
+  source = view!.state.doc.toString();
+  expect(document.querySelector(".cm-editor .live-block img")).toBe(image);
+
+  await new Promise(resolve => setTimeout(resolve, 250));
+  expect(document.querySelector(".cm-editor .live-block img")).toBe(image);
+
+  const imageOffset = source.indexOf(imageLine);
+  view!.dispatch({ selection: { anchor: imageOffset + 5 } });
+  expect(document.querySelector(".cm-editor .live-block img")).toBeNull();
+  view!.dispatch({ selection: { anchor: source.indexOf("Below") + 2 } });
+  await vi.waitFor(() => expect(document.querySelector(".cm-editor .live-block img")).not.toBeNull());
+  expect(document.querySelector(".cm-editor .live-block img")).not.toBe(image);
+});
+
+test("toggling a live task preserves the editor cursor and saves only the marker change", async () => {
+  const taskLine = "- [ ] Task";
+  const paragraphs = Array.from({ length: 30 }, (_, index) => `Paragraph ${index}`);
+  let source = `${taskLine}\n\n${paragraphs.join("\n\n")}`;
+  const saved: string[] = [];
+  invoke.mockImplementation(async (command: string, args?: { source?: string; contents?: string; taskOffset?: number }) => {
+    if (command === "workspace_snapshot") return { ...base };
+    if (command === "reload_note") return { id: "Note.md", contents: source, snapshot: { ...base } };
+    if (command === "preview_document") {
+      const text = args?.source ?? source;
+      const start = text.indexOf("- [");
+      return { blocks: [{
+        kind: { Task: text.startsWith("- [x]", start) },
+        markdown: "Task",
+        taskOffset: start,
+        sourceRange: { start, end: start + text.slice(start).split("\n")[0]!.length },
+      }] };
+    }
+    if (command === "toggle_markdown_task") {
+      return args!.source!.replace(taskLine, "- [x] Task");
+    }
+    if (command === "save_note") { saved.push(args!.contents!); return { ...base }; }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+
+  await import("./main");
+  await vi.waitFor(() => expect(document.querySelector(".cm-editor")).not.toBeNull());
+  const mode = document.querySelector<HTMLSelectElement>("#view-mode")!;
+  mode.value = "live";
+  mode.dispatchEvent(new Event("change"));
+  const view = EditorView.findFromDOM(document.querySelector(".cm-editor")!);
+  expect(view).toBeTruthy();
+  const cursor = source.indexOf("Paragraph 2") + 4;
+  view!.dispatch({ selection: { anchor: cursor } });
+  await vi.waitFor(() => expect(document.querySelector<HTMLInputElement>(".cm-editor .live-block input")).not.toBeNull());
+  const scroller = document.querySelector<HTMLElement>(".cm-scroller")!;
+  scroller.scrollTop = 420;
+
+  const checkbox = document.querySelector<HTMLInputElement>(".cm-editor .live-block input")!;
+  checkbox.checked = true;
+  checkbox.dispatchEvent(new Event("change"));
+
+  await vi.waitFor(() => expect(saved).toEqual([source.replace(taskLine, "- [x] Task")]));
+  expect(view!.state.selection.main.anchor).toBe(cursor);
+  expect(scroller.scrollTop).toBe(420);
 });
 
 test("note heading shows the filename without its folder or Markdown extension", async () => {
