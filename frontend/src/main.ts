@@ -97,7 +97,10 @@ function schedulePreview(delay = 150) {
 
 function renderShell() {
   disposeEditor();
-  app.innerHTML = `<header><button id="menu" class="icon-button" aria-label="Toggle workspace"><img src="${menuIcon}" alt=""></button><strong>Markerup</strong><span id="location">${escape(snapshot?.workspacePath ?? "No workspace")}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" class="icon-button" aria-label="Settings"><img src="${settingsIcon}" alt=""></button></header><main id="content"></main><footer id="status">Ready</footer>`;
+  const headerLocation = snapshot?.currentFile
+    ? noteTitle(snapshot.currentFile)
+    : snapshot?.workspacePath ?? "No workspace";
+  app.innerHTML = `<header><button id="menu" class="icon-button" aria-label="Toggle workspace"><img src="${menuIcon}" alt=""></button><strong>Markerup</strong><span id="location">${escape(headerLocation)}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" class="icon-button" aria-label="Settings"><img src="${settingsIcon}" alt=""></button></header><main id="content"></main><footer id="status">Ready</footer>`;
   document.querySelector("#menu")!.addEventListener("click", () => document.body.classList.toggle("sidebar-hidden"));
   document.querySelector("#settings")!.addEventListener("click", () => { page = "settings"; renderPage(); });
   document.querySelector("#refresh")!.addEventListener("click", refresh);
