@@ -110,3 +110,24 @@ test("content panes get the flexible row beneath toolbar and conflict banner", a
   }
   stylesheet.remove();
 });
+
+test("note heading shows the filename without its folder or Markdown extension", async () => {
+  const file = "Stories/Capital Ships/Resurgence & Friends.md";
+  const nested = { ...base, currentFile: file };
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "workspace_snapshot") return nested;
+    if (command === "reload_note") return { id: file, contents: "# Contents", snapshot: nested };
+    if (command === "preview_document") return { blocks: [] };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  await import("./main");
+  await vi.waitFor(() => expect(document.querySelector(".note-title")?.textContent).toBe("Resurgence & Friends"));
+  const title = document.querySelector<HTMLHeadingElement>(".document-bar h1")!;
+  expect(title.title).toBe(file);
+  expect(title.innerHTML).toBe("Resurgence &amp; Friends");
+  const stylesheet = document.createElement("style");
+  stylesheet.textContent = readFileSync("src/styles.css", "utf8");
+  document.head.append(stylesheet);
+  expect(getComputedStyle(title).fontSize).toBe("32px");
+  stylesheet.remove();
+});

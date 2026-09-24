@@ -68,6 +68,7 @@ const liveDecorations = StateField.define<DecorationSet>({
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const status = (message: string) => document.querySelector<HTMLElement>("#status")!.textContent = message;
 const escape = (value: string) => value.replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]!));
+const noteTitle = (path: string) => path.split(/[\\/]/).pop()!.replace(/\.md$/i, "");
 const call = <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 const mobileLayout = () => window.matchMedia("(max-width: 700px)").matches;
 // iPadOS can present a desktop-style user agent, so include its touch-capable
@@ -130,7 +131,8 @@ function renderPage() {
     ["split", "Split"],
     ["preview", "Preview"],
   ].map(([value, label]) => `<option value="${value}"${editorMode === value ? " selected" : ""}>${label}</option>`).join("")}</select>`;
-  content.innerHTML = `<aside id="sidebar"><div class="row"><strong>Workspace</strong><button id="new" aria-label="Create">＋</button></div><input id="search" placeholder="Search all notes"><nav id="tree"></nav></aside><section id="document"><div class="document-bar"><strong>${escape(snapshot?.currentFile ?? "Choose a note")}</strong><span class="grow"></span>${snapshot?.currentFile ? `<button id="insert">Insert</button>` : ""}${viewControls}</div><div id="save-conflict" role="alert"></div><div id="panes"><div id="editor-pane"><div id="editor"></div></div><article id="preview"></article></div></section>`;
+  const currentFile = snapshot?.currentFile;
+  content.innerHTML = `<aside id="sidebar"><div class="row"><strong>Workspace</strong><button id="new" aria-label="Create">＋</button></div><input id="search" placeholder="Search all notes"><nav id="tree"></nav></aside><section id="document"><div class="document-bar"><h1 class="note-title"${currentFile ? ` title="${escape(currentFile)}"` : ""}>${escape(currentFile ? noteTitle(currentFile) : "Choose a note")}</h1><span class="grow"></span>${currentFile ? `<button id="insert">Insert</button>` : ""}${viewControls}</div><div id="save-conflict" role="alert"></div><div id="panes"><div id="editor-pane"><div id="editor"></div></div><article id="preview"></article></div></section>`;
   document.querySelector("#new")!.addEventListener("click",()=>createAtRoot());
   document.querySelector("#search")!.addEventListener("input", search);
   document.querySelector("#insert")?.addEventListener("click", () => void showInsertMenu());

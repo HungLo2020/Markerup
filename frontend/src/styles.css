@@ -10,3 +10,5 @@ button.icon-button{display:grid;place-items:center;padding:7px;line-height:0}but
 .conflict-banner{padding:12px;background:#503825;color:#fff;border:2px solid #e9ae68;display:flex;flex-wrap:wrap;gap:8px;align-items:center}.conflict-banner button{min-height:36px}
 /* Toolbar, optional conflict banner, then the viewport-filling editor/preview. */
 #document{grid-template-rows:auto auto minmax(0,1fr)}
+.document-bar .note-title{min-width:0;margin:0;font-size:2em;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:700px){.document-bar .note-title{max-width:45vw}}
