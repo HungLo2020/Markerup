@@ -26,6 +26,7 @@ pub enum PreviewBlockKind {
     Rule,
     Image,
     Table,
+    Footnote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -36,12 +37,16 @@ pub struct PreviewBlock {
     pub image: Option<ImageReference>,
     pub task_offset: Option<usize>,
     pub source_range: Option<SourceRange>,
+    pub language: Option<String>,
+    pub footnote_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreviewDocument {
     pub blocks: Vec<PreviewBlock>,
     pub images: Vec<ImageReference>,
+    #[serde(rename = "linkDefinitions")]
+    pub link_definitions: Vec<String>,
 }
 
 fn parse_options() -> ParseOptions {
@@ -68,6 +73,8 @@ pub fn preview_document(source: &str) -> PreviewDocument {
     collect_definitions(&tree, &mut definitions);
     let mut images = Vec::new();
     collect_images(&tree, &definitions, &mut images);
+    let mut link_definitions = Vec::new();
+    collect_link_definitions(&tree, source, &mut link_definitions);
     let parsed_blocks: Vec<PreviewBlock> = match &tree {
         Node::Root(root) => root
             .children
@@ -79,6 +86,21 @@ pub fn preview_document(source: &str) -> PreviewDocument {
     PreviewDocument {
         blocks: parsed_blocks,
         images,
+        link_definitions,
+    }
+}
+
+fn collect_link_definitions(node: &Node, source: &str, definitions: &mut Vec<String>) {
+    if let Node::Definition(_) = node
+        && let Some(range) = source_range(node)
+        && let Some(markdown) = source.get(range.start..range.end)
+    {
+        definitions.push(markdown.to_string());
+    }
+    if let Some(children) = node.children() {
+        for child in children {
+            collect_link_definitions(child, source, definitions);
+        }
     }
 }
 
@@ -88,13 +110,20 @@ fn block_from_node(
     definitions: &std::collections::HashMap<String, String>,
 ) -> std::vec::IntoIter<PreviewBlock> {
     let source_range = source_range(node);
+    let original_markdown = source_range
+        .as_ref()
+        .and_then(|range| source.get(range.start..range.end))
+        .unwrap_or_default()
+        .to_string();
     let block = match node {
         Node::Heading(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Heading(value.depth),
-            markdown: inline_markdown(&value.children, definitions),
+            markdown: original_markdown.clone(),
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
+            language: None,
+            footnote_id: None,
         }),
         Node::Paragraph(value)
             if value.children.len() == 1
@@ -108,14 +137,18 @@ fn block_from_node(
                 image: Some(image),
                 task_offset: None,
                 source_range: source_range.clone(),
+                language: None,
+                footnote_id: None,
             })
         }
-        Node::Paragraph(value) => Some(PreviewBlock {
+        Node::Paragraph(_value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Body,
-            markdown: inline_markdown(&value.children, definitions),
+            markdown: original_markdown.clone(),
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
+            language: None,
+            footnote_id: None,
         }),
         Node::Code(value)
             if value
@@ -129,6 +162,8 @@ fn block_from_node(
                 image: None,
                 task_offset: None,
                 source_range: source_range.clone(),
+                language: value.lang.clone(),
+                footnote_id: None,
             })
         }
         Node::Code(value) => Some(PreviewBlock {
@@ -137,6 +172,8 @@ fn block_from_node(
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
+            language: value.lang.clone(),
+            footnote_id: None,
         }),
         Node::List(value) => {
             if is_task_list(value) {
@@ -144,23 +181,22 @@ fn block_from_node(
             }
             Some(PreviewBlock {
                 kind: PreviewBlockKind::List(value.ordered),
-                markdown: list_markdown(value, definitions),
+                markdown: original_markdown.clone(),
                 image: None,
                 task_offset: None,
                 source_range: source_range.clone(),
+                language: None,
+                footnote_id: None,
             })
         }
-        Node::Blockquote(value) => Some(PreviewBlock {
+        Node::Blockquote(_value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Quote,
-            markdown: value
-                .children
-                .iter()
-                .map(|node| node_markdown(node, definitions))
-                .collect::<Vec<_>>()
-                .join("\n\n"),
+            markdown: original_markdown.clone(),
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
+            language: None,
+            footnote_id: None,
         }),
         Node::ThematicBreak(_) => Some(PreviewBlock {
             kind: PreviewBlockKind::Rule,
@@ -168,6 +204,8 @@ fn block_from_node(
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
+            language: None,
+            footnote_id: None,
         }),
         Node::Image(_) | Node::ImageReference(_) => image_reference_from_node(node, definitions)
             .map(|image| PreviewBlock {
@@ -176,13 +214,17 @@ fn block_from_node(
                 image: Some(image),
                 task_offset: None,
                 source_range: source_range.clone(),
+                language: None,
+                footnote_id: None,
             }),
-        Node::Table(value) => Some(PreviewBlock {
+        Node::Table(_value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Table,
-            markdown: table_markdown(value, definitions),
+            markdown: original_markdown.clone(),
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
+            language: None,
+            footnote_id: None,
         }),
         Node::Yaml(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Code,
@@ -190,6 +232,8 @@ fn block_from_node(
             image: None,
             task_offset: None,
             source_range: source_range.clone(),
+            language: None,
+            footnote_id: None,
         }),
         Node::Toml(value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Code,
@@ -197,13 +241,26 @@ fn block_from_node(
             image: None,
             task_offset: None,
             source_range,
+            language: None,
+            footnote_id: None,
         }),
-        Node::Html(value) => Some(PreviewBlock {
+        Node::Html(_value) => Some(PreviewBlock {
             kind: PreviewBlockKind::Body,
-            markdown: value.value.clone(),
+            markdown: original_markdown,
             image: None,
             task_offset: None,
             source_range,
+            language: None,
+            footnote_id: None,
+        }),
+        Node::FootnoteDefinition(value) => Some(PreviewBlock {
+            kind: PreviewBlockKind::Footnote,
+            markdown: original_markdown,
+            image: None,
+            task_offset: None,
+            source_range,
+            language: None,
+            footnote_id: Some(value.identifier.clone()),
         }),
         _ => None,
     };
@@ -318,6 +375,8 @@ fn task_blocks_from_list(
                     .unwrap_or(source.len());
                 SourceRange { start, end }
             }),
+            language: None,
+            footnote_id: None,
         });
 
         for nested in item.children.iter().filter_map(|child| match child {
@@ -520,7 +579,7 @@ fn node_markdown(node: &Node, definitions: &std::collections::HashMap<String, St
         }
         Node::Break(_) => "\n".to_string(),
         Node::InlineMath(value) => value.value.clone(),
-        Node::FootnoteReference(value) => format!("[{}]", value.identifier),
+        Node::FootnoteReference(value) => format!("[^{}]", value.identifier),
         Node::Html(value) => value.value.clone(),
         _ => String::new(),
     }
@@ -629,7 +688,7 @@ mod tests {
 
     #[test]
     fn serializes_source_ranges_as_utf8_offsets() {
-        let source = "# Café\n\nA paragraph with naïve text.";
+        let source = "# A😀B\n\nA paragraph with naïve text.";
         let document = preview_document(source);
         let heading = &document.blocks[0];
         let range = heading
@@ -638,7 +697,7 @@ mod tests {
             .expect("heading should have a source range");
 
         assert_eq!(range.start, 0);
-        assert!(range.end > range.start);
+        assert_eq!(range.end, "# A😀B".len());
         let value = serde_json::to_value(document).expect("preview document should serialize");
         assert_eq!(value["blocks"][0]["sourceRange"]["start"], 0);
         assert!(
@@ -689,12 +748,24 @@ mod tests {
     }
 
     #[test]
-    fn preserves_link_markdown_for_frontend_rendering() {
-        let blocks = preview_document("A [link](https://example.com) and [note](Other.md)").blocks;
-        assert_eq!(
-            blocks[0].markdown,
-            "A [link](https://example.com) and [note](Other.md)"
-        );
+    fn preserves_original_markdown_for_frontend_rendering() {
+        let source = "# A \\*literal\\*\n\nA [link][note].\n\n> A quote with \\_literal\\_\n\n[note]: Other.md";
+        let blocks = preview_document(source).blocks;
+        assert_eq!(blocks[0].markdown, "# A \\*literal\\*");
+        assert_eq!(blocks[1].markdown, "A [link][note].");
+        assert_eq!(blocks[2].markdown, "> A quote with \\_literal\\_");
+    }
+
+    #[test]
+    fn preserves_code_language_and_footnote_definitions() {
+        let source = "```rust title=demo.rs\nfn main() {}\n```\n\n[^note]: Footnote **body**.\n\nA reference[^note].";
+        let document = preview_document(source);
+        assert_eq!(document.blocks[0].kind, PreviewBlockKind::Code);
+        assert_eq!(document.blocks[0].language.as_deref(), Some("rust"));
+        assert_eq!(document.blocks[1].kind, PreviewBlockKind::Footnote);
+        assert_eq!(document.blocks[1].footnote_id.as_deref(), Some("note"));
+        assert_eq!(document.blocks[1].markdown, "[^note]: Footnote **body**.\n");
+        assert_eq!(document.blocks[2].markdown, "A reference[^note].");
     }
 
     #[test]
@@ -705,11 +776,18 @@ mod tests {
     }
 
     #[test]
-    fn resolves_reference_links_and_images_for_rendering() {
-        let document = preview_document(
-            "[Index][home]\n\n![Logo][logo]\n\n[home]: ../index.md\n[logo]: images/logo.png",
+    fn preserves_reference_source_and_resolves_images_for_rendering() {
+        let source =
+            "[Index][home]\n\n![Logo][logo]\n\n[home]: ../index.md\n[logo]: images/logo.png";
+        let document = preview_document(source);
+        assert_eq!(document.blocks[0].markdown, "[Index][home]");
+        assert_eq!(
+            document.link_definitions,
+            vec!["[home]: ../index.md", "[logo]: images/logo.png"]
         );
-        assert_eq!(document.blocks[0].markdown, "[Index](../index.md)");
+        let serialized = serde_json::to_value(&document).expect("document should serialize");
+        assert!(serialized.get("linkDefinitions").is_some());
+        assert!(serialized.get("link_definitions").is_none());
         assert_eq!(document.blocks[1].kind, PreviewBlockKind::Image);
         assert_eq!(
             document.blocks[1]

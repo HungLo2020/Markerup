@@ -16,3 +16,4 @@ button.icon-button{display:grid;place-items:center;padding:7px;line-height:0}but
 /* Make rendered task lists easy to scan and tap. */
 .task input{width:22px;height:22px;flex:0 0 22px;margin:1px 0 0;padding:0;accent-color:#174a7e;cursor:pointer}
 .task input:checked+span{color:#b5b5bd;text-decoration:line-through;text-decoration-thickness:1px}
+.footnote-ref{font-size:.75em;vertical-align:super}.footnotes{font-size:.9em;color:#c8c8cf}.footnotes ol{padding-left:22px}

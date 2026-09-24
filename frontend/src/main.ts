@@ -6,7 +6,8 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { Decoration, drawSelection, keymap, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { footnoteBody, footnoteDomId, renderInlineMarkdownHtml, renderMarkdownHtml } from "./markdown-renderer";
+import { createUtf8OffsetMapper } from "./markdown-offsets";
 import "./styles.css";
 
 const menuIcon = new URL("../../resources/icon_menu.svg", import.meta.url).href;
@@ -18,7 +19,7 @@ type Favorite = { index: number; label: string; workspaceIsSmb: boolean };
 type Snapshot = { workspaceOpen: boolean; workspacePath: string; workspaceIsSmb: boolean; workspaceFavorited: boolean; favorites: Favorite[]; entries: Entry[]; currentFile?: string; canGoBack: boolean; canGoForward: boolean; externalConflict: boolean };
 type Note = { id: string; contents: string; snapshot: Snapshot };
 type SourceRange = { start: number; end: number };
-type Block = { kind: unknown; markdown: string; taskOffset?: number; sourceRange?: SourceRange; image?: { alt: string; destination: string } };
+type Block = { kind: unknown; markdown: string; taskOffset?: number; sourceRange?: SourceRange; image?: { alt: string; destination: string }; language?: string; footnoteId?: string };
 
 let snapshot: Snapshot | undefined;
 let currentText = "";
@@ -47,7 +48,10 @@ let editorMode: "source" | "live" | "split" | "preview" = "split";
 const collapsedDirectories = new Set<string>();
 let previewGeneration = 0;
 let latestBlocks: Block[] = [];
+let latestLinkDefinitions: string[] = [];
 const markdownHtmlCache = new Map<string, string>();
+let offsetMapperSource = "";
+let offsetMapper = createUtf8OffsetMapper("");
 const mermaidCache = new Map<string, Promise<string>>();
 const assetSourceCache = new Map<string, Promise<string>>();
 const MAX_RENDER_CACHE_ENTRIES = 64;
@@ -698,24 +702,30 @@ async function resolveRenderedImages(html: string): Promise<string> {
   return container.innerHTML;
 }
 async function renderMarkdown(markdownSource: string): Promise<string> {
-  let html = markdownHtmlCache.get(markdownSource);
+  const cacheKey = `${markdownSource}\0${footnoteLabels().join("\0")}\0${latestLinkDefinitions.join("\0")}`;
+  let html = markdownHtmlCache.get(cacheKey);
   if (html === undefined) {
-    html = DOMPurify.sanitize(await marked.parse(markdownSource, { gfm: true, breaks: true }));
-    markdownHtmlCache.set(markdownSource, html);
+    html = await renderMarkdownHtml(markdownSource, footnoteLabels(), latestLinkDefinitions);
+    markdownHtmlCache.set(cacheKey, html);
     while (markdownHtmlCache.size > MAX_RENDER_CACHE_ENTRIES) {
       const oldest = markdownHtmlCache.keys().next().value;
       if (oldest === undefined) break;
       markdownHtmlCache.delete(oldest);
     }
   } else {
-    markdownHtmlCache.delete(markdownSource);
-    markdownHtmlCache.set(markdownSource, html);
+    markdownHtmlCache.delete(cacheKey);
+    markdownHtmlCache.set(cacheKey, html);
   }
   return resolveRenderedImages(html);
 }
 async function renderInlineMarkdown(markdownSource: string): Promise<string> {
-  const html = DOMPurify.sanitize(await marked.parseInline(markdownSource, { gfm: true, breaks: true }));
+  const html = await renderInlineMarkdownHtml(markdownSource, footnoteLabels(), latestLinkDefinitions);
   return resolveRenderedImages(html);
+}
+function footnoteLabels() {
+  return latestBlocks
+    .filter(block => blockKind(block).includes("Footnote") && block.footnoteId)
+    .map(block => block.footnoteId!);
 }
 function clearLiveDecorations() {
   if (editor && editor.state.field(liveDecorations, false)) {
@@ -723,22 +733,16 @@ function clearLiveDecorations() {
   }
 }
 function byteOffsetToJsOffset(source: string, byteOffset: number) {
-  const encoder = new TextEncoder();
-  let bytes = 0;
-  let offset = 0;
-  for (const character of source) {
-    if (bytes >= byteOffset) break;
-    bytes += encoder.encode(character).length;
-    offset += character.length;
+  if (offsetMapperSource !== source) {
+    offsetMapperSource = source;
+    offsetMapper = createUtf8OffsetMapper(source);
   }
-  return offset;
+  return offsetMapper(byteOffset);
 }
 function blockKind(block: Block) {
   return JSON.stringify(block.kind);
 }
 function blockMarkdownSource(block: Block) {
-  const kind = blockKind(block);
-  if (!kind.includes("List") && !kind.includes("Table")) return block.markdown;
   if (!block.sourceRange) return block.markdown;
   const from = byteOffsetToJsOffset(currentText, block.sourceRange.start);
   const to = byteOffsetToJsOffset(currentText, block.sourceRange.end);
@@ -786,7 +790,7 @@ async function renderLiveBlock(block: Block, container: HTMLElement, isCurrent =
       const text = document.createElement("span");
       label.append(checkbox, text);
       container.append(label);
-      const html = await renderInlineMarkdown(block.markdown);
+      const html = await renderInlineMarkdown(taskLabelSource(block));
       if (!isCurrent()) return false;
       text.innerHTML = html;
       checkbox.addEventListener("change", () => void toggleLiveTask(block));
@@ -810,26 +814,37 @@ async function renderLiveBlock(block: Block, container: HTMLElement, isCurrent =
       image.src = source;
       container.append(image);
     } else if (kind.includes("Heading")) {
-      const match = kind.match(/Heading[^0-9]*(\d+)/);
-      const heading = document.createElement("h" + Math.min(6, Math.max(1, Number(match?.[1] ?? 1))));
-      const html = await renderInlineMarkdown(block.markdown);
+      const html = await renderMarkdown(blockMarkdownSource(block));
       if (!isCurrent()) return false;
-      heading.innerHTML = html;
-      container.append(heading);
+      container.innerHTML = html;
     } else if (kind.includes("Rule")) {
       container.innerHTML = "<hr>";
     } else if (kind.includes("Quote")) {
-      const quote = document.createElement("blockquote");
-      const html = await renderMarkdown(block.markdown);
+      const html = await renderMarkdown(blockMarkdownSource(block));
       if (!isCurrent()) return false;
-      quote.innerHTML = html;
-      container.append(quote);
+      container.innerHTML = html;
     } else if (kind.includes("Code")) {
       const pre = document.createElement("pre");
       const code = document.createElement("code");
       code.textContent = block.markdown;
+      const language = block.language?.match(/^[A-Za-z0-9_-]+/)?.[0];
+      if (language) {
+        code.classList.add(`language-${language}`);
+        code.dataset.language = language;
+      }
       pre.append(code);
       container.append(pre);
+    } else if (kind.includes("Footnote")) {
+      const section = document.createElement("section");
+      section.className = "footnotes";
+      const list = document.createElement("ol");
+      const item = document.createElement("li");
+      item.id = footnoteDomId(block.footnoteId ?? "");
+      item.innerHTML = await renderMarkdown(footnoteBody(blockMarkdownSource(block)));
+      if (!isCurrent()) return false;
+      list.append(item);
+      section.append(list);
+      container.append(section);
     } else {
       const html = await renderMarkdown(blockMarkdownSource(block));
       if (!isCurrent()) return false;
@@ -851,9 +866,7 @@ class LiveBlockWidget extends WidgetType {
   constructor(private readonly block: Block) {
     super();
     const kind = blockKind(block);
-    const source = kind.includes("List") || kind.includes("Table")
-      ? blockMarkdownSource(block)
-      : block.markdown;
+    const source = blockMarkdownSource(block);
     this.renderKey = JSON.stringify([
       kind,
       source,
@@ -889,6 +902,9 @@ class LiveBlockWidget extends WidgetType {
     return target instanceof Element && !!target.closest("a,button,input,select,textarea");
   }
 }
+function taskLabelSource(block: Block) {
+  return blockMarkdownSource(block).replace(/^\s*(?:[-+*]|\d+[.)])\s+\[[ xX]\][ \t]*/, "");
+}
 function updateLiveDecorations(blocks: Block[]) {
   if (!editor || editorMode !== "live") return;
   const activeLine = editor.state.doc.lineAt(editor.state.selection.main.head);
@@ -914,6 +930,24 @@ function attachRenderedLinks(root: HTMLElement) {
     link.addEventListener("pointerdown", event => event.stopPropagation());
     link.addEventListener("click", async event => {
       const href = link.getAttribute("href") ?? "";
+      if (href.startsWith("#fn-")) {
+        event.preventDefault();
+        event.stopPropagation();
+        const id = decodeURIComponent(href.slice(1));
+        const renderedTarget = root.closest(".cm-content")?.querySelector<HTMLElement>(`#${CSS.escape(id)}`)
+          ?? document.querySelector<HTMLElement>(`#preview #${CSS.escape(id)}`);
+        if (renderedTarget) renderedTarget.scrollIntoView({ block: "center" });
+        else {
+          const definition = latestBlocks.find(block => block.footnoteId && footnoteDomId(block.footnoteId) === id);
+          if (definition?.sourceRange && editor) {
+            editor.dispatch({
+              selection: { anchor: byteOffsetToJsOffset(currentText, definition.sourceRange.start) },
+              scrollIntoView: true,
+            });
+          }
+        }
+        return;
+      }
       if (!href || href.startsWith("#")) return;
       event.preventDefault();
       event.stopPropagation();
@@ -931,9 +965,10 @@ function attachRenderedLinks(root: HTMLElement) {
 async function refreshPreview(generation: number) {
   const preview = document.querySelector<HTMLElement>("#preview");
   try {
-    const result = await call<{blocks: Block[]}>("preview_document", { source: currentText });
+    const result = await call<{blocks: Block[]; linkDefinitions: string[]}>("preview_document", { source: currentText });
     if (generation !== previewGeneration) return;
     latestBlocks = result.blocks;
+    latestLinkDefinitions = result.linkDefinitions ?? [];
     if (editorMode === "live") updateLiveDecorations(result.blocks);
     if (!preview) return;
     // The preview pane is not visible in Source or Live mode. Avoid building
