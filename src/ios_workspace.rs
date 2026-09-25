@@ -1,10 +1,12 @@
 #![cfg(target_os = "ios")]
 
 use crate::ios_bridge::{
-    WorkspaceSelection, list_entries, mutate, read_file, stop_access, write_file,
+    WorkspaceSelection, ensure_directory, list_entries, mutate, read_file, stop_access, write_file,
 };
 use crate::workspace::{
-    EntryId, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry, recovery_suffix,
+    EntryId, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry, backup_directory_id,
+    backup_snapshot_name, is_backup_snapshot_name, recovery_suffix, retained_backup_names,
+    unix_time_nanos,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -31,6 +33,34 @@ impl IosWorkspace {
 
     fn scoped_path(&self, id: &str) -> io::Result<PathBuf> {
         self.local.scoped_path(id)
+    }
+
+    fn prune_backups(&self, directory: &Path) {
+        let Ok(bytes) = list_entries(directory) else {
+            return;
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            return;
+        };
+        let names: Vec<String> = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("F:"))
+            .filter_map(|id| {
+                percent_encoding::percent_decode_str(id)
+                    .decode_utf8()
+                    .ok()
+                    .map(|name| name.into_owned())
+            })
+            .collect();
+        let Ok(now_nanos) = unix_time_nanos() else {
+            return;
+        };
+        let retained = retained_backup_names(&names, now_nanos);
+        for name in names {
+            if is_backup_snapshot_name(&name) && !retained.contains(&name) {
+                let _ = mutate(&directory.join(name), None, 3, &[]);
+            }
+        }
     }
 
     fn coordinated_entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
@@ -149,30 +179,15 @@ impl Workspace for IosWorkspace {
     fn write(&self, id: &str, contents: &str) -> io::Result<()> {
         let path = self.scoped_path(id)?;
         let previous = read_file(&path).map_err(io::Error::other)?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| io::Error::other("note has no name"))?
-            .to_string_lossy();
-        let prefix = format!(".{name}.markerup-backup-");
-        let backup = path.with_file_name(format!("{prefix}{}", recovery_suffix()?));
+        let backup_directory_id = backup_directory_id(id)?;
+        let backup_directory = self.scoped_path(&backup_directory_id)?;
+        ensure_directory(&backup_directory).map_err(io::Error::other)?;
+        let backup = backup_directory.join(backup_snapshot_name(&recovery_suffix()?));
         // Coordinated backup first: a provider rejecting the backup must not
         // replace the only existing copy of a note.
         mutate(&backup, None, 1, &previous).map_err(io::Error::other)?;
         write_file(&path, contents.as_bytes()).map_err(io::Error::other)?;
-        if let Some(parent) = path.parent() {
-            if let Ok(entries) = std::fs::read_dir(parent) {
-                let mut backups: Vec<_> = entries
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
-                    .map(|entry| entry.path())
-                    .collect();
-                backups.sort();
-                let prune = backups.len().saturating_sub(20);
-                for old in backups.into_iter().take(prune) {
-                    let _ = mutate(&old, None, 3, &[]);
-                }
-            }
-        }
+        self.prune_backups(&backup_directory);
         Ok(())
     }
     fn create_note(&self, parent: &str, name: &str) -> io::Result<EntryId> {

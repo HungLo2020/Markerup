@@ -1,21 +1,183 @@
 use crate::smb_workspace::SmbWorkspace;
 use percent_encoding::percent_decode_str;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const NANOSECONDS_PER_SECOND: u128 = 1_000_000_000;
+const SECONDS_PER_DAY: u128 = 86_400;
+const BACKUP_ROOT: &str = ".markerup/backups";
+const RECENT_SAVE_COUNT: usize = 5;
+const DAILY_RETENTION_DAYS: i64 = 5;
+const MONTHLY_RETENTION_MONTHS: i64 = 5;
+
+pub(crate) fn unix_time_nanos() -> io::Result<u128> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos())
+}
+
 pub(crate) fn recovery_suffix() -> io::Result<String> {
-    Ok(format!(
-        "{:020}-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(io::Error::other)?
-            .as_nanos(),
-        std::process::id()
-    ))
+    Ok(format!("{:020}-{}", unix_time_nanos()?, std::process::id()))
+}
+
+pub(crate) fn backup_directory_id(id: &str) -> io::Result<String> {
+    let relative = LocalWorkspace::validate_id(id)?;
+    let filename = relative
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "note has no name"))?;
+    let mut directory = PathBuf::from(BACKUP_ROOT);
+    if let Some(parent) = relative.parent() {
+        directory.push(parent);
+    }
+    directory.push(filename);
+    Ok(directory.to_string_lossy().replace('\\', "/"))
+}
+
+pub(crate) fn backup_snapshot_name(suffix: &str) -> String {
+    format!("{suffix}.md")
+}
+
+fn backup_timestamp(name: &str) -> Option<u128> {
+    let suffix = name.strip_suffix(".md")?;
+    let (timestamp, _process_id) = suffix.split_once('-')?;
+    timestamp.parse().ok()
+}
+
+pub(crate) fn is_backup_snapshot_name(name: &str) -> bool {
+    backup_timestamp(name).is_some()
+}
+
+fn month_serial_from_days(days_since_epoch: i64) -> i64 {
+    // Howard Hinnant's civil-from-days conversion, returning a zero-based
+    // month serial so adjacent months can be selected by subtraction.
+    let shifted_days = days_since_epoch + 719_468;
+    let era = if shifted_days >= 0 {
+        shifted_days
+    } else {
+        shifted_days - 146_096
+    } / 146_097;
+    let day_of_era = shifted_days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_part = (5 * day_of_year + 2) / 153;
+    let month = month_part + if month_part < 10 { 3 } else { -9 };
+    year += if month <= 2 { 1 } else { 0 };
+    year * 12 + month - 1
+}
+
+fn timestamp_day(timestamp: u128) -> i64 {
+    (timestamp / NANOSECONDS_PER_SECOND / SECONDS_PER_DAY) as i64
+}
+
+fn timestamp_month(timestamp: u128) -> i64 {
+    month_serial_from_days(timestamp_day(timestamp))
+}
+
+pub(crate) fn retained_backup_names(names: &[String], now_nanos: u128) -> HashSet<String> {
+    let mut snapshots: Vec<(u128, &String)> = names
+        .iter()
+        .filter_map(|name| backup_timestamp(name).map(|timestamp| (timestamp, name)))
+        .collect();
+    snapshots.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)));
+
+    let mut retained: HashSet<String> = snapshots
+        .iter()
+        .rev()
+        .take(RECENT_SAVE_COUNT)
+        .map(|(_, name)| (*name).clone())
+        .collect();
+
+    let latest_for = |matches: &dyn Fn(u128) -> bool| {
+        snapshots
+            .iter()
+            .rev()
+            .find(|(timestamp, _)| matches(*timestamp))
+            .map(|(_, name)| (*name).clone())
+    };
+
+    let current_day = timestamp_day(now_nanos);
+    for days_ago in 0..DAILY_RETENTION_DAYS {
+        let day = current_day - days_ago;
+        if let Some(name) = latest_for(&|timestamp| timestamp_day(timestamp) == day) {
+            retained.insert(name);
+        }
+    }
+
+    let current_month = timestamp_month(now_nanos);
+    for months_ago in 0..MONTHLY_RETENTION_MONTHS {
+        let month = current_month - months_ago;
+        if let Some(name) = latest_for(&|timestamp| timestamp_month(timestamp) == month) {
+            retained.insert(name);
+        }
+    }
+
+    retained
+}
+
+fn prune_local_backups(directory: &Path) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let files: Vec<_> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .collect();
+    let names: Vec<_> = files
+        .iter()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    let Ok(now_nanos) = unix_time_nanos() else {
+        return;
+    };
+    let retained = retained_backup_names(&names, now_nanos);
+    for entry in files {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if backup_timestamp(&name).is_some() && !retained.contains(&name) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn ensure_local_directory(root: &Path, relative: &str) -> io::Result<PathBuf> {
+    let relative = LocalWorkspace::validate_id(relative)?;
+    let mut directory = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "backup directory escapes the workspace",
+            ));
+        };
+        directory.push(name);
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "backup directory cannot contain symbolic links",
+                ));
+            }
+            Ok(metadata) if metadata.is_dir() => (),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "backup directory path conflicts with a file",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&directory)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(directory)
 }
 
 #[cfg(target_os = "ios")]
@@ -342,6 +504,11 @@ impl Workspace for LocalWorkspace {
                 "entry is not a file",
             ));
         }
+        let backup_directory = ensure_local_directory(&self.root, &backup_directory_id(id)?)?;
+        let backup = backup_directory.join(backup_snapshot_name(&recovery_suffix()?));
+        fs::copy(&path, &backup)?;
+        fs::File::open(&backup)?.sync_all()?;
+        fs::File::open(&backup_directory)?.sync_all()?;
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("note has no parent"))?;
@@ -349,10 +516,6 @@ impl Workspace for LocalWorkspace {
             .file_name()
             .ok_or_else(|| io::Error::other("note has no name"))?
             .to_string_lossy();
-        let prefix = format!(".{name}.markerup-backup-");
-        let backup = parent.join(format!("{prefix}{}", recovery_suffix()?));
-        fs::copy(&path, &backup)?;
-        fs::File::open(&backup)?.sync_all()?;
         let temporary = parent.join(format!(".{name}.markerup-writing-{}", recovery_suffix()?));
         let result = (|| {
             let mut file = OpenOptions::new()
@@ -371,20 +534,7 @@ impl Workspace for LocalWorkspace {
             let _ = fs::remove_file(&temporary);
         }
         result?;
-        // Keep the latest twenty versions per note. Backup cleanup must not
-        // turn a successful save into an apparent failure.
-        if let Ok(entries) = fs::read_dir(parent) {
-            let mut backups: Vec<_> = entries
-                .filter_map(Result::ok)
-                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
-                .map(|entry| entry.path())
-                .collect();
-            backups.sort();
-            let prune = backups.len().saturating_sub(20);
-            for old in backups.into_iter().take(prune) {
-                let _ = fs::remove_file(old);
-            }
-        }
+        prune_local_backups(&backup_directory);
         Ok(())
     }
 
@@ -806,7 +956,11 @@ impl Workspace for WorkspaceSlot {
 
 #[cfg(test)]
 mod tests {
-    use super::{EntryKind, LocalWorkspace, Workspace};
+    use super::{
+        EntryKind, LocalWorkspace, Workspace, backup_directory_id, backup_snapshot_name,
+        is_backup_snapshot_name, retained_backup_names,
+    };
+    use std::collections::HashSet;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -821,6 +975,66 @@ mod tests {
         fs::write(root.join("nested/Other.md"), "# Other").unwrap();
         fs::write(root.join("nested/deeper/Deep.md"), "# Deep").unwrap();
         root
+    }
+
+    fn snapshot_name(day: u128, second_of_day: u128, process_id: u32) -> String {
+        let timestamp = (day * 86_400 + second_of_day) * 1_000_000_000;
+        backup_snapshot_name(&format!("{timestamp:020}-{process_id}"))
+    }
+
+    #[test]
+    fn backup_directory_mirrors_note_path_under_markerup() {
+        assert_eq!(
+            backup_directory_id("games/minecraft.md").unwrap(),
+            ".markerup/backups/games/minecraft.md"
+        );
+        assert_eq!(
+            backup_directory_id("Notes.md").unwrap(),
+            ".markerup/backups/Notes.md"
+        );
+        assert!(backup_directory_id("../outside.md").is_err());
+    }
+
+    #[test]
+    fn backup_retention_keeps_recent_daily_and_monthly_snapshots() {
+        // 1970-06-11 in UTC; the daily window covers June 7-11 and the
+        // monthly window covers February-June.
+        let today = 161_u128;
+        let now = (today * 86_400 + 86_399) * 1_000_000_000;
+        let mut names = Vec::new();
+        // The five newest saves are all on the current day.
+        for second in 43_200..43_205 {
+            names.push(snapshot_name(today, second, second as u32));
+        }
+        // One save for each other day in the five-day window.
+        for day in [157_u128, 158, 159, 160] {
+            names.push(snapshot_name(day, 43_200, day as u32));
+        }
+        // The latest saves in the preceding four months, plus older
+        // snapshots in those months that should be pruned.
+        for (day, process_id) in [(150_u128, 50), (119, 40), (89, 30), (58, 20)] {
+            names.push(snapshot_name(day, 43_200, process_id));
+            names.push(snapshot_name(day - 1, 43_200, process_id - 1));
+        }
+        let outside_window = snapshot_name(30, 43_200, 1);
+        names.push(outside_window.clone());
+        names.push("README.md".to_string());
+
+        let retained = retained_backup_names(&names, now);
+        let expected: HashSet<_> = names
+            .iter()
+            .filter(|name| {
+                is_backup_snapshot_name(name)
+                    && *name != &outside_window
+                    && ![(149_u128, 49), (118, 39), (88, 29), (57, 19)]
+                        .iter()
+                        .any(|(day, process_id)| *name == &snapshot_name(*day, 43_200, *process_id))
+            })
+            .cloned()
+            .collect();
+        assert_eq!(retained, expected);
+        assert!(retained.len() <= 15);
+        assert!(!retained.contains(&"README.md".to_string()));
     }
 
     #[test]
@@ -897,20 +1111,23 @@ mod tests {
     #[test]
     fn replacement_is_atomic_and_keeps_the_previous_note_if_write_fails() {
         let root = temp();
+        let legacy_backup = root.join(".Root.md.markerup-backup-legacy");
+        fs::write(&legacy_backup, "older recovery copy").unwrap();
         let w = LocalWorkspace::open(&root).unwrap();
         w.write("Root.md", "# Updated").unwrap();
         assert_eq!(w.read("Root.md").unwrap(), "# Updated");
-        let backup = fs::read_dir(&root)
+        let backup_directory = root.join(".markerup/backups/Root.md");
+        let backup = fs::read_dir(&backup_directory)
             .unwrap()
             .filter_map(Result::ok)
-            .find(|item| {
-                item.file_name()
-                    .to_string_lossy()
-                    .starts_with(".Root.md.markerup-backup-")
-            })
+            .find(|item| is_backup_snapshot_name(&item.file_name().to_string_lossy()))
             .unwrap()
             .path();
         assert_eq!(fs::read_to_string(backup).unwrap(), "# Root");
+        assert_eq!(
+            fs::read_to_string(legacy_backup).unwrap(),
+            "older recovery copy"
+        );
         assert!(!fs::read_dir(&root).unwrap().any(|item| {
             item.unwrap()
                 .file_name()

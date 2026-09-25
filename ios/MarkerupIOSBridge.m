@@ -308,6 +308,10 @@ bool markerup_ios_mutate(const char *path, const char *destination, unsigned cha
                    withIntermediateDirectories:YES attributes:nil error:&error];
                 if (!error) [manager moveItemAtURL:coordinatedURL toURL:destinationURL error:&error];
                 break;
+            case 5:
+                [manager createDirectoryAtURL:coordinatedURL
+                  withIntermediateDirectories:YES attributes:nil error:&error];
+                break;
             default:
                 error = [NSError errorWithDomain:@"Markerup" code:1 userInfo:nil];
         }

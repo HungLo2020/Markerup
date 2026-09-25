@@ -17,7 +17,7 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 - Source, preview, and split views.
 - Debounced autosave and dirty-state tracking.
 - Recovery drafts are stored by the app for edits pending a verified save and restored when that note is opened again.
-- Each save preserves prior copies as hidden `.Note.md.markerup-backup-*` files beside the note, keeping the latest 20 where directory enumeration allows pruning. Local replacements are atomic; iOS Files provider writes use coordinated atomic replacement.
+- Each save preserves the previous note in the hidden `.markerup/backups/` directory, mirroring the note's workspace path. Per note, Markerup keeps the five newest saves, the newest save from each of the last five UTC days, and the newest save from each of the last five UTC months. Local replacements are atomic; iOS Files provider writes use coordinated atomic replacement.
 - External-change reload when the note is clean.
 - Conflict protection when a note changes externally while Markerup has unsaved edits.
 - Explicit **Use disk version**, **Overwrite disk**, and **Copy my text** conflict actions. Overwrite and discard require confirmation.
@@ -58,7 +58,7 @@ cargo run
 
 Markerup application state is disposable. Notes and organization live only in the selected filesystem tree. A non-favorite workspace is not persisted. Favorites store only enough application state to reopen the selected workspace and current note.
 
-Recovery drafts are an exception: pending unsaved editor text is kept in the app's local webview storage. Saved-note history and deleted entries are kept as hidden files inside workspaces. Restore a deleted item by moving it out of `.markerup-trash`; restore a previous version by copying a matching hidden backup over the note. Back up the entire workspace, including hidden files, if you want these recovery copies included in your normal backup. Some iOS Files providers may not enumerate hidden files for pruning; keep an eye on the size of provider-backed workspaces.
+Recovery drafts are an exception: pending unsaved editor text is kept in the app's local webview storage. Saved-note history is kept in `.markerup/backups/<relative note path>/<timestamp>.md`; deleted entries are kept in `.markerup-trash`. Restore a deleted item by moving it out of `.markerup-trash`; restore a previous version by copying a matching backup over the note. Back up the entire workspace, including hidden files, if you want these recovery copies included in your normal backup. Some iOS Files providers may not enumerate hidden backup files for pruning; keep an eye on the size of provider-backed workspaces. Existing side-by-side backups from older Markerup versions are left in place.
 
 ## Architecture
 

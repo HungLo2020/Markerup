@@ -207,6 +207,10 @@ pub fn mutate(
         .ok_or_else(|| "coordinated workspace mutation failed".to_string())
 }
 
+pub fn ensure_directory(path: &std::path::Path) -> Result<(), String> {
+    mutate(path, None, 5, &[])
+}
+
 pub fn list_entries(path: &std::path::Path) -> Result<Vec<u8>, String> {
     let path = CString::new(path.to_string_lossy().as_bytes())
         .map_err(|_| "invalid workspace path".to_string())?;

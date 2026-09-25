@@ -1,5 +1,7 @@
 use crate::workspace::{
-    EntryId, EntryKind, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry, recovery_suffix,
+    EntryId, EntryKind, LinkTarget, LocalWorkspace, Workspace, WorkspaceEntry, backup_directory_id,
+    backup_snapshot_name, is_backup_snapshot_name, recovery_suffix, retained_backup_names,
+    unix_time_nanos,
 };
 use percent_encoding::percent_decode_str;
 use smb2::{ClientConfig, DirectoryEntry, SmbClient, Tree};
@@ -185,6 +187,51 @@ impl SmbWorkspace {
                 })
             }
             Err(error) => Err(error),
+        }
+    }
+
+    fn ensure_directory_path(&self, id: &str) -> io::Result<()> {
+        validate_remote_id(id)?;
+        let mut parent = String::new();
+        for component in id.split('/') {
+            if component.is_empty() {
+                continue;
+            }
+            match self.create_directory(&parent, component) {
+                Ok(_) => (),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
+                Err(error) => return Err(error),
+            }
+            parent = if parent.is_empty() {
+                component.to_string()
+            } else {
+                format!("{parent}/{component}")
+            };
+        }
+        Ok(())
+    }
+
+    fn prune_note_backups(&self, directory: &str) {
+        let Ok(entries) = self.list_directory(directory) else {
+            return;
+        };
+        let names: Vec<String> = entries
+            .into_iter()
+            .filter(|entry| !entry.is_directory && is_backup_snapshot_name(&entry.name))
+            .map(|entry| entry.name)
+            .collect();
+        let Ok(now_nanos) = unix_time_nanos() else {
+            return;
+        };
+        let retained = retained_backup_names(&names, now_nanos);
+        for name in names {
+            if retained.contains(&name) {
+                continue;
+            }
+            let path = format!("{directory}/{name}");
+            let _ = self.mutate(|client, tree| {
+                self.run_smb("prune backup", || client.delete_file(tree, &path))
+            });
         }
     }
 
@@ -569,13 +616,12 @@ impl Workspace for SmbWorkspace {
         // The SMB client's write_file replaces the target in place. Preserve
         // the previous bytes before attempting that destructive operation.
         let previous = self.read(id)?;
-        let parent = id.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
-        let name = id.rsplit('/').next().unwrap_or(id);
-        let backup_id = if parent.is_empty() {
-            format!(".{name}.markerup-backup-{}", recovery_suffix()?)
-        } else {
-            format!("{parent}/.{name}.markerup-backup-{}", recovery_suffix()?)
-        };
+        let backup_directory = backup_directory_id(id)?;
+        self.ensure_directory_path(&backup_directory)?;
+        let backup_id = format!(
+            "{backup_directory}/{}",
+            backup_snapshot_name(&recovery_suffix()?)
+        );
         let backup_path = self.remote_path(&backup_id)?;
         self.mutate(|client, tree| {
             self.run_smb("backup", || async {
@@ -594,29 +640,9 @@ impl Workspace for SmbWorkspace {
             .map(|_| ())
         })
         .map_err(mark_ambiguous_mutation)?;
-        // Bound recovery storage. Cleanup is best effort; a successful note
-        // write must not be reported as failed because pruning failed.
-        let directory = self.remote_path(parent)?;
-        if let Ok(children) = self.list_directory(&directory) {
-            let prefix = format!(".{name}.markerup-backup-");
-            let mut backups: Vec<_> = children
-                .into_iter()
-                .filter(|entry| entry.name.starts_with(&prefix) && !entry.is_directory)
-                .map(|entry| entry.name)
-                .collect();
-            backups.sort();
-            let prune = backups.len().saturating_sub(20);
-            for old in backups.into_iter().take(prune) {
-                let path = if directory.is_empty() {
-                    old
-                } else {
-                    format!("{directory}/{old}")
-                };
-                let _ = self.mutate(|client, tree| {
-                    self.run_smb("prune backup", || client.delete_file(tree, &path))
-                });
-            }
-        }
+        // Pruning is best effort; a successful note write must not be
+        // reported as failed because remote cleanup failed.
+        self.prune_note_backups(&self.remote_path(&backup_directory)?);
         Ok(())
     }
 
