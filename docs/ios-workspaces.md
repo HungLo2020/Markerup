@@ -12,6 +12,14 @@ Markerup must treat an iOS workspace as a user-granted document-provider directo
 6. Use `NSFileCoordinator` for reads, writes, creates, renames, and deletes to provider-backed content.
 7. Release security-scoped access when the workspace is closed or the application no longer needs it.
 
+When the app is backgrounded, Markerup asks the editor to flush its pending
+save while UIKit grants a bounded background execution window. It ends that
+window when the flush completes or when the app returns to the foreground. On
+resume, Markerup refreshes the selected note: clean editor contents reload from
+disk, while edits that conflict with external changes remain available for the
+existing conflict actions. The webview recovery draft remains a fallback when
+a provider write cannot finish before iOS suspends the app.
+
 This is intentionally different from the Linux implementation. The shared `Workspace` API uses opaque entry IDs so provider items do not have to masquerade as ordinary local `PathBuf`s.
 
 The implementation is split between `src/ios_workspace.rs`, `src/ios_bridge.rs`, and `ios/MarkerupIOSBridge.m`. The Tauri frontend is shared with desktop; platform-specific selection and credential storage remain behind Rust commands.

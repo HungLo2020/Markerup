@@ -1034,7 +1034,7 @@ mod tests {
             .collect();
         assert_eq!(retained, expected);
         assert!(retained.len() <= 15);
-        assert!(!retained.contains(&"README.md".to_string()));
+        assert!(!retained.contains("README.md"));
     }
 
     #[test]

@@ -28,6 +28,7 @@ let saveTimer: number | undefined;
 let saveInFlight: Promise<void> | undefined;
 let retryTimer: number | undefined;
 let saveBlockedUntilReload = false;
+let iosWasBackgrounded = false;
 const draftPrefix = "markerup-draft-v1:";
 function draftKey(note = snapshot?.currentFile, workspace = snapshot?.workspacePath) {
   return note && workspace ? draftPrefix + JSON.stringify([workspace, note]) : undefined;
@@ -993,7 +994,20 @@ async function refreshPreview(generation: number) {
     preview.textContent = "Preview failed: " + error;
   }
 }
-window.addEventListener("beforeunload",()=>void flushSave()); document.addEventListener("visibilitychange",()=>{if(document.hidden)void flushSave()});
+window.addEventListener("beforeunload",()=>void flushSave());
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (iosDevice()) iosWasBackgrounded = true;
+    // UIKit keeps the app alive for a bounded period during this flush. The
+    // recovery draft remains the fallback if the provider is still unavailable.
+    void flushSave().finally(() => {
+      if (iosDevice()) void call<void>("finish_ios_background_save").catch(() => {});
+    });
+  } else if (iosDevice() && iosWasBackgrounded) {
+    iosWasBackgrounded = false;
+    void refresh();
+  }
+});
 async function start(){
   renderShell();
   try {

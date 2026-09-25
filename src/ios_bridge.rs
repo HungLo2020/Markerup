@@ -3,7 +3,6 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct WorkspaceSelection {
     pub path: PathBuf,
@@ -11,9 +10,6 @@ pub struct WorkspaceSelection {
 }
 
 type PickerCallback = Box<dyn FnOnce(Result<Option<WorkspaceSelection>, String>)>;
-
-static RESUME_REQUESTED: AtomicBool = AtomicBool::new(false);
-static BACKGROUND_SAVE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
     fn markerup_ios_present_directory_picker(
@@ -37,6 +33,7 @@ unsafe extern "C" {
     fn markerup_ios_diagnostics() -> *mut c_char;
     fn markerup_ios_copy_diagnostics();
     fn markerup_ios_install_lifecycle_observers();
+    fn markerup_ios_finish_background_task();
     fn markerup_ios_dismiss_keyboard();
     fn markerup_ios_keychain_set_password(account: *const c_char, password: *const c_char) -> bool;
     fn markerup_ios_keychain_get_password(account: *const c_char) -> *mut c_char;
@@ -49,12 +46,10 @@ pub fn install_lifecycle_observers() {
     }
 }
 
-pub fn take_resume_request() -> bool {
-    RESUME_REQUESTED.swap(false, Ordering::AcqRel)
-}
-
-pub fn take_background_save_request() -> bool {
-    BACKGROUND_SAVE_REQUESTED.swap(false, Ordering::AcqRel)
+pub fn finish_background_task() {
+    unsafe {
+        markerup_ios_finish_background_task();
+    }
 }
 
 pub fn save_smb_password(account: &str, password: &str) -> Result<(), String> {
@@ -83,16 +78,6 @@ pub fn delete_smb_password(account: &str) {
         return;
     };
     unsafe { markerup_ios_keychain_delete_password(account.as_ptr()) };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn markerup_ios_resume_request() {
-    RESUME_REQUESTED.store(true, Ordering::Release);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn markerup_ios_background_save_request() {
-    BACKGROUND_SAVE_REQUESTED.store(true, Ordering::Release);
 }
 
 extern "C" fn picker_callback(

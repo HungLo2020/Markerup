@@ -19,6 +19,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(backend);
+    #[cfg(target_os = "ios")]
+    let builder = builder.setup(|_app| {
+        ios_bridge::install_lifecycle_observers();
+        Ok(())
+    });
     #[cfg(not(target_os = "ios"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         tauri_backend::workspace_snapshot,
@@ -72,7 +77,8 @@ pub fn run() {
         tauri_backend::toggle_markdown_task,
         tauri_backend::render_mermaid,
         tauri_backend::workspace_asset_data,
-        tauri_backend::privacy_policy_url
+        tauri_backend::privacy_policy_url,
+        tauri_backend::finish_ios_background_save
     ]);
     builder
         .run(tauri::generate_context!())

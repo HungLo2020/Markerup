@@ -11,8 +11,9 @@
 #import <stdlib.h>
 
 typedef void (*MarkerupPickerCallback)(const char *, const unsigned char *, size_t, void *);
-extern void markerup_ios_resume_request(void);
-extern void markerup_ios_background_save_request(void);
+
+static UIBackgroundTaskIdentifier MarkerupBackgroundTask = UIBackgroundTaskInvalid;
+static BOOL MarkerupLifecycleObserversInstalled = NO;
 
 // ATTR_CMN_OBJTYPE returns the Darwin vnode type. The iOS SDK exposes the
 // attribute but not the private sys/vnode.h constants: VREG is 1 and VDIR is 2.
@@ -27,6 +28,26 @@ static NSMutableDictionary<NSString *, NSURL *> *MarkerupAccessMap(void) {
 }
 
 static NSString *MarkerupLastDiagnostics;
+
+static void MarkerupEndBackgroundTask(void) {
+    if (MarkerupBackgroundTask == UIBackgroundTaskInvalid) return;
+    UIBackgroundTaskIdentifier task = MarkerupBackgroundTask;
+    MarkerupBackgroundTask = UIBackgroundTaskInvalid;
+    [UIApplication.sharedApplication endBackgroundTask:task];
+}
+
+static void MarkerupBeginBackgroundTask(void) {
+    if (MarkerupBackgroundTask != UIBackgroundTaskInvalid) return;
+    UIApplication *application = UIApplication.sharedApplication;
+    __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
+    task = [application beginBackgroundTaskWithName:@"Save Markerup note"
+                                  expirationHandler:^{
+        if (task != UIBackgroundTaskInvalid && MarkerupBackgroundTask == task) {
+            MarkerupEndBackgroundTask();
+        }
+    }];
+    if (task != UIBackgroundTaskInvalid) MarkerupBackgroundTask = task;
+}
 
 static void MarkerupStoreDiagnostics(NSString *report) {
     @synchronized (MarkerupAccessMap()) {
@@ -587,18 +608,28 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
 }
 
 void markerup_ios_install_lifecycle_observers(void) {
-    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification
-                                                     object:nil
-                                                 queue:NSOperationQueue.mainQueue
-                                                 usingBlock:^(NSNotification *note) {
-        (void)note;
-        markerup_ios_background_save_request();
-    }];
-    [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                     object:nil
-                                                 queue:NSOperationQueue.mainQueue
-                                                 usingBlock:^(NSNotification *note) {
-        (void)note;
-        markerup_ios_resume_request();
-    }];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (MarkerupLifecycleObserversInstalled) return;
+        MarkerupLifecycleObserversInstalled = YES;
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification
+                                                         object:nil
+                                                     queue:NSOperationQueue.mainQueue
+                                                     usingBlock:^(NSNotification *note) {
+            (void)note;
+            MarkerupBeginBackgroundTask();
+        }];
+        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                         object:nil
+                                                     queue:NSOperationQueue.mainQueue
+                                                     usingBlock:^(NSNotification *note) {
+            (void)note;
+            MarkerupEndBackgroundTask();
+        }];
+    });
+}
+
+void markerup_ios_finish_background_task(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MarkerupEndBackgroundTask();
+    });
 }

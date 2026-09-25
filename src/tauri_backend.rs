@@ -1091,6 +1091,12 @@ pub fn privacy_policy_url() -> &'static str {
     PRIVACY_POLICY_URL
 }
 
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub fn finish_ios_background_save() {
+    crate::ios_bridge::finish_background_task();
+}
+
 fn normalize_mermaid_source(source: &str) -> String {
     source
         .lines()
