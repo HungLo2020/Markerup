@@ -45,8 +45,13 @@ let editor: EditorView | undefined;
 let editorState: EditorState | undefined;
 let previewTimer: number | undefined;
 let page: "main" | "settings" | "location" | "smb" | "about" = "main";
-let editorMode: "source" | "live" | "split" | "preview" = "split";
+const viewModes = ["source", "live", "split", "preview"] as const;
+type ViewMode = typeof viewModes[number];
+let editorMode: ViewMode = "split";
 const collapsedDirectories = new Set<string>();
+const collapsedPrefix = "markerup-collapsed-v1:";
+let collapsedWorkspace: string | undefined;
+let revealActiveEntry = false;
 let previewGeneration = 0;
 let latestBlocks: Block[] = [];
 let latestLinkDefinitions: string[] = [];
@@ -83,6 +88,22 @@ const mobileLayout = () => window.matchMedia("(max-width: 700px)").matches;
 // MacIntel form as well as the conventional iOS device identifiers. This must
 // be a platform check rather than a viewport check: desktop mobile-preview
 // windows still use Tauri's desktop dialog plugin.
+// The last view mode is remembered separately for phone-width layouts, where
+// Split cannot show both panes side by side and Live is the default.
+const viewModeKey = () => `markerup-view-mode-v1:${mobileLayout() ? "mobile" : "desktop"}`;
+function rememberedViewMode(): ViewMode {
+  try {
+    const stored = localStorage.getItem(viewModeKey());
+    if (viewModes.some(mode => mode === stored)) return stored as ViewMode;
+  } catch {
+    // Fall back to the layout's default view.
+  }
+  return mobileLayout() ? "live" : "split";
+}
+function rememberViewMode(mode: ViewMode) {
+  try { localStorage.setItem(viewModeKey(), mode); }
+  catch { /* Remembering the view is a convenience only. */ }
+}
 const iosDevice = () => /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
@@ -159,7 +180,8 @@ function renderPage() {
   document.querySelector("#search")!.addEventListener("input", scheduleSearch);
   document.querySelector("#insert")?.addEventListener("click", () => void showInsertMenu());
   document.querySelector<HTMLSelectElement>("#view-mode")!.addEventListener("change", event => {
-    editorMode = (event.target as HTMLSelectElement).value as typeof editorMode;
+    editorMode = (event.target as HTMLSelectElement).value as ViewMode;
+    rememberViewMode(editorMode);
     applyMode();
     if (editorMode === "live") schedulePreview(0);
   });
@@ -283,6 +305,54 @@ async function confirmAction(title: string, message: string): Promise<boolean> {
   return answer === "confirm";
 }
 
+// Collapsed folders are remembered per workspace across re-renders and launches.
+function syncCollapsedDirectories() {
+  const workspace = snapshot?.workspacePath || undefined;
+  if (workspace === collapsedWorkspace) return;
+  collapsedWorkspace = workspace;
+  collapsedDirectories.clear();
+  if (!workspace) return;
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(collapsedPrefix + workspace) ?? "[]");
+    if (Array.isArray(stored)) for (const id of stored) if (typeof id === "string") collapsedDirectories.add(id);
+  } catch {
+    // An unreadable list only means every folder starts expanded.
+  }
+}
+function saveCollapsedDirectories() {
+  if (!collapsedWorkspace) return;
+  // Forget folders that no longer exist so the stored list cannot grow forever.
+  const folders = new Set((snapshot?.entries ?? []).filter(entry => entry.kind === "Directory").map(entry => entry.id));
+  const collapsed = [...collapsedDirectories].filter(id => folders.has(id));
+  try {
+    if (collapsed.length) localStorage.setItem(collapsedPrefix + collapsedWorkspace, JSON.stringify(collapsed));
+    else localStorage.removeItem(collapsedPrefix + collapsedWorkspace);
+  } catch {
+    // Remembering folders is a convenience; the tree still works without it.
+  }
+}
+function rebaseCollapsedDirectories(oldId: string, newId: string) {
+  let changed = false;
+  for (const collapsed of [...collapsedDirectories]) {
+    if (collapsed === oldId || collapsed.startsWith(`${oldId}/`)) {
+      collapsedDirectories.delete(collapsed);
+      collapsedDirectories.add(`${newId}${collapsed.slice(oldId.length)}`);
+      changed = true;
+    }
+  }
+  if (changed) saveCollapsedDirectories();
+}
+// Expand the folders containing a note so the tree can show it.
+function revealInTree(id: string) {
+  syncCollapsedDirectories();
+  const parts = id.split("/");
+  let changed = false;
+  for (let index = 1; index < parts.length; index += 1) {
+    changed = collapsedDirectories.delete(parts.slice(0, index).join("/")) || changed;
+  }
+  if (changed) saveCollapsedDirectories();
+  revealActiveEntry = true;
+}
 function visibleTreeEntries(entries: Entry[]) {
   const visible: Entry[] = [];
   for (const entry of entries) {
@@ -294,18 +364,29 @@ function visibleTreeEntries(entries: Entry[]) {
 }
 function renderTree(entries = snapshot?.entries ?? []) {
   const tree=document.querySelector("#tree"); if (!tree) return;
-  tree.innerHTML=visibleTreeEntries(entries).map(entry=>`<div class="entry" style="padding-left:${entry.depth * 16 + 6}px"><button class="entry-main" data-id="${escape(entry.id)}" aria-expanded="${entry.kind === "Directory" ? !collapsedDirectories.has(entry.id) : undefined}">${entry.kind === "Directory" ? `<span class="entry-disclosure">${collapsedDirectories.has(entry.id) ? "▸" : "▾"}</span><img class="entry-folder-icon" src="${folderIcon}" alt="">` : "·"} ${escape(entry.name)}</button><button class="entry-actions" data-id="${escape(entry.id)}" data-kind="${entry.kind}">…</button></div>`).join("") || "<p class=muted>No Markdown notes found.</p>";
+  syncCollapsedDirectories();
+  const activeId = snapshot?.currentFile;
+  tree.innerHTML=visibleTreeEntries(entries).map(entry=>{
+    const active = entry.kind === "File" && entry.id === activeId;
+    const state = entry.kind === "Directory" ? ` aria-expanded="${!collapsedDirectories.has(entry.id)}"` : active ? ` aria-current="page"` : "";
+    return `<div class="entry${active ? " active" : ""}" style="padding-left:${entry.depth * 16 + 6}px"><button class="entry-main" data-id="${escape(entry.id)}"${state}>${entry.kind === "Directory" ? `<span class="entry-disclosure">${collapsedDirectories.has(entry.id) ? "▸" : "▾"}</span><img class="entry-folder-icon" src="${folderIcon}" alt="">` : "·"} ${escape(entry.name)}</button><button class="entry-actions" data-id="${escape(entry.id)}" data-kind="${entry.kind}" aria-label="Actions for ${escape(entry.name)}">…</button></div>`;
+  }).join("") || "<p class=muted>No Markdown notes found.</p>";
   tree.querySelectorAll<HTMLButtonElement>(".entry-main").forEach(b=>b.addEventListener("click",()=>{
     const entry = entries.find(candidate => candidate.id === b.dataset.id);
     if (entry?.kind === "Directory") {
       if (collapsedDirectories.has(entry.id)) collapsedDirectories.delete(entry.id);
       else collapsedDirectories.add(entry.id);
+      saveCollapsedDirectories();
       renderTree(entries);
       return;
     }
     void openNote(b.dataset.id!);
   }));
   tree.querySelectorAll<HTMLButtonElement>(".entry-actions").forEach(b=>b.addEventListener("click",()=>entryActions(b.dataset.id!, b.dataset.kind === "Directory")));
+  if (revealActiveEntry) {
+    revealActiveEntry = false;
+    tree.querySelector<HTMLElement>(".entry.active")?.scrollIntoView?.({ block: "nearest" });
+  }
 }
 function disposeEditor() {
   if (!editor) return;
@@ -340,7 +421,7 @@ async function openNote(id:string){
 }
 function openNoteView(note: Note) {
   if (mobileLayout()) {
-    editorMode="live";
+    editorMode=rememberedViewMode();
     document.body.classList.add("sidebar-hidden");
   }
   loadNote(note);
@@ -350,6 +431,7 @@ function loadNote(note:Note, discardDraft = false){
   if(retryTimer) clearTimeout(retryTimer);
   saveBlockedUntilReload=false;
   snapshot=note.snapshot;
+  revealInTree(note.id);
   currentText=savedText=note.contents;
   const key=draftKey();
   try {
@@ -524,50 +606,89 @@ function insertAtSelection(text: string) {
   });
   currentEditor.focus();
 }
-function chooseNoteTarget(): Promise<Entry | undefined> {
+type PickerItem<T> = { value: T; label: string; detail?: string; depth: number };
+
+/** A modal list with a filter box. Typing narrows the list to items whose
+ *  name or folder contains every word; Enter picks the first match. */
+function choosePicker<T>(title: string, items: PickerItem<T>[], emptyText: string): Promise<T | undefined> {
   return new Promise(resolve => {
-    const modal = modalSurface<Entry>("Insert link to note", resolve);
+    const modal = modalSurface<T>(title, resolve);
+    if (!items.length) {
+      modal.body.innerHTML = `<p class="muted">${escape(emptyText)}</p>`;
+      return;
+    }
+    const filter = document.createElement("input");
+    filter.type = "search";
+    filter.className = "picker-filter";
+    filter.placeholder = "Filter";
+    filter.autocomplete = "off";
+    filter.setAttribute("aria-label", `Filter ${title.toLowerCase()}`);
     const list = document.createElement("div");
     list.className = "insert-selector";
-    const notes = (snapshot?.entries ?? []).filter(entry => entry.kind === "File");
-    if (!notes.length) {
-      list.innerHTML = `<p class="muted">No Markdown notes found.</p>`;
-    } else {
-      for (const note of notes) {
+    const render = () => {
+      const terms = filter.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const matches = items.filter(item => {
+        const text = `${item.label} ${item.detail ?? ""}`.toLowerCase();
+        return terms.every(term => text.includes(term));
+      });
+      if (!matches.length) {
+        list.innerHTML = `<p class="muted">No matches.</p>`;
+        return;
+      }
+      // Unfiltered lists keep the tree indentation. Filtered results lose
+      // their parents, so show each item's folder instead.
+      list.replaceChildren(...matches.map(item => {
         const button = document.createElement("button");
         button.className = "insert-selector-entry";
-        button.style.paddingLeft = `${note.depth * 16 + 12}px`;
-        button.textContent = note.name;
-        button.title = note.id;
-        button.addEventListener("click", () => modal.dismiss(note));
-        list.append(button);
-      }
-    }
-    modal.body.append(list);
+        button.style.paddingLeft = `${(terms.length ? 0 : item.depth) * 16 + 12}px`;
+        const label = document.createElement("span");
+        label.textContent = item.label;
+        button.append(label);
+        if (terms.length && item.detail) {
+          const detail = document.createElement("span");
+          detail.className = "picker-detail";
+          detail.textContent = item.detail;
+          button.append(detail);
+        }
+        if (item.detail) button.title = item.detail;
+        button.addEventListener("click", () => modal.dismiss(item.value));
+        return button;
+      }));
+    };
+    const buttons = () => Array.from(list.querySelectorAll<HTMLButtonElement>("button"));
+    filter.addEventListener("input", render);
+    filter.addEventListener("keydown", event => {
+      if (event.key === "Enter") { event.preventDefault(); buttons()[0]?.click(); }
+      if (event.key === "ArrowDown") { event.preventDefault(); buttons()[0]?.focus(); }
+    });
+    list.addEventListener("keydown", event => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      const all = buttons();
+      const index = all.indexOf(document.activeElement as HTMLButtonElement);
+      if (event.key === "ArrowUp" && index <= 0) filter.focus();
+      else all[Math.min(all.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))]?.focus();
+    });
+    modal.body.append(filter, list);
+    render();
+    // Opening the on-screen keyboard unasked would hide most of the list.
+    if (!mobileLayout()) requestAnimationFrame(() => filter.focus());
   });
+}
+function folderOf(id: string) {
+  return id.includes("/") ? id.slice(0, id.lastIndexOf("/")) : "";
+}
+function entryPickerItems(entries: Entry[]): PickerItem<Entry>[] {
+  return entries.map(entry => ({ value: entry, label: entry.name, detail: folderOf(entry.id), depth: entry.depth }));
+}
+function chooseNoteTarget(): Promise<Entry | undefined> {
+  const notes = (snapshot?.entries ?? []).filter(entry => entry.kind === "File");
+  return choosePicker("Insert link to note", entryPickerItems(notes), "No Markdown notes found.");
 }
 async function chooseWorkspaceAsset(): Promise<Entry | undefined> {
   try {
     const assets = await call<Entry[]>("workspace_assets");
-    return await new Promise(resolve => {
-      const modal = modalSurface<Entry>("Insert workspace image", resolve);
-      const list = document.createElement("div");
-      list.className = "insert-selector";
-      if (!assets.length) {
-        list.innerHTML = `<p class="muted">No supported images found in this workspace.</p>`;
-      } else {
-        for (const asset of assets) {
-          const button = document.createElement("button");
-          button.className = "insert-selector-entry";
-          button.style.paddingLeft = `${asset.depth * 16 + 12}px`;
-          button.textContent = asset.name;
-          button.title = asset.id;
-          button.addEventListener("click", () => modal.dismiss(asset));
-          list.append(button);
-        }
-      }
-      modal.body.append(list);
-    });
+    return await choosePicker("Insert workspace image", entryPickerItems(assets), "No supported images found in this workspace.");
   } catch (error) {
     status(`Image list failed: ${error}`);
     return undefined;
@@ -615,26 +736,12 @@ async function showInsertMenu() {
   if (action === "web-image") return insertUrlImage();
 }
 function chooseDestinationFolder(sourceId: string): Promise<string | undefined> {
-  return new Promise(resolve => {
-    const modal = modalSurface<string>("Move to folder", resolve);
-    const list = document.createElement("div");
-    list.className = "folder-selector";
-    const folders = (snapshot?.entries ?? []).filter(entry => {
-      if (entry.kind !== "Directory") return false;
-      return entry.id !== sourceId && !entry.id.startsWith(`${sourceId}/`);
-    });
-    const destinations: Array<{ id: string; label: string; depth: number }> = [{ id: "", label: "Workspace root", depth: 0 }];
-    destinations.push(...folders.map(folder => ({ id: folder.id, label: folder.name, depth: folder.depth + 1 })));
-    for (const destination of destinations) {
-      const button = document.createElement("button");
-      button.className = "folder-selector-entry";
-      button.style.paddingLeft = `${destination.depth * 16 + 12}px`;
-      button.textContent = destination.label;
-      button.addEventListener("click", () => modal.dismiss(destination.id));
-      list.append(button);
-    }
-    modal.body.append(list);
-  });
+  const folders = (snapshot?.entries ?? []).filter(entry =>
+    entry.kind === "Directory" && entry.id !== sourceId && !entry.id.startsWith(`${sourceId}/`));
+  return choosePicker("Move to folder", [
+    { value: "", label: "Workspace root", depth: 0 },
+    ...folders.map(folder => ({ value: folder.id, label: folder.name, detail: folderOf(folder.id), depth: folder.depth + 1 })),
+  ], "No folders found.");
 }
 async function moveEntry(id: string) {
   if(!await saveBeforeChangingNote()) return;
@@ -643,13 +750,7 @@ async function moveEntry(id: string) {
   try {
     snapshot = await call<Snapshot>("move_entry", { id, destinationParent: destination });
     const movedName = id.split("/").pop() ?? id;
-    const newId = destination ? `${destination}/${movedName}` : movedName;
-    for (const collapsed of [...collapsedDirectories]) {
-      if (collapsed === id || collapsed.startsWith(`${id}/`)) {
-        collapsedDirectories.delete(collapsed);
-        collapsedDirectories.add(`${newId}${collapsed.slice(id.length)}`);
-      }
-    }
+    rebaseCollapsedDirectories(id, destination ? `${destination}/${movedName}` : movedName);
     renderShell();
     renderPage();
     status("Entry moved");
@@ -672,6 +773,10 @@ async function entryActions(id:string,isDirectory:boolean){
       const name=await requestName("Rename", id.split("/").pop() ?? "");
       if(!name)return;
       snapshot=await call<Snapshot>("rename_entry",{id,name});
+      if (isDirectory) {
+        const parent = id.includes("/") ? id.slice(0, id.lastIndexOf("/")) : "";
+        rebaseCollapsedDirectories(id, parent ? `${parent}/${name}` : name);
+      }
     }
     if(action==="delete" && await confirmAction("Move to trash", `Move ${id.split("/").pop() ?? "this entry"} to .markerup-trash?`)) {
       snapshot=await call<Snapshot>("delete_entry",{id});
@@ -1043,6 +1148,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 async function start(){
+  editorMode = rememberedViewMode();
   renderShell();
   try {
     snapshot=await call<Snapshot>("workspace_snapshot");
