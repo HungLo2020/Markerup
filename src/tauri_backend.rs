@@ -1,5 +1,5 @@
 use crate::markdown::{
-    PreviewBlock, preview_document as parse_preview_document, toggle_task_at_offset,
+    PreviewDocument, preview_document as parse_preview_document, toggle_task_at_offset,
 };
 use crate::navigation::NavigationState;
 use crate::persistence::{
@@ -9,7 +9,7 @@ use crate::smb_workspace::{SmbConnectionConfig, SmbWorkspace};
 #[cfg(not(target_os = "ios"))]
 use crate::workspace::LocalWorkspace;
 use crate::workspace::{
-    EntryId, LinkTarget, Workspace, WorkspaceEntry, WorkspaceRef, WorkspaceSlot,
+    EntryId, EntryKind, LinkTarget, Workspace, WorkspaceEntry, WorkspaceRef, WorkspaceSlot,
 };
 use base64::Engine;
 use merman::MermaidConfig;
@@ -19,7 +19,9 @@ use serde_json::json;
 use std::collections::HashMap;
 #[cfg(not(target_os = "ios"))]
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
+use tauri::{AppHandle, Manager};
 
 const PRIVACY_POLICY_URL: &str = "https://hunglo2020.github.io/Markerup/privacy-policy/";
 
@@ -35,6 +37,10 @@ struct BackendInner {
     disk_text: String,
     external_conflict: bool,
     navigation: NavigationState,
+    /// A saved favorite is being reopened in the background.
+    restoring: bool,
+    /// The workspace revision the startup restore installed, if any.
+    restored_revision: Option<u64>,
 }
 
 /// The sole owner of canonical workspace state. The web UI keeps only the
@@ -43,7 +49,20 @@ struct BackendInner {
 pub struct MarkerupBackend {
     inner: Mutex<BackendInner>,
     asset_cache: Mutex<AssetCache>,
+    restore_finished: Condvar,
+    search_generation: AtomicU64,
 }
+
+/// The active favorite from the saved session, loaded at launch and reopened
+/// in the background so a slow SMB server or Files provider cannot delay the
+/// first window.
+pub struct PendingRestore {
+    favorite: SavedFavorite,
+    current_file: Option<EntryId>,
+    revision: u64,
+}
+
+type ReopenedWorkspace = (WorkspaceSlot, Option<Vec<u8>>, Vec<WorkspaceEntry>);
 
 struct SaveRequest {
     workspace: WorkspaceRef,
@@ -133,6 +152,7 @@ pub struct WorkspaceSnapshot {
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub external_conflict: bool,
+    pub workspace_restoring: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -159,12 +179,6 @@ pub struct SmbConnectRequest {
     pub username: String,
     pub password: String,
     pub remote_path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewPayload {
-    pub blocks: Vec<PreviewBlock>,
 }
 
 impl MarkerupBackend {
@@ -226,6 +240,7 @@ impl MarkerupBackend {
             can_go_back: inner.navigation.can_go_back(),
             can_go_forward: inner.navigation.can_go_forward(),
             external_conflict: inner.external_conflict,
+            workspace_restoring: inner.restoring,
         }
     }
 
@@ -421,26 +436,71 @@ impl MarkerupBackend {
         Ok(Self::snapshot(&inner))
     }
 
-    pub fn restore(&self) {
-        let Some(session) = load_session() else {
+    fn install_scanned(
+        &self,
+        workspace: WorkspaceSlot,
+        bookmark: Option<Vec<u8>>,
+        entries: Vec<WorkspaceEntry>,
+    ) -> Result<WorkspaceSnapshot, String> {
+        let mut inner = self.locked()?;
+        Self::install_workspace(&mut inner, workspace, bookmark);
+        inner.entries = entries;
+        let snapshot = Self::snapshot(&inner);
+        drop(inner);
+        self.clear_asset_cache();
+        Ok(snapshot)
+    }
+
+    /// Load saved favorites before the window opens. The session file is a
+    /// small local file, and loading it up front means the UI can list
+    /// favorites immediately and a favorite toggle can never overwrite them.
+    /// Reopening the active favorite can require SMB or a slow Files
+    /// provider, so it is returned for [`Self::finish_restore`] to perform
+    /// off the startup path.
+    pub fn load_saved_session(&self) -> Option<PendingRestore> {
+        let session = load_session()?;
+        let mut inner = self.locked().ok()?;
+        inner.favorites = session.favorites;
+        let favorite = inner.favorites.get(session.active_favorite?)?.clone();
+        inner.restoring = true;
+        Some(PendingRestore {
+            favorite,
+            current_file: session.current_file,
+            revision: inner.workspace_revision,
+        })
+    }
+
+    /// Reopen the favorite recorded by [`Self::load_saved_session`]. This
+    /// performs workspace I/O and must run on a background thread.
+    pub fn finish_restore(&self, pending: PendingRestore) {
+        let reopened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Self::reopen_favorite(pending.favorite)
+        }))
+        .ok()
+        .flatten();
+        let Ok(mut inner) = self.locked() else {
             return;
         };
-        let favorite = {
-            let Ok(mut inner) = self.locked() else {
-                return;
-            };
-            inner.favorites = session.favorites.clone();
-            let Some(index) = session.active_favorite else {
-                return;
-            };
-            let Some(favorite) = inner.favorites.get(index).cloned() else {
-                return;
-            };
-            favorite
-        };
+        inner.restoring = false;
+        // A workspace the user chose while the favorite was reopening wins.
+        if let Some((workspace, bookmark, entries)) = reopened
+            && inner.workspace_revision == pending.revision
+        {
+            Self::install_workspace(&mut inner, workspace, bookmark);
+            inner.entries = entries;
+            if let Some(id) = pending.current_file {
+                let _ = Self::open_note_locked(&mut inner, id, false);
+            }
+            inner.restored_revision = Some(inner.workspace_revision);
+        }
+        drop(inner);
+        self.clear_asset_cache();
+        self.restore_finished.notify_all();
+    }
 
-        #[cfg(not(target_os = "ios"))]
-        let installed = match favorite.workspace {
+    #[cfg(not(target_os = "ios"))]
+    fn reopen_favorite(favorite: SavedFavorite) -> Option<ReopenedWorkspace> {
+        match favorite.workspace {
             SavedWorkspace::Local { path, .. } => {
                 LocalWorkspace::open(path).ok().and_then(|workspace| {
                     let entries = workspace.entries().ok()?;
@@ -448,28 +508,27 @@ impl MarkerupBackend {
                 })
             }
             SavedWorkspace::Smb(_) => None,
-        };
+        }
+    }
 
-        #[cfg(target_os = "ios")]
-        let installed = match favorite.workspace {
-            SavedWorkspace::Smb(smb) => {
-                let account = format!(
-                    "{}\n{}\n{}\n{}",
-                    smb.server, smb.share, smb.username, smb.remote_path
-                );
-                crate::ios_bridge::load_smb_password(&account).and_then(|password| {
-                    let workspace = SmbWorkspace::connect(SmbConnectionConfig {
-                        server: smb.server,
-                        share: smb.share,
-                        username: smb.username,
-                        password,
-                        remote_path: smb.remote_path,
-                    })
-                    .ok()?;
-                    let entries = workspace.entries().ok()?;
-                    Some((WorkspaceSlot::smb(workspace), None, entries))
+    #[cfg(target_os = "ios")]
+    fn reopen_favorite(favorite: SavedFavorite) -> Option<ReopenedWorkspace> {
+        match favorite.workspace {
+            SavedWorkspace::Smb(smb) => crate::ios_bridge::load_smb_password(
+                &smb_keychain_account(&smb),
+            )
+            .and_then(|password| {
+                let workspace = SmbWorkspace::connect(SmbConnectionConfig {
+                    server: smb.server,
+                    share: smb.share,
+                    username: smb.username,
+                    password,
+                    remote_path: smb.remote_path,
                 })
-            }
+                .ok()?;
+                let entries = workspace.entries().ok()?;
+                Some((WorkspaceSlot::smb(workspace), None, entries))
+            }),
             SavedWorkspace::Local {
                 bookmark: Some(bookmark),
                 ..
@@ -481,479 +540,385 @@ impl MarkerupBackend {
                     Some((WorkspaceSlot::ios(workspace), Some(bookmark), entries))
                 }),
             SavedWorkspace::Local { bookmark: None, .. } => None,
-        };
+        }
+    }
 
-        let Some((workspace, bookmark, entries)) = installed else {
-            return;
+    /// Wait for a startup restore to finish. Returns the restored workspace
+    /// only when it is still the one installed.
+    fn restored_workspace(&self) -> Result<Option<WorkspaceSnapshot>, String> {
+        let mut inner = self.locked()?;
+        while inner.restoring {
+            inner = self
+                .restore_finished
+                .wait(inner)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        Ok((inner.restored_revision == Some(inner.workspace_revision))
+            .then(|| Self::snapshot(&inner)))
+    }
+
+    fn workspace_snapshot(&self) -> Result<WorkspaceSnapshot, String> {
+        let inner = self.locked()?;
+        Ok(Self::snapshot(&inner))
+    }
+
+    #[cfg(not(target_os = "ios"))]
+    fn open_local_workspace(&self, path: PathBuf) -> Result<WorkspaceSnapshot, String> {
+        let workspace = LocalWorkspace::open(path).map_err(|error| error.to_string())?;
+        let entries = workspace.entries().map_err(|error| error.to_string())?;
+        self.install_scanned(WorkspaceSlot::local(workspace), None, entries)
+    }
+
+    #[cfg(target_os = "ios")]
+    fn install_ios_selection(
+        &self,
+        selection: crate::ios_bridge::WorkspaceSelection,
+    ) -> Result<WorkspaceSnapshot, String> {
+        let bookmark = selection.bookmark.clone();
+        let workspace = crate::ios_workspace::IosWorkspace::open(selection)
+            .map_err(|error| error.to_string())?;
+        let entries = workspace.entries().map_err(|error| error.to_string())?;
+        self.install_scanned(WorkspaceSlot::ios(workspace), Some(bookmark), entries)
+    }
+
+    fn connect_smb(&self, request: SmbConnectRequest) -> Result<WorkspaceSnapshot, String> {
+        let config = SmbConnectionConfig {
+            server: request.server,
+            share: request.share,
+            username: request.username,
+            password: request.password,
+            remote_path: request.remote_path,
         };
-        let Ok(mut inner) = self.locked() else {
-            return;
+        let workspace = SmbWorkspace::connect(config).map_err(|error| error.to_string())?;
+        let entries = workspace.entries().map_err(|error| error.to_string())?;
+        self.install_scanned(WorkspaceSlot::smb(workspace), None, entries)
+    }
+
+    fn open_note(&self, id: EntryId) -> Result<NotePayload, String> {
+        let mut inner = self.locked()?;
+        Self::open_note_locked(&mut inner, id, true)
+    }
+
+    fn save_note(&self, contents: &str, force: bool) -> Result<WorkspaceSnapshot, String> {
+        let request = self.begin_save(force)?;
+        let current_disk = request
+            .workspace
+            .read(&request.file)
+            .map_err(|error| error.to_string())?;
+        if !force && current_disk != request.baseline {
+            self.mark_conflict_if_current(&request);
+            return Err("External change conflict".to_string());
+        }
+        if let Err(error) = request.workspace.write(&request.file, contents) {
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                return match request.workspace.read(&request.file) {
+                    Ok(remote) if remote == contents => self.complete_save(&request, contents),
+                    Ok(_) => {
+                        self.mark_conflict_if_current(&request);
+                        Err("Save outcome unknown — the SMB server could have applied the write or another client changed the note. Reload before retrying.".to_string())
+                    }
+                    Err(verification_error) => Err(format!(
+                        "Save outcome unknown — SMB write failed and Markerup could not verify the remote note: {verification_error}. Reload before retrying."
+                    )),
+                };
+            }
+            return Err(error.to_string());
+        }
+        let verified_disk = request
+            .workspace
+            .read(&request.file)
+            .map_err(|error| format!("Save completed but Markerup could not verify it: {error}"))?;
+        if verified_disk != contents {
+            self.mark_conflict_if_current(&request);
+            return Err("External change conflict — the note changed while Markerup was saving. Reload before retrying.".to_string());
+        }
+        self.complete_save(&request, contents)
+    }
+
+    fn reload_note(&self) -> Result<NotePayload, String> {
+        let mut inner = self.locked()?;
+        let id = Self::current_file(&inner)?;
+        Self::open_note_locked(&mut inner, id, false)
+    }
+
+    fn refresh_workspace(
+        &self,
+        editor_has_unsaved_changes: bool,
+    ) -> Result<WorkspaceSnapshot, String> {
+        let (workspace, revision, current_file, baseline) = {
+            let inner = self.locked()?;
+            (
+                inner.workspace.shared_clone(),
+                inner.workspace_revision,
+                inner.current_file.clone(),
+                inner.disk_text.clone(),
+            )
         };
-        Self::install_workspace(&mut inner, workspace, bookmark);
+        let disk = match (&workspace, &current_file) {
+            (Some(workspace), Some(file)) => {
+                Some(workspace.read(file).map_err(|error| error.to_string())?)
+            }
+            _ => None,
+        };
+        let entries = match workspace {
+            Some(workspace) => workspace.entries().map_err(|error| error.to_string())?,
+            None => Vec::new(),
+        };
+        let mut inner = self.locked()?;
+        if inner.workspace_revision != revision
+            || inner.current_file != current_file
+            || inner.disk_text != baseline
+        {
+            return Ok(Self::snapshot(&inner));
+        }
+        if let Some(disk) = disk {
+            Self::reconcile_disk_change(&mut inner, &disk, editor_has_unsaved_changes);
+        }
         inner.entries = entries;
+        let snapshot = Self::snapshot(&inner);
         drop(inner);
         self.clear_asset_cache();
+        Ok(snapshot)
+    }
 
-        if let Some(id) = session.current_file
-            && let Ok(mut inner) = self.locked()
+    /// Search the notes in the current tree. Returns `None` when a newer
+    /// search superseded this one before it finished; the caller discards it.
+    fn search_workspace(&self, query: &str) -> Result<Option<Vec<EntryId>>, String> {
+        let generation = self.search_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        // Search the already-scanned tree rather than rescanning the
+        // workspace for every query; results are shown within that tree.
+        let (workspace, notes) = {
+            let inner = self.locked()?;
+            let workspace = inner
+                .workspace
+                .shared_clone()
+                .ok_or_else(|| "No workspace is open".to_string())?;
+            let notes: Vec<EntryId> = inner
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == EntryKind::File)
+                .map(|entry| entry.id.clone())
+                .collect();
+            (workspace, notes)
+        };
+        let mut results = Vec::new();
+        for id in notes {
+            // Stop reading notes as soon as a newer query arrives.
+            if self.search_generation.load(Ordering::SeqCst) != generation {
+                return Ok(None);
+            }
+            if id.to_lowercase().contains(&query)
+                || workspace
+                    .read(&id)
+                    .is_ok_and(|text| text.to_lowercase().contains(&query))
+            {
+                results.push(id);
+            }
+        }
+        Ok(Some(results))
+    }
+
+    fn workspace_assets(&self) -> Result<Vec<WorkspaceEntry>, String> {
+        let workspace = self
+            .locked()?
+            .workspace
+            .shared_clone()
+            .ok_or_else(|| "No workspace is open".to_string())?;
+        workspace.asset_entries().map_err(|error| error.to_string())
+    }
+
+    fn create_note(&self, parent: &str, name: &str) -> Result<NotePayload, String> {
+        let id = {
+            let mut inner = self.locked()?;
+            let id = inner
+                .workspace
+                .create_note(parent, name)
+                .map_err(|error| error.to_string())?;
+            Self::mark_workspace_changed(&mut inner);
+            id
+        };
+        self.clear_asset_cache();
+        self.refresh_entries()?;
+        let mut inner = self.locked()?;
+        Self::open_note_locked(&mut inner, id, true)
+    }
+
+    fn create_folder(&self, parent: &str, name: &str) -> Result<WorkspaceSnapshot, String> {
         {
-            let _ = Self::open_note_locked(&mut inner, id, false);
+            let mut inner = self.locked()?;
+            inner
+                .workspace
+                .create_directory(parent, name)
+                .map_err(|error| error.to_string())?;
+            Self::mark_workspace_changed(&mut inner);
         }
+        self.clear_asset_cache();
+        self.refresh_entries()?;
+        self.workspace_snapshot()
     }
-}
 
-#[tauri::command]
-pub fn workspace_snapshot(
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    let inner = state.locked()?;
-    Ok(MarkerupBackend::snapshot(&inner))
-}
-
-#[tauri::command]
-pub fn open_local_workspace(
-    path: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    #[cfg(target_os = "ios")]
-    let _ = (path, state);
-    #[cfg(not(target_os = "ios"))]
-    {
-        let workspace =
-            LocalWorkspace::open(PathBuf::from(path)).map_err(|error| error.to_string())?;
-        let entries = workspace.entries().map_err(|error| error.to_string())?;
-        let mut inner = state.locked()?;
-        MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::local(workspace), None);
-        inner.entries = entries;
-        drop(inner);
-        state.clear_asset_cache();
-        let inner = state.locked()?;
-        Ok(MarkerupBackend::snapshot(&inner))
-    }
-    #[cfg(target_os = "ios")]
-    Err("Use the iOS folder picker to select a local workspace".to_string())
-}
-
-#[cfg(target_os = "ios")]
-#[tauri::command]
-pub async fn choose_ios_workspace(
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<Option<WorkspaceSnapshot>, String> {
-    let selection = tauri::async_runtime::spawn_blocking(|| {
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        crate::ios_bridge::choose_workspace(move |result| {
-            let _ = sender.send(result);
-        });
-        receiver
-            .recv()
-            .map_err(|_| "iOS folder picker stopped unexpectedly".to_string())?
-    })
-    .await
-    .map_err(|error| error.to_string())??;
-    let Some(selection) = selection else {
-        return Ok(None);
-    };
-    let bookmark = selection.bookmark.clone();
-    let workspace =
-        crate::ios_workspace::IosWorkspace::open(selection).map_err(|error| error.to_string())?;
-    let entries = workspace.entries().map_err(|error| error.to_string())?;
-    let mut inner = state.locked()?;
-    MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::ios(workspace), Some(bookmark));
-    inner.entries = entries;
-    drop(inner);
-    state.clear_asset_cache();
-    let inner = state.locked()?;
-    Ok(Some(MarkerupBackend::snapshot(&inner)))
-}
-
-#[tauri::command]
-pub fn connect_smb(
-    request: SmbConnectRequest,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    let config = SmbConnectionConfig {
-        server: request.server,
-        share: request.share,
-        username: request.username,
-        password: request.password,
-        remote_path: request.remote_path,
-    };
-    let workspace = SmbWorkspace::connect(config).map_err(|error| error.to_string())?;
-    let entries = workspace.entries().map_err(|error| error.to_string())?;
-    let mut inner = state.locked()?;
-    MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::smb(workspace), None);
-    inner.entries = entries;
-    drop(inner);
-    state.clear_asset_cache();
-    let inner = state.locked()?;
-    Ok(MarkerupBackend::snapshot(&inner))
-}
-
-#[tauri::command]
-pub fn open_note(
-    id: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<NotePayload, String> {
-    let mut inner = state.locked()?;
-    MarkerupBackend::open_note_locked(&mut inner, id, true)
-}
-
-#[tauri::command]
-pub fn save_note(
-    contents: String,
-    force: bool,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    let request = state.begin_save(force)?;
-    let current_disk = request
-        .workspace
-        .read(&request.file)
-        .map_err(|error| error.to_string())?;
-    if !force && current_disk != request.baseline {
-        state.mark_conflict_if_current(&request);
-        return Err("External change conflict".to_string());
-    }
-    if let Err(error) = request.workspace.write(&request.file, &contents) {
-        if error.kind() == std::io::ErrorKind::Interrupted {
-            return match request.workspace.read(&request.file) {
-                Ok(remote) if remote == contents => state.complete_save(&request, &contents),
-                Ok(_) => {
-                    state.mark_conflict_if_current(&request);
-                    Err("Save outcome unknown — the SMB server could have applied the write or another client changed the note. Reload before retrying.".to_string())
-                }
-                Err(verification_error) => Err(format!(
-                    "Save outcome unknown — SMB write failed and Markerup could not verify the remote note: {verification_error}. Reload before retrying."
-                )),
-            };
-        }
-        return Err(error.to_string());
-    }
-    let verified_disk = request
-        .workspace
-        .read(&request.file)
-        .map_err(|error| format!("Save completed but Markerup could not verify it: {error}"))?;
-    if verified_disk != contents {
-        state.mark_conflict_if_current(&request);
-        return Err("External change conflict — the note changed while Markerup was saving. Reload before retrying.".to_string());
-    }
-    state.complete_save(&request, &contents)
-}
-
-#[tauri::command]
-pub fn reload_note(state: tauri::State<'_, MarkerupBackend>) -> Result<NotePayload, String> {
-    let mut inner = state.locked()?;
-    let id = MarkerupBackend::current_file(&inner)?;
-    MarkerupBackend::open_note_locked(&mut inner, id, false)
-}
-
-#[tauri::command]
-pub fn refresh_workspace(
-    editor_has_unsaved_changes: bool,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    let (workspace, revision, current_file, baseline) = {
-        let inner = state.locked()?;
-        (
-            inner.workspace.shared_clone(),
-            inner.workspace_revision,
-            inner.current_file.clone(),
-            inner.disk_text.clone(),
-        )
-    };
-    let disk = match (&workspace, &current_file) {
-        (Some(workspace), Some(file)) => {
-            Some(workspace.read(file).map_err(|error| error.to_string())?)
-        }
-        _ => None,
-    };
-    let entries = match workspace {
-        Some(workspace) => workspace.entries().map_err(|error| error.to_string())?,
-        None => Vec::new(),
-    };
-    let mut inner = state.locked()?;
-    if inner.workspace_revision != revision
-        || inner.current_file != current_file
-        || inner.disk_text != baseline
-    {
-        return Ok(MarkerupBackend::snapshot(&inner));
-    }
-    if let Some(disk) = disk {
-        MarkerupBackend::reconcile_disk_change(&mut inner, &disk, editor_has_unsaved_changes);
-    }
-    inner.entries = entries;
-    drop(inner);
-    state.clear_asset_cache();
-    let inner = state.locked()?;
-    Ok(MarkerupBackend::snapshot(&inner))
-}
-
-#[tauri::command]
-pub fn search_workspace(
-    query: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<Vec<EntryId>, String> {
-    let workspace = state
-        .locked()?
-        .workspace
-        .shared_clone()
-        .ok_or_else(|| "No workspace is open".to_string())?;
-    workspace
-        .search_markdown(&query)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn workspace_assets(
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<Vec<WorkspaceEntry>, String> {
-    let workspace = state
-        .locked()?
-        .workspace
-        .shared_clone()
-        .ok_or_else(|| "No workspace is open".to_string())?;
-    workspace.asset_entries().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn create_note(
-    parent: String,
-    name: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<NotePayload, String> {
-    let id = {
-        let mut inner = state.locked()?;
-        let id = inner
-            .workspace
-            .create_note(&parent, &name)
-            .map_err(|error| error.to_string())?;
-        MarkerupBackend::mark_workspace_changed(&mut inner);
-        id
-    };
-    state.clear_asset_cache();
-    state.refresh_entries()?;
-    let mut inner = state.locked()?;
-    MarkerupBackend::open_note_locked(&mut inner, id, true)
-}
-
-#[tauri::command]
-pub fn create_folder(
-    parent: String,
-    name: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    {
-        let mut inner = state.locked()?;
-        inner
-            .workspace
-            .create_directory(&parent, &name)
-            .map_err(|error| error.to_string())?;
-        MarkerupBackend::mark_workspace_changed(&mut inner);
-    }
-    state.clear_asset_cache();
-    state.refresh_entries()?;
-    let inner = state.locked()?;
-    Ok(MarkerupBackend::snapshot(&inner))
-}
-
-#[tauri::command]
-pub fn rename_entry(
-    id: String,
-    name: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    {
-        let mut inner = state.locked()?;
-        let new_id = inner
-            .workspace
-            .rename(&id, &name)
-            .map_err(|error| error.to_string())?;
-        inner.navigation.rebase(&id, &new_id);
-        if inner.current_file.as_deref() == Some(id.as_str()) {
-            inner.current_file = Some(new_id);
-        }
-        MarkerupBackend::mark_workspace_changed(&mut inner);
-        MarkerupBackend::persist(&inner);
-    }
-    state.clear_asset_cache();
-    state.refresh_entries()?;
-    let inner = state.locked()?;
-    Ok(MarkerupBackend::snapshot(&inner))
-}
-
-#[tauri::command]
-pub fn move_entry(
-    id: String,
-    destination_parent: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    {
-        let mut inner = state.locked()?;
-        let new_id = inner
-            .workspace
-            .move_entry(&id, &destination_parent)
-            .map_err(|error| error.to_string())?;
-        inner.navigation.rebase(&id, &new_id);
-        if inner.current_file.as_deref() == Some(id.as_str()) {
-            inner.current_file = Some(new_id.clone());
-        } else if inner
-            .current_file
-            .as_deref()
-            .is_some_and(|file| file.starts_with(&(id.clone() + "/")))
+    fn rename_entry(&self, id: &str, name: &str) -> Result<WorkspaceSnapshot, String> {
         {
-            inner.current_file = inner
-                .current_file
-                .take()
-                .map(|file| format!("{}{}", new_id, &file[id.len()..]));
+            let mut inner = self.locked()?;
+            let new_id = inner
+                .workspace
+                .rename(id, name)
+                .map_err(|error| error.to_string())?;
+            inner.navigation.rebase(id, &new_id);
+            if inner.current_file.as_deref() == Some(id) {
+                inner.current_file = Some(new_id);
+            }
+            Self::mark_workspace_changed(&mut inner);
+            Self::persist(&inner);
         }
-        MarkerupBackend::mark_workspace_changed(&mut inner);
-        MarkerupBackend::persist(&inner);
+        self.clear_asset_cache();
+        self.refresh_entries()?;
+        self.workspace_snapshot()
     }
-    state.clear_asset_cache();
-    state.refresh_entries()?;
-    let inner = state.locked()?;
-    Ok(MarkerupBackend::snapshot(&inner))
-}
 
-#[tauri::command]
-pub fn delete_entry(
-    id: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    {
-        let mut inner = state.locked()?;
-        inner
-            .workspace
-            .delete(&id)
-            .map_err(|error| error.to_string())?;
-        inner.navigation.remove(&id);
-        if inner.current_file.as_deref() == Some(id.as_str())
-            || inner
+    fn move_entry(&self, id: &str, destination_parent: &str) -> Result<WorkspaceSnapshot, String> {
+        {
+            let mut inner = self.locked()?;
+            let new_id = inner
+                .workspace
+                .move_entry(id, destination_parent)
+                .map_err(|error| error.to_string())?;
+            inner.navigation.rebase(id, &new_id);
+            if inner.current_file.as_deref() == Some(id) {
+                inner.current_file = Some(new_id.clone());
+            } else if inner
                 .current_file
                 .as_deref()
-                .is_some_and(|file| file.starts_with(&(id.clone() + "/")))
-        {
-            inner.current_file = None;
-            inner.disk_text.clear();
+                .is_some_and(|file| file.starts_with(&format!("{id}/")))
+            {
+                inner.current_file = inner
+                    .current_file
+                    .take()
+                    .map(|file| format!("{}{}", new_id, &file[id.len()..]));
+            }
+            Self::mark_workspace_changed(&mut inner);
+            Self::persist(&inner);
         }
-        MarkerupBackend::mark_workspace_changed(&mut inner);
-        MarkerupBackend::persist(&inner);
+        self.clear_asset_cache();
+        self.refresh_entries()?;
+        self.workspace_snapshot()
     }
-    state.clear_asset_cache();
-    state.refresh_entries()?;
-    let inner = state.locked()?;
-    Ok(MarkerupBackend::snapshot(&inner))
-}
 
-#[tauri::command]
-pub fn navigate_markdown_link(
-    link: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<NotePayload, String> {
-    let mut inner = state.locked()?;
-    let current = MarkerupBackend::current_file(&inner)?;
-    let LinkTarget { id, .. } = inner
-        .workspace
-        .resolve_markdown_link(&current, &link)
-        .ok_or_else(|| "Link does not point to a Markdown note in this workspace".to_string())?;
-    MarkerupBackend::open_note_locked(&mut inner, id, true)
-}
-
-#[tauri::command]
-pub fn go_back(state: tauri::State<'_, MarkerupBackend>) -> Result<Option<NotePayload>, String> {
-    let mut inner = state.locked()?;
-    let current = inner.current_file.clone();
-    let Some(target) = inner.navigation.go_back(current.as_deref()) else {
-        return Ok(None);
-    };
-    MarkerupBackend::open_note_locked(&mut inner, target, false).map(Some)
-}
-
-#[tauri::command]
-pub fn go_forward(state: tauri::State<'_, MarkerupBackend>) -> Result<Option<NotePayload>, String> {
-    let mut inner = state.locked()?;
-    let current = inner.current_file.clone();
-    let Some(target) = inner.navigation.go_forward(current.as_deref()) else {
-        return Ok(None);
-    };
-    MarkerupBackend::open_note_locked(&mut inner, target, false).map(Some)
-}
-
-#[tauri::command]
-pub fn set_workspace_favorite(
-    favorited: bool,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    let mut inner = state.locked()?;
-    let current = MarkerupBackend::workspace_favorite(&inner.workspace, inner.bookmark.as_deref())
-        .ok_or_else(|| "Select a workspace before adding it to Favorites".to_string())?;
-    if favorited {
-        if let Some(index) = inner
-            .favorites
-            .iter()
-            .position(|favorite| favorite == &current)
+    fn delete_entry(&self, id: &str) -> Result<WorkspaceSnapshot, String> {
         {
-            inner.active_favorite = Some(index);
-            MarkerupBackend::persist(&inner);
-            return Ok(MarkerupBackend::snapshot(&inner));
-        }
-        if matches!(inner.workspace, WorkspaceSlot::Smb(_)) {
-            #[cfg(target_os = "ios")]
-            let config = inner
+            let mut inner = self.locked()?;
+            inner
                 .workspace
-                .smb_config()
-                .ok_or_else(|| "SMB workspace configuration is unavailable".to_string())?;
-            #[cfg(target_os = "ios")]
-            crate::ios_bridge::save_smb_password(&config.keychain_account(), &config.password)?;
-            #[cfg(not(target_os = "ios"))]
-            return Err("SMB credentials remain session-only on Linux".to_string());
+                .delete(id)
+                .map_err(|error| error.to_string())?;
+            inner.navigation.remove(id);
+            if inner.current_file.as_deref() == Some(id)
+                || inner
+                    .current_file
+                    .as_deref()
+                    .is_some_and(|file| file.starts_with(&format!("{id}/")))
+            {
+                inner.current_file = None;
+                inner.disk_text.clear();
+            }
+            Self::mark_workspace_changed(&mut inner);
+            Self::persist(&inner);
         }
-        inner.favorites.push(current);
-        inner.active_favorite = Some(inner.favorites.len() - 1);
-    } else if let Some(index) = inner.active_favorite {
-        let removed = inner.favorites.remove(index);
-        #[cfg(target_os = "ios")]
-        if let SavedWorkspace::Smb(config) = removed.workspace {
-            crate::ios_bridge::delete_smb_password(&smb_keychain_account(&config));
-        }
-        #[cfg(not(target_os = "ios"))]
-        let _ = removed;
-        inner.active_favorite = None;
+        self.clear_asset_cache();
+        self.refresh_entries()?;
+        self.workspace_snapshot()
     }
-    MarkerupBackend::persist(&inner);
-    Ok(MarkerupBackend::snapshot(&inner))
-}
 
-#[tauri::command]
-pub fn open_favorite_workspace(
-    index: usize,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<WorkspaceSnapshot, String> {
-    let favorite = {
-        let inner = state.locked()?;
-        inner
+    fn navigate_markdown_link(&self, link: &str) -> Result<NotePayload, String> {
+        let mut inner = self.locked()?;
+        let current = Self::current_file(&inner)?;
+        let LinkTarget { id, .. } = inner
+            .workspace
+            .resolve_markdown_link(&current, link)
+            .ok_or_else(|| {
+                "Link does not point to a Markdown note in this workspace".to_string()
+            })?;
+        Self::open_note_locked(&mut inner, id, true)
+    }
+
+    fn step_history(&self, forward: bool) -> Result<Option<NotePayload>, String> {
+        let mut inner = self.locked()?;
+        let current = inner.current_file.clone();
+        let target = if forward {
+            inner.navigation.go_forward(current.as_deref())
+        } else {
+            inner.navigation.go_back(current.as_deref())
+        };
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        Self::open_note_locked(&mut inner, target, false).map(Some)
+    }
+
+    fn set_workspace_favorite(&self, favorited: bool) -> Result<WorkspaceSnapshot, String> {
+        let mut inner = self.locked()?;
+        let current = Self::workspace_favorite(&inner.workspace, inner.bookmark.as_deref())
+            .ok_or_else(|| "Select a workspace before adding it to Favorites".to_string())?;
+        if favorited {
+            if let Some(index) = inner
+                .favorites
+                .iter()
+                .position(|favorite| favorite == &current)
+            {
+                inner.active_favorite = Some(index);
+                Self::persist(&inner);
+                return Ok(Self::snapshot(&inner));
+            }
+            if matches!(inner.workspace, WorkspaceSlot::Smb(_)) {
+                #[cfg(target_os = "ios")]
+                let config = inner
+                    .workspace
+                    .smb_config()
+                    .ok_or_else(|| "SMB workspace configuration is unavailable".to_string())?;
+                #[cfg(target_os = "ios")]
+                crate::ios_bridge::save_smb_password(&config.keychain_account(), &config.password)?;
+                #[cfg(not(target_os = "ios"))]
+                return Err("SMB credentials remain session-only on Linux".to_string());
+            }
+            inner.favorites.push(current);
+            inner.active_favorite = Some(inner.favorites.len() - 1);
+        } else if let Some(index) = inner.active_favorite {
+            let removed = inner.favorites.remove(index);
+            #[cfg(target_os = "ios")]
+            if let SavedWorkspace::Smb(config) = removed.workspace {
+                crate::ios_bridge::delete_smb_password(&smb_keychain_account(&config));
+            }
+            #[cfg(not(target_os = "ios"))]
+            let _ = removed;
+            inner.active_favorite = None;
+        }
+        Self::persist(&inner);
+        Ok(Self::snapshot(&inner))
+    }
+
+    fn favorite(&self, index: usize) -> Result<SavedFavorite, String> {
+        self.locked()?
             .favorites
             .get(index)
             .cloned()
-            .ok_or_else(|| "Favorite workspace no longer exists".to_string())?
-    };
+            .ok_or_else(|| "Favorite workspace no longer exists".to_string())
+    }
+
     #[cfg(not(target_os = "ios"))]
-    {
-        let SavedWorkspace::Local { path, .. } = favorite.workspace else {
+    fn open_favorite_workspace(&self, index: usize) -> Result<WorkspaceSnapshot, String> {
+        let SavedWorkspace::Local { path, .. } = self.favorite(index)?.workspace else {
             return Err("SMB favorites require iOS Keychain-backed credentials".to_string());
         };
-        let workspace = LocalWorkspace::open(path).map_err(|error| error.to_string())?;
-        let entries = workspace.entries().map_err(|error| error.to_string())?;
-        let mut inner = state.locked()?;
-        MarkerupBackend::install_workspace(&mut inner, WorkspaceSlot::local(workspace), None);
-        inner.entries = entries;
-        drop(inner);
-        state.clear_asset_cache();
-        let inner = state.locked()?;
-        Ok(MarkerupBackend::snapshot(&inner))
+        self.open_local_workspace(path)
     }
+
     #[cfg(target_os = "ios")]
-    {
-        let (workspace, bookmark) = match favorite.workspace {
+    fn open_favorite_workspace(&self, index: usize) -> Result<WorkspaceSnapshot, String> {
+        let (workspace, bookmark) = match self.favorite(index)?.workspace {
             SavedWorkspace::Local {
                 bookmark: Some(bookmark),
                 ..
@@ -984,14 +949,254 @@ pub fn open_favorite_workspace(
             }
         };
         let entries = workspace.entries().map_err(|error| error.to_string())?;
-        let mut inner = state.locked()?;
-        MarkerupBackend::install_workspace(&mut inner, workspace, bookmark);
-        inner.entries = entries;
-        drop(inner);
-        state.clear_asset_cache();
-        let inner = state.locked()?;
-        Ok(MarkerupBackend::snapshot(&inner))
+        self.install_scanned(workspace, bookmark, entries)
     }
+
+    fn workspace_asset_data(&self, link: &str) -> Result<Option<String>, String> {
+        let (workspace, current) = {
+            let inner = self.locked()?;
+            (
+                inner
+                    .workspace
+                    .shared_clone()
+                    .ok_or_else(|| "No workspace is open".to_string())?,
+                Self::current_file(&inner)?,
+            )
+        };
+        let Some(id) = workspace.resolve_asset_link(&current, link) else {
+            return Ok(None);
+        };
+        let key = AssetCacheKey {
+            workspace: workspace.identity(),
+            id: id.clone(),
+        };
+        if let Some(cached) = self.cached_asset(&key) {
+            return Ok(Some(cached));
+        }
+        let data = workspace
+            .asset_bytes(&id)
+            .map_err(|error| error.to_string())?;
+        let mime = match std::path::Path::new(&id)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("svg") => "image/svg+xml",
+            _ => "application/octet-stream",
+        };
+        let data_url = format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(data)
+        );
+        self.cache_asset(key, data_url.clone());
+        Ok(Some(data_url))
+    }
+}
+
+/// Run a command's work on Tauri's blocking thread pool.
+///
+/// Synchronous Tauri commands execute on the main thread, so workspace I/O
+/// there freezes the whole UI. `#[tauri::command(async)]` is not a substitute:
+/// it runs on an async worker, where SMB operations (which block on their own
+/// Tokio runtime) would panic.
+async fn run_blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("Markerup command stopped unexpectedly: {error}"))?
+}
+
+async fn with_backend<T, F>(app: AppHandle, work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&MarkerupBackend) -> Result<T, String> + Send + 'static,
+{
+    run_blocking(move || work(app.state::<MarkerupBackend>().inner())).await
+}
+
+#[tauri::command]
+pub async fn workspace_snapshot(app: AppHandle) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, |backend| backend.workspace_snapshot()).await
+}
+
+#[tauri::command]
+pub async fn restored_workspace(app: AppHandle) -> Result<Option<WorkspaceSnapshot>, String> {
+    with_backend(app, |backend| backend.restored_workspace()).await
+}
+
+#[cfg(not(target_os = "ios"))]
+#[tauri::command]
+pub async fn open_local_workspace(
+    path: String,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| {
+        backend.open_local_workspace(PathBuf::from(path))
+    })
+    .await
+}
+
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub fn open_local_workspace(path: String) -> Result<WorkspaceSnapshot, String> {
+    let _ = path;
+    Err("Use the iOS folder picker to select a local workspace".to_string())
+}
+
+#[cfg(target_os = "ios")]
+#[tauri::command]
+pub async fn choose_ios_workspace(app: AppHandle) -> Result<Option<WorkspaceSnapshot>, String> {
+    with_backend(app, |backend| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        crate::ios_bridge::choose_workspace(move |result| {
+            let _ = sender.send(result);
+        });
+        let selection = receiver
+            .recv()
+            .map_err(|_| "iOS folder picker stopped unexpectedly".to_string())??;
+        let Some(selection) = selection else {
+            return Ok(None);
+        };
+        backend.install_ios_selection(selection).map(Some)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn connect_smb(
+    request: SmbConnectRequest,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| backend.connect_smb(request)).await
+}
+
+#[tauri::command]
+pub async fn open_note(id: String, app: AppHandle) -> Result<NotePayload, String> {
+    with_backend(app, move |backend| backend.open_note(id)).await
+}
+
+#[tauri::command]
+pub async fn save_note(
+    contents: String,
+    force: bool,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| backend.save_note(&contents, force)).await
+}
+
+#[tauri::command]
+pub async fn reload_note(app: AppHandle) -> Result<NotePayload, String> {
+    with_backend(app, |backend| backend.reload_note()).await
+}
+
+#[tauri::command]
+pub async fn refresh_workspace(
+    editor_has_unsaved_changes: bool,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| {
+        backend.refresh_workspace(editor_has_unsaved_changes)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn search_workspace(
+    query: String,
+    app: AppHandle,
+) -> Result<Option<Vec<EntryId>>, String> {
+    with_backend(app, move |backend| backend.search_workspace(&query)).await
+}
+
+#[tauri::command]
+pub async fn workspace_assets(app: AppHandle) -> Result<Vec<WorkspaceEntry>, String> {
+    with_backend(app, |backend| backend.workspace_assets()).await
+}
+
+#[tauri::command]
+pub async fn create_note(
+    parent: String,
+    name: String,
+    app: AppHandle,
+) -> Result<NotePayload, String> {
+    with_backend(app, move |backend| backend.create_note(&parent, &name)).await
+}
+
+#[tauri::command]
+pub async fn create_folder(
+    parent: String,
+    name: String,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| backend.create_folder(&parent, &name)).await
+}
+
+#[tauri::command]
+pub async fn rename_entry(
+    id: String,
+    name: String,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| backend.rename_entry(&id, &name)).await
+}
+
+#[tauri::command]
+pub async fn move_entry(
+    id: String,
+    destination_parent: String,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| {
+        backend.move_entry(&id, &destination_parent)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn delete_entry(id: String, app: AppHandle) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| backend.delete_entry(&id)).await
+}
+
+#[tauri::command]
+pub async fn navigate_markdown_link(link: String, app: AppHandle) -> Result<NotePayload, String> {
+    with_backend(app, move |backend| backend.navigate_markdown_link(&link)).await
+}
+
+#[tauri::command]
+pub async fn go_back(app: AppHandle) -> Result<Option<NotePayload>, String> {
+    with_backend(app, |backend| backend.step_history(false)).await
+}
+
+#[tauri::command]
+pub async fn go_forward(app: AppHandle) -> Result<Option<NotePayload>, String> {
+    with_backend(app, |backend| backend.step_history(true)).await
+}
+
+#[tauri::command]
+pub async fn set_workspace_favorite(
+    favorited: bool,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| {
+        backend.set_workspace_favorite(favorited)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn open_favorite_workspace(
+    index: usize,
+    app: AppHandle,
+) -> Result<WorkspaceSnapshot, String> {
+    with_backend(app, move |backend| backend.open_favorite_workspace(index)).await
 }
 
 #[cfg(target_os = "ios")]
@@ -1003,20 +1208,25 @@ fn smb_keychain_account(config: &SavedSmbConfig) -> String {
 }
 
 #[tauri::command]
-pub fn preview_document(source: String) -> PreviewPayload {
-    PreviewPayload {
-        blocks: parse_preview_document(&source).blocks,
-    }
+pub async fn preview_document(source: String) -> Result<PreviewDocument, String> {
+    run_blocking(move || Ok(parse_preview_document(&source))).await
 }
 
 #[tauri::command]
-pub fn toggle_markdown_task(source: String, task_offset: usize) -> Result<String, String> {
-    toggle_task_at_offset(&source, task_offset)
-        .ok_or_else(|| "Could not locate the Markdown task".to_string())
+pub async fn toggle_markdown_task(source: String, task_offset: usize) -> Result<String, String> {
+    run_blocking(move || {
+        toggle_task_at_offset(&source, task_offset)
+            .ok_or_else(|| "Could not locate the Markdown task".to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn render_mermaid(source: String) -> Result<String, String> {
+pub async fn render_mermaid(source: String) -> Result<String, String> {
+    run_blocking(move || render_mermaid_svg(&source)).await
+}
+
+fn render_mermaid_svg(source: &str) -> Result<String, String> {
     let renderer = HeadlessRenderer::new().with_site_config(MermaidConfig::from_value(json!({
         "theme": "base",
         "themeVariables": {
@@ -1030,7 +1240,7 @@ pub fn render_mermaid(source: String) -> Result<String, String> {
     })));
     renderer
         .render_svg_resvg_safe_sync_with_diagram_id(
-            &normalize_mermaid_source(&source),
+            &normalize_mermaid_source(source),
             "markerup-preview",
         )
         .map_err(|error| error.to_string())?
@@ -1038,52 +1248,8 @@ pub fn render_mermaid(source: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn workspace_asset_data(
-    link: String,
-    state: tauri::State<'_, MarkerupBackend>,
-) -> Result<Option<String>, String> {
-    let (workspace, current) = {
-        let inner = state.locked()?;
-        (
-            inner
-                .workspace
-                .shared_clone()
-                .ok_or_else(|| "No workspace is open".to_string())?,
-            MarkerupBackend::current_file(&inner)?,
-        )
-    };
-    let Some(id) = workspace.resolve_asset_link(&current, &link) else {
-        return Ok(None);
-    };
-    let key = AssetCacheKey {
-        workspace: workspace.identity(),
-        id: id.clone(),
-    };
-    if let Some(cached) = state.cached_asset(&key) {
-        return Ok(Some(cached));
-    }
-    let data = workspace
-        .asset_bytes(&id)
-        .map_err(|error| error.to_string())?;
-    let mime = match std::path::Path::new(&id)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("svg") => "image/svg+xml",
-        _ => "application/octet-stream",
-    };
-    let data_url = format!(
-        "data:{mime};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(data)
-    );
-    state.cache_asset(key, data_url.clone());
-    Ok(Some(data_url))
+pub async fn workspace_asset_data(link: String, app: AppHandle) -> Result<Option<String>, String> {
+    with_backend(app, move |backend| backend.workspace_asset_data(&link)).await
 }
 
 #[tauri::command]
@@ -1138,7 +1304,118 @@ fn normalize_mermaid_source(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AssetCache, AssetCacheKey, BackendInner, MAX_CACHED_ASSETS, MarkerupBackend};
+    use super::{
+        AssetCache, AssetCacheKey, BackendInner, MAX_CACHED_ASSETS, MarkerupBackend,
+        PendingRestore, preview_document,
+    };
+    use crate::persistence::{SavedFavorite, SavedWorkspace};
+    use crate::workspace::{LocalWorkspace, Workspace, WorkspaceSlot};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("markerup-backend-{name}-{unique}"));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("Groceries.md"), "# Groceries\nmilk").unwrap();
+        fs::write(root.join("nested/Ideas.md"), "# Ideas\nbuy MILK in bulk").unwrap();
+        fs::write(root.join("nested/Other.md"), "# Other").unwrap();
+        root
+    }
+
+    /// Install a workspace without `install_workspace`, which would persist
+    /// (and could clear) the real user session file.
+    fn backend_with_workspace(root: &PathBuf) -> MarkerupBackend {
+        let backend = MarkerupBackend::default();
+        let workspace = LocalWorkspace::open(root).unwrap();
+        {
+            let mut inner = backend.locked().unwrap();
+            inner.entries = workspace.entries().unwrap();
+            inner.workspace = WorkspaceSlot::local(workspace);
+        }
+        backend
+    }
+
+    #[test]
+    fn preview_command_sends_reference_link_definitions() {
+        let source = "[Home][home]\n\n[home]: ../index.md";
+        let document =
+            tauri::async_runtime::block_on(preview_document(source.to_string())).unwrap();
+        let payload = serde_json::to_value(&document).unwrap();
+        assert_eq!(
+            payload["linkDefinitions"],
+            serde_json::json!(["[home]: ../index.md"])
+        );
+        assert!(payload["blocks"].is_array());
+    }
+
+    #[test]
+    fn search_matches_names_and_contents_within_the_scanned_tree() {
+        let root = temp_workspace("search");
+        let backend = backend_with_workspace(&root);
+        let mut results = backend.search_workspace(" milk ").unwrap().unwrap();
+        results.sort();
+        assert_eq!(results, vec!["Groceries.md", "nested/Ideas.md"]);
+        assert_eq!(
+            backend.search_workspace("other").unwrap().unwrap(),
+            vec!["nested/Other.md"]
+        );
+        assert_eq!(
+            backend.search_workspace("  ").unwrap().unwrap(),
+            Vec::<String>::new()
+        );
+        // A note added outside Markerup appears once the tree is refreshed,
+        // matching what the sidebar can show.
+        fs::write(root.join("Later.md"), "milk").unwrap();
+        assert!(
+            !backend
+                .search_workspace("milk")
+                .unwrap()
+                .unwrap()
+                .contains(&"Later.md".to_string())
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restore_never_replaces_a_workspace_chosen_while_it_ran() {
+        let root = temp_workspace("restore");
+        let backend = Arc::new(MarkerupBackend::default());
+        backend.locked().unwrap().restoring = true;
+        let waiter = {
+            let backend = Arc::clone(&backend);
+            std::thread::spawn(move || backend.restored_workspace())
+        };
+        // The user picks another workspace before the favorite reopens.
+        backend.locked().unwrap().workspace_revision += 1;
+        backend.finish_restore(PendingRestore {
+            favorite: SavedFavorite {
+                workspace: SavedWorkspace::Local {
+                    path: root.clone(),
+                    bookmark: None,
+                },
+            },
+            current_file: Some("Groceries.md".to_string()),
+            revision: 0,
+        });
+        assert!(waiter.join().unwrap().unwrap().is_none());
+        let inner = backend.locked().unwrap();
+        assert!(!inner.restoring);
+        assert!(!inner.workspace.is_open());
+        assert!(inner.current_file.is_none());
+        drop(inner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn waiting_for_restore_returns_immediately_when_none_is_pending() {
+        let backend = MarkerupBackend::default();
+        assert!(backend.restored_workspace().unwrap().is_none());
+    }
 
     #[test]
     fn external_refresh_never_advances_the_save_baseline_without_loading_the_editor() {

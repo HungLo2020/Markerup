@@ -16,7 +16,7 @@ const folderIcon = new URL("../../resources/icon_folder.svg", import.meta.url).h
 
 type Entry = { id: string; name: string; kind: "File" | "Directory"; depth: number };
 type Favorite = { index: number; label: string; workspaceIsSmb: boolean };
-type Snapshot = { workspaceOpen: boolean; workspacePath: string; workspaceIsSmb: boolean; workspaceFavorited: boolean; favorites: Favorite[]; entries: Entry[]; currentFile?: string; canGoBack: boolean; canGoForward: boolean; externalConflict: boolean };
+type Snapshot = { workspaceOpen: boolean; workspacePath: string; workspaceIsSmb: boolean; workspaceFavorited: boolean; favorites: Favorite[]; entries: Entry[]; currentFile?: string; canGoBack: boolean; canGoForward: boolean; externalConflict: boolean; workspaceRestoring?: boolean };
 type Note = { id: string; contents: string; snapshot: Snapshot };
 type SourceRange = { start: number; end: number };
 type Block = { kind: unknown; markdown: string; taskOffset?: number; sourceRange?: SourceRange; image?: { alt: string; destination: string }; language?: string; footnoteId?: string };
@@ -56,6 +56,9 @@ let offsetMapper = createUtf8OffsetMapper("");
 const mermaidCache = new Map<string, Promise<string>>();
 const assetSourceCache = new Map<string, Promise<string>>();
 const MAX_RENDER_CACHE_ENTRIES = 64;
+const SEARCH_DELAY_MS = 250;
+let searchTimer: number | undefined;
+let searchGeneration = 0;
 
 const setLiveDecorations = StateEffect.define<DecorationSet>();
 const liveDecorations = StateField.define<DecorationSet>({
@@ -113,8 +116,19 @@ function renderShell() {
   document.querySelector("#forward")!.addEventListener("click", () => navigate("go_forward"));
 }
 
+function cancelSearch() {
+  searchGeneration += 1;
+  if (searchTimer !== undefined) {
+    clearTimeout(searchTimer);
+    searchTimer = undefined;
+  }
+}
+
 function renderPage() {
   cancelScheduledPreview();
+  // The sidebar and its search box are rebuilt below; results for the old
+  // query must not filter the new tree.
+  cancelSearch();
   latestBlocks = [];
   disposeEditor();
   const content = document.querySelector<HTMLElement>("#content")!;
@@ -142,7 +156,7 @@ function renderPage() {
   const currentFile = snapshot?.currentFile;
   content.innerHTML = `<aside id="sidebar"><div class="row"><strong>Workspace</strong><button id="new" aria-label="Create">＋</button></div><input id="search" placeholder="Search all notes"><nav id="tree"></nav></aside><section id="document"><div class="document-bar"><h1 class="note-title"${currentFile ? ` title="${escape(currentFile)}"` : ""}>${escape(currentFile ? noteTitle(currentFile) : "Choose a note")}</h1><span class="grow"></span>${currentFile ? `<button id="insert">Insert</button>` : ""}${viewControls}</div><div id="save-conflict" role="alert"></div><div id="panes"><div id="editor-pane"><div id="editor"></div></div><article id="preview"></article></div></section>`;
   document.querySelector("#new")!.addEventListener("click",()=>createAtRoot());
-  document.querySelector("#search")!.addEventListener("input", search);
+  document.querySelector("#search")!.addEventListener("input", scheduleSearch);
   document.querySelector("#insert")?.addEventListener("click", () => void showInsertMenu());
   document.querySelector<HTMLSelectElement>("#view-mode")!.addEventListener("change", event => {
     editorMode = (event.target as HTMLSelectElement).value as typeof editorMode;
@@ -666,7 +680,27 @@ async function entryActions(id:string,isDirectory:boolean){
     renderShell();renderPage();
   }catch(error){status(String(error))}
 }
-async function search(){ const query=(document.querySelector<HTMLInputElement>("#search")?.value ?? "").trim(); if(!query)return renderTree(); try {const ids=await call<string[]>("search_workspace",{query});renderTree((snapshot?.entries??[]).filter(e=>ids.includes(e.id)));}catch(error){status(String(error))} }
+function scheduleSearch() {
+  cancelSearch();
+  searchTimer = window.setTimeout(() => {
+    searchTimer = undefined;
+    void search();
+  }, SEARCH_DELAY_MS);
+}
+async function search() {
+  const generation = ++searchGeneration;
+  const query = (document.querySelector<HTMLInputElement>("#search")?.value ?? "").trim();
+  if (!query) return renderTree();
+  try {
+    // null means the backend abandoned this search for a newer one.
+    const ids = await call<string[] | null>("search_workspace", { query });
+    if (generation !== searchGeneration || !ids) return;
+    const matches = new Set(ids);
+    renderTree((snapshot?.entries ?? []).filter(entry => matches.has(entry.id)));
+  } catch (error) {
+    if (generation === searchGeneration) status(String(error));
+  }
+}
 function rememberRenderPromise(cache: Map<string, Promise<string>>, key: string, create: () => Promise<string>) {
   const cached = cache.get(key);
   if (cached) {
@@ -1019,6 +1053,31 @@ async function start(){
     // buffer overwrite a note that could not be read during startup.
     snapshot=undefined;
     renderShell(); renderPage(); status(`Startup failed: ${error}`);
+    return;
+  }
+  if (snapshot.workspaceRestoring) await finishRestore(snapshot);
+}
+// The backend reopens the saved favorite in the background so the window is
+// usable immediately. Apply it only if the user has not changed anything since.
+async function finishRestore(initial: Snapshot) {
+  status("Reopening favorite workspace…");
+  try {
+    const restored = await call<Snapshot | null>("restored_workspace");
+    if (snapshot !== initial) return;
+    if (!restored) { status("Could not reopen the favorite workspace"); return; }
+    snapshot = restored;
+    if (!restored.currentFile) { renderShell(); renderPage(); status("Ready"); return; }
+    try {
+      const note = await call<Note>("reload_note");
+      if (snapshot === restored) loadNote(note);
+    } catch (error) {
+      if (snapshot !== restored) return;
+      // As at startup, never leave an unreadable note open for editing.
+      snapshot = { ...restored, currentFile: undefined };
+      renderShell(); renderPage(); status(`Could not open the last note: ${error}`);
+    }
+  } catch (error) {
+    if (snapshot === initial) status(`Could not reopen the favorite workspace: ${error}`);
   }
 }
 void start();

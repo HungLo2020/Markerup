@@ -9,24 +9,34 @@ mod smb_workspace;
 mod tauri_backend;
 mod workspace;
 
+use tauri::Manager;
 use tauri_backend::MarkerupBackend;
 
 #[cfg_attr(target_os = "ios", tauri::mobile_entry_point)]
 pub fn run() {
     let backend = MarkerupBackend::default();
-    backend.restore();
+    let pending_restore = backend.load_saved_session();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(backend);
-    #[cfg(target_os = "ios")]
-    let builder = builder.setup(|_app| {
-        ios_bridge::install_lifecycle_observers();
-        Ok(())
-    });
+        .manage(backend)
+        .setup(move |app| {
+            #[cfg(target_os = "ios")]
+            ios_bridge::install_lifecycle_observers();
+            if let Some(pending) = pending_restore {
+                // Reopening a favorite can wait on SMB or a Files provider;
+                // never hold up the first window (or the iOS launch watchdog).
+                let app = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("markerup-restore".to_string())
+                    .spawn(move || app.state::<MarkerupBackend>().finish_restore(pending))?;
+            }
+            Ok(())
+        });
     #[cfg(not(target_os = "ios"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         tauri_backend::workspace_snapshot,
+        tauri_backend::restored_workspace,
         tauri_backend::open_local_workspace,
         tauri_backend::connect_smb,
         tauri_backend::open_note,
@@ -54,6 +64,7 @@ pub fn run() {
     #[cfg(target_os = "ios")]
     let builder = builder.invoke_handler(tauri::generate_handler![
         tauri_backend::workspace_snapshot,
+        tauri_backend::restored_workspace,
         tauri_backend::open_local_workspace,
         tauri_backend::choose_ios_workspace,
         tauri_backend::connect_smb,
