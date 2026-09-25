@@ -1,77 +1,33 @@
-Read-only audit complete. I made no changes, commits, pushes, builds, or workflow runs. The worktree remains clean.
+## Read-only data safety audit
 
-Highest-value opportunities:
+I traced the editor save path, local and SMB workspace operations, backups, trash, session persistence, and iOS document-provider handling. I made no changes and ran no tests.
 
-### Performance and responsiveness
+### Main risks
 
-- The frontend recreates the entire page and a new CodeMirror editor whenever notes, workspaces, or settings change. The previous editor is never explicitly destroyed, which can leak listeners, reset history/selection, and cause unnecessary work.  
-  [main.ts:102](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:102), [main.ts:218](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:218)
+1. **An external edit can still be overwritten in a narrow timing window.** Before saving, the backend checks that the note still matches the version Markerup opened. It then calls the workspace write operation. If another app changes the note between that check and Markerup’s write, Markerup can replace the external edit. The final read-back confirms Markerup’s text was written, but can’t detect that intervening edit. This applies to local and SMB saves; the pre-check and write are separate operations in [tauri_backend.rs](/home/matt/Documents/Repos/Markerup/src/tauri_backend.rs:607). Backups reduce the impact in some timing cases, but don’t guarantee preservation of every concurrent change.
 
-- Preview rendering runs on every keystroke and reparses, sanitizes, renders Mermaid, and reloads images. Add preview debouncing, cancellation, and caching.  
-  [main.ts:220](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:220), [main.ts:671](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:671)
+2. **The native iOS background and resume hooks appear unwired.** The Objective-C bridge defines background/resume observers, and Rust defines functions to install them and consume their signals. I found no call that installs the observers or reads those signals. The frontend does attempt a save on `visibilitychange` and `beforeunload`, but it does not wait for the save to finish. On iOS, the app can be suspended before that asynchronous save completes. Recovery drafts are written synchronously to webview storage as edits occur, which helps, but that storage is still the fallback rather than a confirmed save to the note. The hooks are in [MarkerupIOSBridge.m](/home/matt/Documents/Repos/Markerup/ios/MarkerupIOSBridge.m:589) and [ios_bridge.rs](/home/matt/Documents/Repos/Markerup/src/ios_bridge.rs:46); the app startup path is in [lib.rs](/home/matt/Documents/Repos/Markerup/src/lib.rs:14).
 
-- Live widgets render asynchronously without error handling or stale-render cancellation. A failed image/Mermaid render can leave a blank block or create an unhandled rejection.  
-  [main.ts:623](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:623)
+3. **Local deletion can follow a pre-existing `.markerup-trash` symlink.** The local delete path calls `create_dir_all` and then moves the selected file into that location, without rejecting a symlink there. If a workspace already has `.markerup-trash` pointing elsewhere, deleting a note could move it outside the workspace. Backup-directory creation explicitly rejects symlinks; trash creation does not. See [workspace.rs](/home/matt/Documents/Repos/Markerup/src/workspace.rs:618).
 
-- Workspace refreshes and asset selection perform recursive scans while holding the backend mutex. Large local, iOS, or SMB workspaces can block unrelated commands.  
-  [tauri_backend.rs:139](/home/matt/Documents/Repos/Markerup/src/tauri_backend.rs:139), [tauri_backend.rs:533](/home/matt/Documents/Repos/Markerup/src/tauri_backend.rs:533)
+4. **Backup history follows the note’s path, not its identity.** The mirrored backup directory is derived from the note’s current relative path. Renaming or moving a note leaves its old history at the old path, and deleting a note leaves its backup history behind. If a different note is later created at that old path, its backup folder can contain snapshots of the earlier note. That matches the path-based storage design, but makes manual recovery less clear. See [backup_directory_id](/home/matt/Documents/Repos/Markerup/src/workspace.rs:29) and the rename/move paths in [workspace.rs](/home/matt/Documents/Repos/Markerup/src/workspace.rs:564).
 
-- Search rescans the workspace and reads every Markdown file sequentially. The search field also sends a request for every input event, allowing stale results to overwrite newer queries.  
-  [workspace.rs:312](/home/matt/Documents/Repos/Markerup/src/workspace.rs:312), [main.ts:531](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:531)
+5. **Trash has no retention or in-app restore flow.** Deletions are moved into `.markerup-trash`, which is safer than permanent deletion, but I found no cleanup policy or restore UI. Deleted notes and folders can accumulate indefinitely. Recovery requires handling hidden workspace files manually, as the [README](/home/matt/Documents/Repos/Markerup/README.md:61) describes.
 
-- Local asset scans have no cancellation, depth limit, or entry limit, unlike SMB scanning. iOS separately enumerates the entire workspace for notes and images.  
-  [workspace.rs:225](/home/matt/Documents/Repos/Markerup/src/workspace.rs:225), [ios_workspace.rs:34](/home/matt/Documents/Repos/Markerup/src/ios_workspace.rs:34)
+6. **Recovery drafts depend on webview storage.** The editor stores the current text and save baseline in `localStorage` on each document change. If storage is unavailable or full, Markerup reports that it could not store the draft, but continues editing. If the subsequent save also fails and the app closes, that draft may be lost. The storage and error handling are in [main.ts](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:35).
 
-- Local and SMB images are loaded into base64 data URLs repeatedly. A cached asset URL or Tauri asset protocol would reduce memory and network/file reads.  
-  [tauri_backend.rs:834](/home/matt/Documents/Repos/Markerup/src/tauri_backend.rs:834)
+### Other limitations
 
-### Correctness
+- **Backup pruning is best-effort.** Local, SMB, and iOS pruning errors are ignored after a successful save. If enumeration or deletion fails, backup history can exceed the stated retention policy. The README already calls out provider enumeration limits for iOS.
+- **Session preferences are less robust than note saves.** Session state is written directly to its final file, not atomically, and backend persistence errors are ignored. A crash or storage error could lose favorites or the last-open note, but this does not overwrite note content. See [persistence.rs](/home/matt/Documents/Repos/Markerup/src/persistence.rs:76) and [tauri_backend.rs](/home/matt/Documents/Repos/Markerup/src/tauri_backend.rs:274).
+- **iOS diagnostics include workspace paths and entry names.** I found no evidence they are transmitted automatically, and the SMB password is not included. Still, logs or copied diagnostics can reveal local folder paths and note/asset filenames. See [MarkerupIOSBridge.m](/home/matt/Documents/Repos/Markerup/ios/MarkerupIOSBridge.m:457).
 
-- Markdown anchors are resolved but then discarded during navigation. Links such as `Note.md#heading` open the note but do not scroll to the heading, despite heading-range support already existing.  
-  [tauri_backend.rs:648](/home/matt/Documents/Repos/Markerup/src/tauri_backend.rs:648), [markdown.rs:462](/home/matt/Documents/Repos/Markerup/src/markdown.rs:462)
+### Safeguards that are working in the code
 
-- SMB link resolution accepts any `.md`-looking path without verifying that the target exists, unlike local workspaces.  
-  [smb_workspace.rs:700](/home/matt/Documents/Repos/Markerup/src/smb_workspace.rs:700)
+- Local saves make a backup before replacing the note, write through a temporary file, and sync the file and parent directory. See [workspace.rs](/home/matt/Documents/Repos/Markerup/src/workspace.rs:499).
+- The editor stores a recovery draft on each edit, autosaves after a debounce, retries ordinary failures, and blocks note navigation when it cannot confirm the save.
+- SMB saves back up the previous contents and verify the resulting note; ambiguous network outcomes are surfaced instead of blindly retried.
+- Deletions are moved to hidden trash, and workspace path validation blocks traversal.
+- SMB passwords are omitted from session preferences; iOS uses Keychain for favorited SMB passwords. The session file stores workspace metadata, not the password.
 
-- Supported image extensions and MIME mappings are duplicated across Rust, Objective-C, and TypeScript. These should be centralized or covered by cross-platform tests to prevent drift.
-
-- Folder collapse state is path-based but is not consistently cleaned up after folder rename, deletion, or workspace changes. Stale paths can affect later views.  
-  [main.ts:33](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:33)
-
-### UX and accessibility
-
-- Modals do not trap focus or restore focus when closed.  
-  [main.ts:113](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:113)
-
-- The file tree lacks proper tree semantics such as `role="tree"`, `role="treeitem"`, and meaningful `aria-level`/expanded behavior. File buttons also receive `aria-expanded="undefined"`.  
-  [main.ts:205](/home/matt/Documents/Repos/Markerup/frontend/src/main.ts:205)
-
-- Search results show matching notes without their parent folders, making context harder to understand.
-
-- Internal links beginning with `#` are ignored, and external protocol handling only explicitly recognizes HTTP(S) and mail links. Fragment navigation and protocol validation should be made deliberate.
-
-- Live mode hides an entire Markdown block whenever the cursor is anywhere inside it. For multiline lists, quotes, or code blocks, this may feel less intuitive than line-level fallback behavior.
-
-### Maintainability and release quality
-
-- Version numbers are inconsistent: Cargo/Tauri report `0.4.2`, while the frontend package and lockfile report `0.4.0`, and the About screen is hard-coded.  
-  [Cargo.toml:3](/home/matt/Documents/Repos/Markerup/Cargo.toml:3), [package.json:4](/home/matt/Documents/Repos/Markerup/frontend/package.json:4)
-
-- `frontend/src/main.ts` is a large monolithic UI module, while the stylesheet is compressed into a few lines. Splitting rendering, editor state, dialogs, workspace tree, and preview logic would make future changes safer.
-
-- The performance documentation claims bounded search caching and cancellation that are not evident in the current workspace implementation.  
-  [performance-testing.md:11](/home/matt/Documents/Repos/Markerup/docs/performance-testing.md:11)
-
-- There are Rust unit tests, but no frontend/browser interaction tests. Add coverage for live mode, dropdown selection, image loading, internal-note links, mobile behavior, folder collapse, and save/navigation races.
-
-- Workflow files duplicate substantial setup and hard-code Xcode/iOS versions. The iOS workflow has also emitted setup-toolchain warnings for its comma-separated target input in prior successful runs; that should be made explicit and validated.  
-  [ios.yml:21](/home/matt/Documents/Repos/Markerup/.github/workflows/ios.yml:21)
-
-My recommended implementation order would be:
-
-1. Fix editor lifecycle and async preview/live cancellation.
-2. Debounce/cache preview, image, and search work.
-3. Move workspace scanning off the backend mutex and introduce indexed snapshots.
-4. Implement anchor navigation and unify link resolution behavior.
-5. Add accessibility improvements and browser-level regression tests.
-6. Consolidate versioning and clean up workflow/toolchain configuration.
+The clearest follow-up priorities are wiring iOS lifecycle reconciliation, narrowing the external-edit race where the platform supports it, and rejecting a symlink at the local trash path.
