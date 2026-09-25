@@ -12,7 +12,8 @@
 
 typedef void (*MarkerupPickerCallback)(const char *, const unsigned char *, size_t, void *);
 
-static UIBackgroundTaskIdentifier MarkerupBackgroundTask = UIBackgroundTaskInvalid;
+static UIBackgroundTaskIdentifier MarkerupBackgroundTask;
+static BOOL MarkerupHasBackgroundTask = NO;
 static BOOL MarkerupLifecycleObserversInstalled = NO;
 
 // ATTR_CMN_OBJTYPE returns the Darwin vnode type. The iOS SDK exposes the
@@ -30,23 +31,26 @@ static NSMutableDictionary<NSString *, NSURL *> *MarkerupAccessMap(void) {
 static NSString *MarkerupLastDiagnostics;
 
 static void MarkerupEndBackgroundTask(void) {
-    if (MarkerupBackgroundTask == UIBackgroundTaskInvalid) return;
+    if (!MarkerupHasBackgroundTask) return;
     UIBackgroundTaskIdentifier task = MarkerupBackgroundTask;
-    MarkerupBackgroundTask = UIBackgroundTaskInvalid;
+    MarkerupHasBackgroundTask = NO;
     [UIApplication.sharedApplication endBackgroundTask:task];
 }
 
 static void MarkerupBeginBackgroundTask(void) {
-    if (MarkerupBackgroundTask != UIBackgroundTaskInvalid) return;
+    if (MarkerupHasBackgroundTask) return;
     UIApplication *application = UIApplication.sharedApplication;
     __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
     task = [application beginBackgroundTaskWithName:@"Save Markerup note"
                                   expirationHandler:^{
-        if (task != UIBackgroundTaskInvalid && MarkerupBackgroundTask == task) {
+        if (task != UIBackgroundTaskInvalid && MarkerupHasBackgroundTask && MarkerupBackgroundTask == task) {
             MarkerupEndBackgroundTask();
         }
     }];
-    if (task != UIBackgroundTaskInvalid) MarkerupBackgroundTask = task;
+    if (task != UIBackgroundTaskInvalid) {
+        MarkerupBackgroundTask = task;
+        MarkerupHasBackgroundTask = YES;
+    }
 }
 
 static void MarkerupStoreDiagnostics(NSString *report) {
