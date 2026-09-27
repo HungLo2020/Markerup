@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Markerup reminders
+Comment=Start or upgrade the shared Markdown reminder service
+Exec=/usr/bin/markerup --reminder-setup
+Terminal=false
+NoDisplay=true

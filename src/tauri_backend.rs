@@ -28,6 +28,7 @@ const PRIVACY_POLICY_URL: &str = "https://hunglo2020.github.io/Markerup/privacy-
 #[derive(Default)]
 struct BackendInner {
     workspace: WorkspaceSlot,
+    known_workspaces: HashMap<String, (WorkspaceSlot, Option<Vec<u8>>)>,
     workspace_revision: u64,
     entries: Vec<WorkspaceEntry>,
     bookmark: Option<Vec<u8>>,
@@ -269,6 +270,7 @@ impl MarkerupBackend {
     }
 
     fn mark_workspace_changed(inner: &mut BackendInner) {
+        crate::reminders::refresh();
         inner.workspace_revision = inner.workspace_revision.wrapping_add(1);
     }
 
@@ -308,6 +310,13 @@ impl MarkerupBackend {
         bookmark: Option<Vec<u8>>,
     ) {
         inner.active_favorite = Self::favorite_index_for(&inner.favorites, &workspace, &bookmark);
+        #[cfg(not(test))]
+        if let Some(shared) = workspace.shared_clone() {
+            crate::reminders::register(shared);
+        }
+        inner
+            .known_workspaces
+            .insert(workspace.identity(), (workspace.clone(), bookmark.clone()));
         inner.workspace = workspace;
         Self::mark_workspace_changed(inner);
         inner.entries.clear();
@@ -433,7 +442,11 @@ impl MarkerupBackend {
         inner.disk_text = contents.to_string();
         inner.external_conflict = false;
         Self::persist(&inner);
-        Ok(Self::snapshot(&inner))
+        let snapshot = Self::snapshot(&inner);
+        #[cfg(not(test))]
+        crate::reminders::saved(&request.workspace, &request.file, contents);
+        drop(inner);
+        Ok(snapshot)
     }
 
     fn install_scanned(
@@ -594,6 +607,56 @@ impl MarkerupBackend {
         self.install_scanned(WorkspaceSlot::smb(workspace), None, entries)
     }
 
+    fn open_reminder_note(&self, identity: &str, file: &str) -> Result<NotePayload, String> {
+        let known = {
+            let mut inner = self.locked()?;
+            if inner.workspace.identity() == identity {
+                return Self::open_note_locked(&mut inner, file.to_string(), true);
+            }
+            inner.known_workspaces.get(identity).cloned()
+        };
+        let reopened = if let Some((workspace, bookmark)) = known {
+            let entries = workspace.entries().map_err(|e| e.to_string())?;
+            (workspace, bookmark, entries)
+        } else {
+            #[cfg(not(target_os = "ios"))]
+            {
+                if identity.starts_with("smb:") {
+                    return Err(
+                        "Reconnect to this SMB workspace before opening its reminder".into(),
+                    );
+                }
+                let workspace = LocalWorkspace::open(identity).map_err(|e| e.to_string())?;
+                let entries = workspace.entries().map_err(|e| e.to_string())?;
+                (WorkspaceSlot::local(workspace), None, entries)
+            }
+            #[cfg(target_os = "ios")]
+            {
+                let favorites = self.locked()?.favorites.clone();
+                let candidate = favorites
+                    .into_iter()
+                    .find(|favorite| match &favorite.workspace {
+                        SavedWorkspace::Local { path, .. } => {
+                            identity == format!("ios:{}", path.display())
+                        }
+                        SavedWorkspace::Smb(smb) => {
+                            identity
+                                == format!("smb:{}:{}:{}", smb.server, smb.share, smb.remote_path)
+                        }
+                    })
+                    .and_then(Self::reopen_favorite)
+                    .ok_or(
+                        "Open this workspace in Location first so Markerup can access the reminder",
+                    )?;
+                candidate
+            }
+        };
+        // Read first, so a missing note does not replace the user's workspace.
+        reopened.0.read(file).map_err(|e| e.to_string())?;
+        self.install_scanned(reopened.0, reopened.1, reopened.2)?;
+        self.open_note(file.to_string())
+    }
+
     fn open_note(&self, id: EntryId) -> Result<NotePayload, String> {
         let mut inner = self.locked()?;
         Self::open_note_locked(&mut inner, id, true)
@@ -645,6 +708,7 @@ impl MarkerupBackend {
         &self,
         editor_has_unsaved_changes: bool,
     ) -> Result<WorkspaceSnapshot, String> {
+        crate::reminders::refresh();
         let (workspace, revision, current_file, baseline) = {
             let inner = self.locked()?;
             (
@@ -768,6 +832,10 @@ impl MarkerupBackend {
                 .workspace
                 .rename(id, name)
                 .map_err(|error| error.to_string())?;
+            #[cfg(not(test))]
+            if let Some(workspace) = inner.workspace.shared_clone() {
+                crate::reminders::path_changed(&workspace, id, Some(&new_id));
+            }
             inner.navigation.rebase(id, &new_id);
             if inner.current_file.as_deref() == Some(id) {
                 inner.current_file = Some(new_id);
@@ -787,6 +855,10 @@ impl MarkerupBackend {
                 .workspace
                 .move_entry(id, destination_parent)
                 .map_err(|error| error.to_string())?;
+            #[cfg(not(test))]
+            if let Some(workspace) = inner.workspace.shared_clone() {
+                crate::reminders::path_changed(&workspace, id, Some(&new_id));
+            }
             inner.navigation.rebase(id, &new_id);
             if inner.current_file.as_deref() == Some(id) {
                 inner.current_file = Some(new_id.clone());
@@ -815,6 +887,10 @@ impl MarkerupBackend {
                 .workspace
                 .delete(id)
                 .map_err(|error| error.to_string())?;
+            #[cfg(not(test))]
+            if let Some(workspace) = inner.workspace.shared_clone() {
+                crate::reminders::path_changed(&workspace, id, None);
+            }
             inner.navigation.remove(id);
             if inner.current_file.as_deref() == Some(id)
                 || inner
@@ -1004,7 +1080,7 @@ impl MarkerupBackend {
 /// there freezes the whole UI. `#[tauri::command(async)]` is not a substitute:
 /// it runs on an async worker, where SMB operations (which block on their own
 /// Tokio runtime) would panic.
-async fn run_blocking<T, F>(work: F) -> Result<T, String>
+pub(crate) async fn run_blocking<T, F>(work: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
@@ -1020,6 +1096,16 @@ where
     F: FnOnce(&MarkerupBackend) -> Result<T, String> + Send + 'static,
 {
     run_blocking(move || work(app.state::<MarkerupBackend>().inner())).await
+}
+
+#[tauri::command]
+pub async fn open_reminder_note(key: String, app: AppHandle) -> Result<NotePayload, String> {
+    with_backend(app, move |backend| {
+        let target = crate::reminders::target(&key)?
+            .ok_or("Reminder no longer exists. Refresh the reminder list.")?;
+        backend.open_reminder_note(&target.workspace, &target.file)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1259,8 +1345,10 @@ pub fn privacy_policy_url() -> &'static str {
 
 #[cfg(target_os = "ios")]
 #[tauri::command]
-pub fn finish_ios_background_save() {
+pub async fn finish_ios_background_save() -> Result<(), String> {
+    let result = run_blocking(crate::reminders::flush_notifications).await;
     crate::ios_bridge::finish_background_task();
+    result
 }
 
 fn normalize_mermaid_source(source: &str) -> String {

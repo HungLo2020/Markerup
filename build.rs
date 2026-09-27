@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rerun-if-changed=ios/MarkerupIOSBridge.m");
     generate_app_icon();
     tauri_build::build();
 
@@ -7,6 +8,7 @@ fn main() {
     if target_is_ios && host_is_apple {
         println!("cargo:rustc-link-lib=framework=UniformTypeIdentifiers");
         println!("cargo:rustc-link-lib=framework=Security");
+        println!("cargo:rustc-link-lib=framework=UserNotifications");
         cc::Build::new()
             .file("ios/MarkerupIOSBridge.m")
             .flag("-fobjc-arc")

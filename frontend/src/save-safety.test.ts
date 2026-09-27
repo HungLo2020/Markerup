@@ -98,6 +98,13 @@ test("content panes get the flexible row beneath toolbar and conflict banner", a
   const stylesheet = document.createElement("style");
   stylesheet.textContent = readFileSync("src/styles.css", "utf8");
   document.head.append(stylesheet);
+  const health = document.querySelector<HTMLButtonElement>("#reminder-health")!;
+  for (const visible of [false, true]) {
+    health.hidden = !visible;
+    expect(getComputedStyle(document.querySelector("#app")!).gridTemplateRows.replaceAll(" ", "")).toBe("autoautominmax(0,1fr)auto");
+    expect(getComputedStyle(document.querySelector("#content")!).gridRow).toBe("3");
+    expect(getComputedStyle(document.querySelector("#status")!).gridRow).toBe("4");
+  }
   const mode = document.querySelector<HTMLSelectElement>("#view-mode")!;
   const banner = document.querySelector("#save-conflict")!;
   for (const hasConflict of [false, true]) {

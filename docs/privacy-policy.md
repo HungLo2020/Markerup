@@ -64,3 +64,7 @@ version.
 For questions about this policy, open an issue in the Markerup repository:
 
 <https://github.com/HungLo2020/Markerup/issues>
+
+## Local reminders
+
+Reminder indexing stores workspace paths, reminder text, schedules, and delivery state locally on each device. Markerup sends reminder titles and note filenames to the device's native notification system. They may be visible on the lock screen according to your system settings. Reminder delivery has no networking service or cross-device messaging. Linux uses a local background process with a user systemd service or desktop autostart entry; iOS uses local scheduled notifications. See [reminders](reminders.md) for storage locations and operating requirements.

@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl as openExternal } from "@tauri-apps/plugin-opener";
@@ -9,6 +10,7 @@ import DOMPurify from "dompurify";
 import { footnoteBody, footnoteDomId, renderInlineMarkdownHtml, renderMarkdownHtml } from "./markdown-renderer";
 import { createUtf8OffsetMapper } from "./markdown-offsets";
 import "./styles.css";
+import { reminderComposer, reminderList, type ReminderDefinition, type ReminderItem, type ReminderStatus } from "./reminders";
 
 const menuIcon = new URL("../../resources/icon_menu.svg", import.meta.url).href;
 const settingsIcon = new URL("../../resources/icon_preview_settings.svg", import.meta.url).href;
@@ -129,7 +131,8 @@ function renderShell() {
   const headerLocation = snapshot?.currentFile
     ? noteTitle(snapshot.currentFile)
     : snapshot?.workspacePath ?? "No workspace";
-  app.innerHTML = `<header><button id="menu" class="icon-button" aria-label="Toggle workspace"><img src="${menuIcon}" alt=""></button><strong>Markerup</strong><span id="location">${escape(headerLocation)}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" class="icon-button" aria-label="Settings"><img src="${settingsIcon}" alt=""></button></header><main id="content"></main><footer id="status">Ready</footer>`;
+  app.innerHTML = `<header><button id="menu" class="icon-button" aria-label="Toggle workspace"><img src="${menuIcon}" alt=""></button><strong>Markerup</strong><span id="location">${escape(headerLocation)}</span><span class="grow"></span><button id="back">←</button><button id="forward">→</button><button id="refresh">Refresh</button><button id="settings" class="icon-button" aria-label="Settings"><img src="${settingsIcon}" alt=""></button></header><button id="reminder-health" type="button" aria-live="polite" hidden></button><main id="content"></main><footer id="status">Ready</footer>`;
+  if (reminderHealth) showReminderHealth(reminderHealth);
   document.querySelector("#menu")!.addEventListener("click", () => document.body.classList.toggle("sidebar-hidden"));
   document.querySelector("#settings")!.addEventListener("click", () => { page = "settings"; renderPage(); });
   document.querySelector("#refresh")!.addEventListener("click", refresh);
@@ -153,7 +156,7 @@ function renderPage() {
   latestBlocks = [];
   disposeEditor();
   const content = document.querySelector<HTMLElement>("#content")!;
-  if (page === "settings") { content.innerHTML = panel("Settings", `<button id="location-settings">Location</button><button id="about">About</button>`); document.querySelector("#location-settings")!.addEventListener("click",()=>{page="location";renderPage()}); document.querySelector("#about")!.addEventListener("click",()=>{page="about";renderPage()}); return; }
+  if (page === "settings") { content.innerHTML = panel("Settings", `<button id="location-settings">Location</button><button id="reminder-settings">Reminders</button><button id="about">About</button>`); document.querySelector("#reminder-settings")!.addEventListener("click", showReminders); document.querySelector("#location-settings")!.addEventListener("click",()=>{page="location";renderPage()}); document.querySelector("#about")!.addEventListener("click",()=>{page="about";renderPage()}); return; }
   if (page === "location") {
     const favorites = snapshot?.favorites ?? [];
     const favoriteList = favorites.length
@@ -722,14 +725,91 @@ async function insertUrlImage() {
   if (alt === undefined) return;
   insertAtSelection(`![${alt}](${url})`);
 }
+let reminderHealth: ReminderStatus["platform"] | undefined;
+function showReminderHealth(value: ReminderStatus["platform"]) {
+  reminderHealth = value;
+  const element = document.querySelector<HTMLElement>("#reminder-health");
+  if (!element) return;
+  element.hidden = !value.limited_until;
+  element.textContent = value.limited_until ? `Reminders: open Markerup before ${new Date(value.limited_until).toLocaleString()} to replenish notifications. Tap for details.` : "";
+  element.onclick = showReminders;
+}
+async function editReminder(definition: ReminderDefinition) {
+  const originalEditor = editor, originalText = currentText;
+  const map = createUtf8OffsetMapper(originalText);
+  const from = map(definition.offset), to = map(definition.end);
+  const replacement = await new Promise<string | undefined>(resolve => reminderComposer(modalSurface<string>("Edit reminder", resolve), definition.title, definition));
+  if (!replacement) return;
+  if (editor !== originalEditor || currentText !== originalText || !editor) { status("The note changed. Please open the reminder again."); return; }
+  editor.dispatch({ changes: { from, to, insert: replacement }, selection: { anchor: from + replacement.length }, userEvent: "input.reminder" });
+  editor.focus(); await flushSave();
+}
+async function openReminder(item: Pick<ReminderItem,"key"|"id">, edit = false) {
+  if (!await saveBeforeChangingNote()) return;
+  try {
+    const note = await call<Note>("open_reminder_note", { key: item.key });
+    page = "main"; loadNote(note);
+    const originalEditor = editor, originalText = currentText;
+    const definition = await call<ReminderDefinition>("reminder_definition", { source: originalText, id: item.id });
+    if (editor !== originalEditor || currentText !== originalText) return;
+    if (editor) {
+      const from = createUtf8OffsetMapper(currentText)(definition.offset);
+      editor.dispatch({selection:{anchor:from},scrollIntoView:true}); editor.focus();
+    }
+    if (edit) await editReminder(definition);
+  } catch(error) { status(String(error)); }
+}
+function showReminders() {
+  const modal = modalSurface<void>("Reminders", () => {});
+  modal.body.closest(".modal")?.classList.add("reminders-modal");
+  void reminderList(modal.body, (item,edit) => { modal.dismiss(); void openReminder(item,edit); }, value => showReminderHealth(value.platform));
+}
+async function showPendingReminder() {
+  if (!("__TAURI_INTERNALS__" in window)) return;
+  try {
+    const key = await call<string | null>("reminder_take_notification");
+    if (!key) return;
+    const item = await call<{id:string} | null>("reminder_target", {key});
+    if (item) await openReminder({key,id:item.id}); else showReminders();
+  } catch(error) { status(`Could not open reminder: ${error}`); }
+}
 async function showInsertMenu() {
   if (!snapshot?.currentFile || !editor) return;
   const action = await chooseAction("Insert Markdown", [
+    { id: "reminder", label: "Reminder" },
+    { id: "edit-reminder", label: "Edit reminder on this line" },
     { id: "note-link", label: "Link to note" },
     { id: "web-link", label: "Web link" },
     { id: "workspace-image", label: "Workspace image" },
     { id: "web-image", label: "Web image" },
   ]);
+  if (action === "edit-reminder" && editor) {
+    const line = editor.state.doc.lineAt(editor.state.selection.main.head);
+    try {
+      const originalEditor = editor, originalText = currentText;
+      const definitions = await call<ReminderDefinition[]>("reminder_definitions", {source: originalText});
+      if (editor !== originalEditor || currentText !== originalText) return;
+      const map = createUtf8OffsetMapper(currentText);
+      const found = definitions.find(r => map(r.offset) >= line.from && map(r.offset) <= line.to);
+      if (found) await editReminder(found); else status("No active reminder on this line. You can also edit reminders in Settings → Reminders.");
+    } catch(error) { status(String(error)); }
+    return;
+  }
+  if (action === "reminder") {
+    const originalEditor = editor;
+    const originalNote = snapshot?.currentFile;
+    const originalWorkspace = snapshot?.workspacePath;
+    const originalText = currentText;
+    const selected = editor.state.sliceDoc(editor.state.selection.main.from, editor.state.selection.main.to);
+    const marker = await new Promise<string | undefined>(resolve => reminderComposer(modalSurface<string>("Create reminder", resolve), selected));
+    if (marker === undefined) return;
+    if (editor !== originalEditor || snapshot?.currentFile !== originalNote || snapshot?.workspacePath !== originalWorkspace || currentText !== originalText) {
+      status("The note changed while the reminder dialog was open. Please insert it again."); return;
+    }
+    insertAtSelection(marker);
+    await flushSave();
+    return;
+  }
   if (action === "note-link") return insertNoteLink();
   if (action === "web-link") return insertUrlLink();
   if (action === "workspace-image") return insertWorkspaceImage();
@@ -1144,7 +1224,7 @@ document.addEventListener("visibilitychange", () => {
     });
   } else if (iosDevice() && iosWasBackgrounded) {
     iosWasBackgrounded = false;
-    void refresh();
+    void refresh().finally(showPendingReminder);
   }
 });
 async function start(){
@@ -1162,6 +1242,8 @@ async function start(){
     return;
   }
   if (snapshot.workspaceRestoring) await finishRestore(snapshot);
+  void showPendingReminder();
+  void call<ReminderStatus>("reminder_status").then(s => showReminderHealth(s.platform)).catch(() => {});
 }
 // The backend reopens the saved favorite in the background so the window is
 // usable immediately. Apply it only if the user has not changed anything since.
@@ -1186,4 +1268,6 @@ async function finishRestore(initial: Snapshot) {
     if (snapshot === initial) status(`Could not reopen the favorite workspace: ${error}`);
   }
 }
+void listen("reminder-activate", () => void showPendingReminder()).catch(() => {});
+void listen<ReminderStatus["platform"]>("reminder-health", event => showReminderHealth(event.payload)).catch(() => {});
 void start();

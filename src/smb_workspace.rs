@@ -548,6 +548,31 @@ fn is_supported_asset_name(name: &str) -> bool {
 }
 
 impl Workspace for SmbWorkspace {
+    fn reminder_revisions(
+        &self,
+        entries: &[WorkspaceEntry],
+    ) -> io::Result<std::collections::BTreeMap<EntryId, String>> {
+        let parents: std::collections::BTreeSet<_> = entries
+            .iter()
+            .filter(|e| e.kind == EntryKind::File)
+            .map(|e| e.id.rsplit_once('/').map_or("", |(parent, _)| parent))
+            .collect();
+        let mut revisions = std::collections::BTreeMap::new();
+        for parent in parents {
+            for child in self.list_directory(&self.remote_path(parent)?)? {
+                if !child.is_directory && child.name.to_ascii_lowercase().ends_with(".md") {
+                    let id = if parent.is_empty() {
+                        child.name.clone()
+                    } else {
+                        format!("{parent}/{}", child.name)
+                    };
+                    revisions.insert(id, format!("{}:{:?}", child.size, child.modified));
+                }
+            }
+        }
+        Ok(revisions)
+    }
+
     fn entries(&self) -> io::Result<Vec<WorkspaceEntry>> {
         let root = self.remote_path("")?;
         let mut entries = Vec::new();

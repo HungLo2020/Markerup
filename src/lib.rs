@@ -5,22 +5,46 @@ mod ios_workspace;
 mod markdown;
 mod navigation;
 mod persistence;
+pub mod reminders;
 mod smb_workspace;
 mod tauri_backend;
 mod workspace;
 
+#[cfg(target_os = "linux")]
+use tauri::Emitter;
 use tauri::Manager;
 use tauri_backend::MarkerupBackend;
 
 #[cfg_attr(target_os = "ios", tauri::mobile_entry_point)]
 pub fn run() {
+    reminders::queue_navigation(&std::env::args().collect::<Vec<_>>());
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(
+        tauri_plugin_single_instance::Builder::new()
+            .dbus_id(if cfg!(debug_assertions) {
+                "com.matt.markerup.dev"
+            } else {
+                "com.matt.markerup"
+            })
+            .callback(|app, args, _| {
+                reminders::queue_navigation(&args);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+                let _ = app.emit("reminder-activate", ());
+            })
+            .build(),
+    );
     let backend = MarkerupBackend::default();
     let pending_restore = backend.load_saved_session();
-    let builder = tauri::Builder::default()
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(backend)
         .setup(move |app| {
+            reminders::initialize(app.handle().clone());
             #[cfg(target_os = "ios")]
             ios_bridge::install_lifecycle_observers();
             if let Some(pending) = pending_restore {
@@ -35,6 +59,16 @@ pub fn run() {
         });
     #[cfg(not(target_os = "ios"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        reminders::reminder_status,
+        reminders::reminder_take_notification,
+        reminders::reminder_permissions,
+        reminders::reminder_rescan,
+        reminders::reminder_validate,
+        reminders::reminder_definition,
+        reminders::reminder_definitions,
+        reminders::reminder_workspace_action,
+        reminders::reminder_target,
+        tauri_backend::open_reminder_note,
         tauri_backend::workspace_snapshot,
         tauri_backend::restored_workspace,
         tauri_backend::open_local_workspace,
@@ -63,6 +97,16 @@ pub fn run() {
     ]);
     #[cfg(target_os = "ios")]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        reminders::reminder_status,
+        reminders::reminder_take_notification,
+        reminders::reminder_permissions,
+        reminders::reminder_rescan,
+        reminders::reminder_validate,
+        reminders::reminder_definition,
+        reminders::reminder_definitions,
+        reminders::reminder_workspace_action,
+        reminders::reminder_target,
+        tauri_backend::open_reminder_note,
         tauri_backend::workspace_snapshot,
         tauri_backend::restored_workspace,
         tauri_backend::open_local_workspace,
@@ -92,6 +136,11 @@ pub fn run() {
         tauri_backend::finish_ios_background_save
     ]);
     builder
-        .run(tauri::generate_context!())
-        .expect("Markerup Tauri application failed");
+        .build(tauri::generate_context!())
+        .expect("Markerup Tauri application failed")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                reminders::flush_on_exit();
+            }
+        });
 }

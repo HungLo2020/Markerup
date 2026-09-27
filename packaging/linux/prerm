@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    remove|deconfigure)
+        /usr/lib/markerup/reminder-sessions --reminder-remove
+        ;;
+    # Upgrade: keep the current worker until postinst can hand over to the
+    # newly unpacked binary, preserving the delivery ledger throughout.
+esac
+exit 0

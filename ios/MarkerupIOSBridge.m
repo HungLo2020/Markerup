@@ -10,6 +10,8 @@
 #import <string.h>
 #import <stdlib.h>
 
+static void MarkerupInstallReminderDelegate(void);
+
 typedef void (*MarkerupPickerCallback)(const char *, const unsigned char *, size_t, void *);
 
 static UIBackgroundTaskIdentifier MarkerupBackgroundTask;
@@ -613,6 +615,7 @@ bool markerup_ios_list_entries(const char *path, unsigned char **data_out, size_
 
 void markerup_ios_install_lifecycle_observers(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        MarkerupInstallReminderDelegate();
         if (MarkerupLifecycleObserversInstalled) return;
         MarkerupLifecycleObserversInstalled = YES;
         [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationWillResignActiveNotification
@@ -636,4 +639,213 @@ void markerup_ios_finish_background_task(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         MarkerupEndBackgroundTask();
     });
+}
+
+// Local notifications are owned by iOS and continue while Markerup is suspended
+// or terminated. The Rust index submits saved Markdown schedules from a worker.
+#import <UserNotifications/UserNotifications.h>
+
+@interface MarkerupReminderDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+@implementation MarkerupReminderDelegate
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+      willPresentNotification:(UNNotification *)notification
+        withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
+    completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList | UNNotificationPresentationOptionSound);
+}
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+ didReceiveNotificationResponse:(UNNotificationResponse *)response
+        withCompletionHandler:(void (^)(void))completionHandler {
+    UNNotificationRequest *original = response.notification.request;
+    if ([response.actionIdentifier isEqualToString:@"MARKERUP_SNOOZE"]) {
+        NSString *identifier = [NSString stringWithFormat:@"markerup:%@:snooze", original.content.userInfo[@"key"] ?: original.identifier];
+        UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier
+            content:original.content trigger:[UNTimeIntervalNotificationTrigger triggerWithTimeInterval:600 repeats:NO]];
+        [center getPendingNotificationRequestsWithCompletionHandler:^(NSArray<UNNotificationRequest *> *pending) {
+            NSMutableArray<UNNotificationRequest *> *snoozes = [NSMutableArray array];
+            for (UNNotificationRequest *item in pending) {
+                if ([item.identifier hasPrefix:@"markerup:"] && [item.identifier hasSuffix:@":snooze"] && ![item.identifier isEqualToString:identifier]) [snoozes addObject:item];
+            }
+            if (snoozes.count >= 3) {
+                NSMutableArray *remove = [NSMutableArray array];
+                for (NSUInteger index = 0; index <= snoozes.count - 3; index++) [remove addObject:snoozes[index].identifier];
+                [center removePendingNotificationRequestsWithIdentifiers:remove];
+            }
+            [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {
+                if (error) NSLog(@"Markerup could not snooze reminder: %@", error.localizedDescription);
+                completionHandler();
+            }];
+        }];
+    } else {
+        NSString *key = original.content.userInfo[@"key"];
+        if (key) [NSUserDefaults.standardUserDefaults setObject:key forKey:@"markerup-pending-reminder"];
+        completionHandler();
+    }
+}
+@end
+
+static MarkerupReminderDelegate *MarkerupReminderHandler;
+static void MarkerupInstallReminderDelegate(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        MarkerupReminderHandler = [MarkerupReminderDelegate new];
+        UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+        center.delegate = MarkerupReminderHandler;
+        UNNotificationAction *snooze = [UNNotificationAction actionWithIdentifier:@"MARKERUP_SNOOZE"
+            title:@"Snooze 10 minutes" options:UNNotificationActionOptionNone];
+        UNNotificationCategory *category = [UNNotificationCategory categoryWithIdentifier:@"MARKERUP_REMINDER"
+            actions:@[snooze] intentIdentifiers:@[] options:UNNotificationCategoryOptionNone];
+        [center setNotificationCategories:[NSSet setWithObject:category]];
+    });
+}
+
+static char *MarkerupReminderResponse(NSDictionary *value) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    return strdup(text.UTF8String ?: "{\"error\":\"Could not encode notification response\"}");
+}
+
+// This synchronous ABI is only invoked from Rust worker threads. Never block
+// the main queue while awaiting UserNotifications callbacks.
+char *markerup_ios_reminders(const char *json) {
+    @autoreleasepool {
+        if (NSThread.isMainThread) return MarkerupReminderResponse(@{@"error": @"Notification scheduling must run off the main thread"});
+        NSString *input = [NSString stringWithUTF8String:json];
+        NSDictionary *args = [NSJSONSerialization JSONObjectWithData:[input dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        if (![args isKindOfClass:NSDictionary.class]) return MarkerupReminderResponse(@{@"error": @"Invalid notification request"});
+        dispatch_sync(dispatch_get_main_queue(), ^{ MarkerupInstallReminderDelegate(); });
+        if ([args[@"take"] boolValue]) {
+            NSString *key = [NSUserDefaults.standardUserDefaults stringForKey:@"markerup-pending-reminder"] ?: @"";
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"markerup-pending-reminder"];
+            return MarkerupReminderResponse(@{@"message": key});
+        }
+        UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
+        dispatch_semaphore_t wait = dispatch_semaphore_create(0);
+        __block NSString *failure;
+        if ([args[@"permission"] boolValue]) {
+            __block BOOL granted = NO;
+            [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
+                completionHandler:^(BOOL allowed, NSError *error) {
+                    granted = allowed;
+                    failure = error.localizedDescription;
+                    dispatch_semaphore_signal(wait);
+                }];
+            if (dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC)))
+                return MarkerupReminderResponse(@{@"error": @"Notification permission request timed out"});
+            if (failure) return MarkerupReminderResponse(@{@"error": failure});
+            return MarkerupReminderResponse(@{@"message": granted ? @"iOS notifications allowed" : @"Notifications disabled. Enable them in iOS Settings → Markerup → Notifications."});
+        }
+        __block UNNotificationSettings *settings;
+        [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *value) { settings = value; dispatch_semaphore_signal(wait); }];
+        if (dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)))
+            return MarkerupReminderResponse(@{@"error": @"Could not read iOS notification settings"});
+        if (settings.authorizationStatus == UNAuthorizationStatusNotDetermined && [args[@"requests"] count] > 0) {
+            __block BOOL allowed = NO;
+            [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                completionHandler:^(BOOL granted, NSError *error) { allowed = granted; failure = error.localizedDescription; dispatch_semaphore_signal(wait); }];
+            if (dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC)))
+                return MarkerupReminderResponse(@{@"error": @"Notification permission request timed out"});
+            if (failure) return MarkerupReminderResponse(@{@"error": failure});
+            if (allowed) {
+                [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *value) { settings = value; dispatch_semaphore_signal(wait); }];
+                if (dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)))
+                    return MarkerupReminderResponse(@{@"error": @"Could not read notification permission"});
+            }
+        }
+        if (settings.authorizationStatus != UNAuthorizationStatusAuthorized && settings.authorizationStatus != UNAuthorizationStatusProvisional)
+            return MarkerupReminderResponse(@{@"message": @"Reminders found, but notifications are not allowed. Open Reminders to enable notifications."});
+        NSArray *desired = args[@"requests"];
+        if (![desired isKindOfClass:NSArray.class]) return MarkerupReminderResponse(@{@"error": @"Missing reminder schedules"});
+        __block NSArray<UNNotificationRequest *> *pending;
+        [center getPendingNotificationRequestsWithCompletionHandler:^(NSArray<UNNotificationRequest *> *requests) { pending = requests; dispatch_semaphore_signal(wait); }];
+        if (dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)))
+            return MarkerupReminderResponse(@{@"error": @"Could not read pending notifications"});
+        NSMutableDictionary *existing = [NSMutableDictionary dictionary];
+        for (UNNotificationRequest *request in pending) existing[request.identifier] = request;
+        NSMutableSet *identifiers = [NSMutableSet set];
+        NSMutableSet *keys = [NSMutableSet setWithArray:args[@"activeKeys"] ?: @[]];
+        for (NSDictionary *item in desired) [identifiers addObject:item[@"id"]];
+        // Make room before adding. Exceeding the system cap can silently drop
+        // requests, so never temporarily double the queue during reconciliation.
+        NSMutableArray *remove = [NSMutableArray array];
+        NSUInteger snoozes = 0;
+        for (UNNotificationRequest *old in pending) {
+            if (![old.identifier hasPrefix:@"markerup:"] || [identifiers containsObject:old.identifier]) continue;
+            // A just-scheduled summary must survive an ordinary refresh before
+            // its trigger fires. Removing a source cancels the stale summary.
+            if ([old.identifier isEqualToString:@"markerup:overdue"] && [old.trigger isKindOfClass:UNCalendarNotificationTrigger.class] && ((UNCalendarNotificationTrigger *)old.trigger).nextTriggerDate.timeIntervalSinceNow > 0) {
+                NSSet *summaryKeys = [NSSet setWithArray:old.content.userInfo[@"keys"] ?: @[]];
+                if (summaryKeys.count && [summaryKeys isSubsetOfSet:keys]) continue;
+            }
+            if ([old.identifier hasSuffix:@":snooze"] && [keys containsObject:old.content.userInfo[@"key"]] && snoozes++ < 3) continue;
+            [remove addObject:old.identifier];
+        }
+        [center removePendingNotificationRequestsWithIdentifiers:remove];
+        [center getDeliveredNotificationsWithCompletionHandler:^(NSArray<UNNotification *> *notifications) {
+            NSMutableArray *obsolete = [NSMutableArray array];
+            for (UNNotification *notification in notifications) {
+                NSString *key = notification.request.content.userInfo[@"key"];
+                if ([notification.request.identifier hasPrefix:@"markerup:"] && key && ![key isEqualToString:@"overdue"] && ![key isEqualToString:@"refill"] && ![keys containsObject:key])
+                    [obsolete addObject:notification.request.identifier];
+            }
+            [center removeDeliveredNotificationsWithIdentifiers:obsolete];
+        }];
+        NSMutableArray *errors = [NSMutableArray array];
+        dispatch_group_t group = dispatch_group_create();
+        for (NSDictionary *item in desired) {
+            NSString *identifier = item[@"id"];
+            [identifiers addObject:identifier];
+            UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+            content.title = item[@"title"] ?: @"Markerup reminder";
+            content.body = item[@"body"] ?: @"";
+            content.sound = UNNotificationSound.defaultSound;
+            content.categoryIdentifier = ([item[@"key"] isEqualToString:@"overdue"] || [item[@"key"] isEqualToString:@"refill"]) ? @"" : @"MARKERUP_REMINDER";
+            content.userInfo = @{@"key": item[@"key"] ?: @"", @"keys": item[@"keys"] ?: @[]};
+            UNNotificationTrigger *trigger;
+            NSDictionary *calendar = item[@"calendar"];
+            if (calendar) {
+                NSDateComponents *parts = [NSDateComponents new];
+                parts.calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+                parts.timeZone = [NSTimeZone timeZoneWithName:calendar[@"timeZone"]];
+                parts.hour = [calendar[@"hour"] integerValue];
+                parts.minute = [calendar[@"minute"] integerValue];
+                parts.second = 0;
+                if (calendar[@"weekday"]) parts.weekday = [calendar[@"weekday"] integerValue];
+                if (calendar[@"day"]) parts.day = [calendar[@"day"] integerValue];
+                if (calendar[@"month"]) parts.month = [calendar[@"month"] integerValue];
+                trigger = [UNCalendarNotificationTrigger triggerWithDateMatchingComponents:parts repeats:YES];
+            } else {
+                NSDate *date = [NSDate dateWithTimeIntervalSince1970:[item[@"at"] doubleValue]];
+                NSCalendar *utc = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+                utc.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+                NSDateComponents *parts = [utc components:(NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond) fromDate:date];
+                parts.calendar = utc;
+                parts.timeZone = utc.timeZone;
+                trigger = [UNCalendarNotificationTrigger triggerWithDateMatchingComponents:parts repeats:NO];
+            }
+            UNNotificationRequest *old = existing[identifier];
+            if (old && [old.trigger isEqual:trigger] && [old.content.title isEqual:content.title] && [old.content.body isEqual:content.body]) continue;
+            UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:identifier content:content trigger:trigger];
+            dispatch_group_enter(group);
+            [center addNotificationRequest:request withCompletionHandler:^(NSError *error) {
+                if (error) @synchronized(errors) { [errors addObject:error.localizedDescription]; }
+                dispatch_group_leave(group);
+            }];
+        }
+        if (dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC)))
+            return MarkerupReminderResponse(@{@"error": @"iOS notification scheduling timed out; will retry"});
+        if (errors.count) return MarkerupReminderResponse(@{@"error": [errors componentsJoinedByString:@"; "]});
+        __block NSArray<UNNotificationRequest *> *confirmed;
+        [center getPendingNotificationRequestsWithCompletionHandler:^(NSArray<UNNotificationRequest *> *value) { confirmed = value; dispatch_semaphore_signal(wait); }];
+        if (dispatch_semaphore_wait(wait, dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC)))
+            return MarkerupReminderResponse(@{@"error": @"Could not verify pending notifications"});
+        NSMutableSet *confirmedIDs = [NSMutableSet set];
+        for (UNNotificationRequest *request in confirmed) [confirmedIDs addObject:request.identifier];
+        for (NSDictionary *item in desired) {
+            BOOL future = item[@"calendar"] || [item[@"at"] doubleValue] > NSDate.date.timeIntervalSince1970;
+            if (future && ![confirmedIDs containsObject:item[@"id"]])
+                return MarkerupReminderResponse(@{@"error": @"iOS did not retain all requested reminders; will retry"});
+        }
+        return MarkerupReminderResponse(@{@"message": [NSString stringWithFormat:@"%lu iOS notification schedules active", (unsigned long)desired.count]});
+    }
 }

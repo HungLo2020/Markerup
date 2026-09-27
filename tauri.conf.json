@@ -7,7 +7,15 @@
     "frontendDist": "frontend/dist"
   },
   "app": {
-    "windows": [{ "title": "Markerup", "width": 1200, "height": 760, "minWidth": 480, "minHeight": 480 }],
+    "windows": [
+      {
+        "title": "Markerup",
+        "width": 1200,
+        "height": 760,
+        "minWidth": 480,
+        "minHeight": 480
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
     }
@@ -24,6 +32,17 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.png"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/etc/xdg/autostart/markerup-reminder-bootstrap.desktop": "packaging/linux/markerup-reminder-bootstrap.desktop",
+          "/usr/lib/markerup/reminder-sessions": "packaging/linux/reminder-sessions",
+          "/usr/share/markerup/reminders/service-version": "packaging/linux/service-version"
+        },
+        "postInstallScript": "packaging/linux/postinst",
+        "preRemoveScript": "packaging/linux/prerm"
+      }
+    }
   }
 }

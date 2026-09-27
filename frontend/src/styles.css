@@ -1,4 +1,4 @@
-:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#1b1b1d;color:#f2f2f7}*{box-sizing:border-box}html,body,#app{margin:0;width:100%;height:100%;overflow:hidden}#app{display:grid;grid-template-rows:auto minmax(0,1fr) auto;background:#1b1b1d}button,input,select{font:inherit;color:inherit;background:#2b2b2e;border:1px solid #3c3c40;border-radius:6px;padding:7px 12px}button{cursor:pointer}button:hover{background:#3a3a3e}header{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid #343438;min-height:54px}#location{color:#b8b8c0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42vw}.grow{flex:1}#content{min-height:0;overflow:hidden}#status{padding:8px 12px;color:#aaaab1;border-top:1px solid #343438;font-size:.85rem}#content{display:grid;grid-template-columns:320px minmax(0,1fr)}#sidebar{padding:14px;border-right:1px solid #343438;overflow:auto}.row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}#search{width:100%;margin-bottom:10px}.entry{display:flex;align-items:center;min-width:0}.entry-main{background:none;border:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:6px}.entry-actions{padding:3px 9px}.muted{color:#a0a0a8}.sidebar-hidden #content{grid-template-columns:minmax(0,1fr)}.sidebar-hidden #sidebar{display:none}#document{min-width:0;display:grid;grid-template-rows:auto minmax(0,1fr)}.document-bar{display:flex;gap:8px;align-items:center;padding:14px}.document-bar strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#panes{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1px;background:#343438}.source{grid-template-columns:minmax(0,1fr)!important}.source #preview{display:none}.preview{grid-template-columns:minmax(0,1fr)!important}.preview #editor-pane{display:none}#editor-pane,#preview{min-height:0;background:#1b1b1d}#editor{height:100%;font-size:16px}#preview{overflow:auto;padding:16px 24px;line-height:1.45}#preview section{margin:0 0 12px}#preview h1,#preview h2,#preview h3{margin:18px 0 8px}#preview p{margin:0}#preview img{display:block;max-width:100%;height:auto}#preview pre{overflow:auto;padding:12px;background:#27272a;border-radius:6px}.task{display:flex;gap:10px;align-items:flex-start}.task input{margin-top:4px}.panel{max-width:560px;margin:32px auto;display:flex;flex-direction:column;gap:12px}.panel h1{margin:8px 0}.panel h2{margin:16px 0 0;font-size:1rem}.panel label{display:grid;gap:5px}.panel input{width:100%}.favorites-list{display:grid;gap:8px}.favorite-workspace{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#1b1b1d;color:#f2f2f7}*{box-sizing:border-box}html,body,#app{margin:0;width:100%;height:100%;overflow:hidden}#app{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;background:#1b1b1d}button,input,select{font:inherit;color:inherit;background:#2b2b2e;border:1px solid #3c3c40;border-radius:6px;padding:7px 12px}button{cursor:pointer}button:hover{background:#3a3a3e}header{display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid #343438;min-height:54px}#location{color:#b8b8c0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42vw}.grow{flex:1}#content{min-height:0;overflow:hidden}#status{padding:8px 12px;color:#aaaab1;border-top:1px solid #343438;font-size:.85rem}#content{display:grid;grid-template-columns:320px minmax(0,1fr)}#sidebar{padding:14px;border-right:1px solid #343438;overflow:auto}.row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}#search{width:100%;margin-bottom:10px}.entry{display:flex;align-items:center;min-width:0}.entry-main{background:none;border:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding:6px}.entry-actions{padding:3px 9px}.muted{color:#a0a0a8}.sidebar-hidden #content{grid-template-columns:minmax(0,1fr)}.sidebar-hidden #sidebar{display:none}#document{min-width:0;display:grid;grid-template-rows:auto minmax(0,1fr)}.document-bar{display:flex;gap:8px;align-items:center;padding:14px}.document-bar strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#panes{min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1px;background:#343438}.source{grid-template-columns:minmax(0,1fr)!important}.source #preview{display:none}.preview{grid-template-columns:minmax(0,1fr)!important}.preview #editor-pane{display:none}#editor-pane,#preview{min-height:0;background:#1b1b1d}#editor{height:100%;font-size:16px}#preview{overflow:auto;padding:16px 24px;line-height:1.45}#preview section{margin:0 0 12px}#preview h1,#preview h2,#preview h3{margin:18px 0 8px}#preview p{margin:0}#preview img{display:block;max-width:100%;height:auto}#preview pre{overflow:auto;padding:12px;background:#27272a;border-radius:6px}.task{display:flex;gap:10px;align-items:flex-start}.task input{margin-top:4px}.panel{max-width:560px;margin:32px auto;display:flex;flex-direction:column;gap:12px}.panel h1{margin:8px 0}.panel h2{margin:16px 0 0;font-size:1rem}.panel label{display:grid;gap:5px}.panel input{width:100%}.favorites-list{display:grid;gap:8px}.favorite-workspace{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:700px){header{padding-top:max(10px,env(safe-area-inset-top));gap:5px}#location{display:none}#content{display:block}#sidebar{height:100%;border:0}.sidebar-hidden #sidebar{display:none}#document{height:100%}#panes{grid-template-columns:minmax(0,1fr)}#panes.split #preview{display:none}.document-bar{padding:10px}.document-bar strong{max-width:45vw}#preview{padding:14px 16px;padding-bottom:calc(14px + env(safe-area-inset-bottom))}.panel{margin:20px 16px}}
 button.icon-button{display:grid;place-items:center;padding:7px;line-height:0}button.icon-button img{width:20px;height:20px;display:block}.entry-folder-icon{width:18px;height:18px;vertical-align:-4px;margin-right:4px}.entry-disclosure{display:inline-block;width:16px;color:#b8b8c0}.insert-selector{display:grid;gap:4px;max-height:55dvh;overflow:auto}.insert-selector-entry{text-align:left;border:0;background:transparent;padding-top:9px;padding-bottom:9px}.insert-selector-entry:hover{background:#3a3a3e}
 .modal-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.58)}.modal{width:min(100%,420px);max-height:calc(100dvh - 40px);overflow:auto;background:#242427;border:1px solid #45454b;border-radius:12px;box-shadow:0 20px 50px rgba(0,0,0,.45)}.modal-header{display:flex;align-items:center;gap:12px;padding:16px;border-bottom:1px solid #3c3c40}.modal-header h2{margin:0;font-size:1.1rem}.modal-close{margin-left:auto;padding:3px 10px;font-size:1.35rem}.modal-body{padding:16px}.modal-actions{display:flex;flex-direction:column;gap:8px}.modal-actions button{width:100%;text-align:center}.modal-actions .destructive{color:#ff8989}.modal-form{display:grid;gap:16px}.modal-form label{display:grid;gap:7px}.modal-form input{width:100%}.modal-form .modal-actions{flex-direction:row;justify-content:flex-end}.modal-form .modal-actions button{width:auto}.secondary{background:#35353a}
@@ -21,3 +21,51 @@ button.icon-button{display:grid;place-items:center;padding:7px;line-height:0}but
 /* Active note in the tree, and the filter box and folder hints in pickers. */
 .entry.active{background:#2c3b52;border-radius:6px}.entry.active .entry-main{color:#fff;font-weight:600}
 .picker-filter{width:100%;margin-bottom:10px}.insert-selector-entry{display:flex;flex-direction:column;align-items:flex-start;gap:2px}.picker-detail{font-size:.8rem;color:#a0a0a8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+
+.reminder-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.reminder-form [hidden] { display: none !important; }
+.reminder-form input, .reminder-form select { max-width: 100%; min-width: 0; }
+.reminder-weekdays { display: flex; flex-wrap: wrap; gap: 12px; }
+.reminder-weekdays label, .reminder-last { display: flex; align-items: center; gap: 6px; }
+.reminder-form input[type="checkbox"] { width: 20px; height: 20px; }
+.reminder-help { font-size: .9em; opacity: .8; }
+.reminder-result, .reminder-error { color: #b93d3d; overflow-wrap: anywhere; }
+.reminder-card { padding: 12px 0; border-bottom: 1px solid #8885; overflow-wrap: anywhere; }
+.reminder-card p { margin: 6px 0; }
+#app > header { grid-row: 1; }
+#content { grid-row: 3; }
+#status { grid-row: 4; }
+#reminder-health { grid-row: 2; border: 0; border-radius: 0; text-align: left; padding: 8px 14px; background: #735619; color: #fff; cursor: pointer; font-size: .9em; }
+#reminder-health[hidden] { display: none; }
+.reminder-workspace { padding: 8px; border: 1px solid #8885; border-radius: 6px; overflow-wrap: anywhere; margin: 12px 0; }
+
+.reminders-modal { width: min(100%, 600px); }
+.reminders-browser { display: grid; gap: 14px; }
+.reminders-browser > p { margin: 0; }
+.reminder-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.reminders-browser > input { width: 100%; min-width: 0; }
+.reminder-filters, .reminder-row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.reminder-filters button { border-radius: 20px; }
+.reminder-filters button[aria-pressed="true"] { background: #244e7b; border-color: #6199d4; color: #fff; }
+.reminder-group-title { margin: 18px 0 8px; font-size: .85rem; color: #b8b8c0; font-weight: 600; }
+.reminder-group-title:first-child { margin-top: 0; }
+.reminder-results .reminder-card { margin-bottom: 10px; padding: 14px; background: #2b2b2e; border: 1px solid #45454b; border-radius: 9px; }
+.reminder-card > strong { display: block; font-size: 1rem; line-height: 1.4; }
+.reminder-when { color: #a9d1ff; font-weight: 500; }
+.reminder-note, .reminder-rule { font-size: .85rem; color: #b8b8c0; overflow-wrap: anywhere; }
+.reminder-row-actions { margin-top: 12px; }
+.reminder-row-actions button { min-height: 40px; font-size: .9rem; }
+.reminder-preferences { border-top: 1px solid #45454b; padding-top: 14px; }
+.reminder-preferences > summary, .reminder-warning > summary { cursor: pointer; padding: 4px 0; }
+.reminder-preferences > p { font-size: .9rem; line-height: 1.5; }
+.reminder-warning { padding: 10px 12px; border: 1px solid #927034; border-radius: 8px; background: #40331d; color: #ffe0a3; overflow-wrap: anywhere; font-size: .9rem; }
+.reminders-browser .reminder-error { color: #ffabab; }
+.reminder-empty { text-align: center; padding: 24px 12px; color: #c8c8cf; }
+.reminder-empty p { font-size: .9rem; line-height: 1.5; }
+.reminder-workspace p { margin: 6px 0; }
+@media(max-width:700px) {
+  .reminders-browser { gap: 12px; }
+  .reminder-row-actions button { flex: 1; min-height: 44px; }
+  .reminder-filters button { min-height: 44px; flex: 1; }
+}
+.reminders-modal > .modal-header { position: sticky; top: 0; z-index: 1; background: #242427; }

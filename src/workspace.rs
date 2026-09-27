@@ -230,6 +230,22 @@ pub trait Workspace: Send + Sync {
     fn identity(&self) -> String;
     fn asset_path(&self, id: &str) -> io::Result<Option<PathBuf>>;
     fn asset_bytes(&self, id: &str) -> io::Result<Vec<u8>>;
+    /// Cheap change detection for the reminder index; absence means reread.
+    fn reminder_revisions(
+        &self,
+        entries: &[WorkspaceEntry],
+    ) -> io::Result<std::collections::BTreeMap<EntryId, String>> {
+        let mut result = std::collections::BTreeMap::new();
+        for entry in entries.iter().filter(|e| e.kind == EntryKind::File) {
+            if let Some(path) = self.asset_path(&entry.id)? {
+                let metadata = std::fs::metadata(path)?;
+                if let Ok(modified) = metadata.modified() {
+                    result.insert(entry.id.clone(), format!("{}:{modified:?}", metadata.len()));
+                }
+            }
+        }
+        Ok(result)
+    }
 }
 
 #[allow(dead_code)]

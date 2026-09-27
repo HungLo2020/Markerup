@@ -14,12 +14,12 @@ const treeIds = () => Array.from(document.querySelectorAll<HTMLButtonElement>("#
   .map(button => button.dataset.id);
 const activeId = () => document.querySelector<HTMLButtonElement>("#tree .entry.active .entry-main")?.dataset.id;
 
-async function launch(snapshot: Record<string, unknown>) {
+async function launch(snapshot: Record<string, unknown>, contents = "# Note") {
   document.body.innerHTML = '<div id="app"></div>';
   vi.resetModules();
   invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     if (command === "workspace_snapshot") return snapshot;
-    if (command === "reload_note") return { id: snapshot.currentFile, contents: "# Note", snapshot };
+    if (command === "reload_note") return { id: snapshot.currentFile, contents, snapshot };
     if (command === "preview_document") return { blocks: [] };
     if (command === "move_entry") return { ...snapshot, moved: args };
     throw new Error(`Unexpected command: ${command}`);
@@ -98,4 +98,71 @@ test("move picker filters folders by name and path and picks the first match on 
   filter.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
   await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("move_entry", { id: "Top.md", destinationParent: "Archive/Old" }));
   expect(document.querySelector(".modal")).toBeNull();
+});
+
+test.each([false, true])("Insert opens the reminder composer on desktop/mobile (mobile=%s)", async mobile => {
+  window.matchMedia = () => ({ matches: mobile, addListener: vi.fn(), removeListener: vi.fn() }) as unknown as MediaQueryList;
+  await launch({ ...base, entries: [{ id: "Top.md", name: "Top.md", kind: "File", depth: 0 }], currentFile: "Top.md" });
+  document.querySelector<HTMLButtonElement>("#insert")!.click();
+  await vi.waitFor(() => expect(document.querySelector(".modal-actions")).not.toBeNull());
+  Array.from(document.querySelectorAll<HTMLButtonElement>(".modal-actions button")).find(button => button.textContent === "Reminder")!.click();
+  await vi.waitFor(() => expect(document.querySelector(".reminder-form")).not.toBeNull());
+  expect(document.querySelector(".modal h2")!.textContent).toBe("Create reminder");
+  document.querySelector<HTMLButtonElement>(".modal-close")!.click();
+  expect(document.querySelector(".modal-overlay")).toBeNull();
+});
+
+
+test.each([false, true])("editing a reminder updates only its Unicode source range (mobile=%s)", async mobile => {
+  window.matchMedia = () => ({ matches: mobile, addListener: vi.fn(), removeListener: vi.fn() }) as unknown as MediaQueryList;
+  const source = "- [ ] 日本語 😀 Call @remind(2027-10-02 09:00; tz=UTC; id=stable) trailing text";
+  const snap = { ...base, entries: [{ id: "Top.md", name: "Top.md", kind: "File", depth: 0 }], currentFile: "Top.md" };
+  await launch(snap, source);
+  const original = invoke.getMockImplementation()!;
+  const marker = source.indexOf("@remind("), end = source.indexOf(")") + 1;
+  const byteOffset = (i: number) => new TextEncoder().encode(source.slice(0,i)).length;
+  invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === "reminder_definitions") return [{id:"stable",title:"日本語 😀 Call",offset:byteOffset(marker),end:byteOffset(end),schedule:{start:"2027-10-02T09:00:00",tz:"UTC",repeat:"once",every:1,weekdays:[],last_day:false}}];
+    if (command === "reminder_validate") return "2027-10-02T10:00:00Z";
+    if (command === "reminder_permissions") return "Allowed";
+    if (command === "save_note") return snap;
+    return original(command,args);
+  });
+  document.querySelector<HTMLButtonElement>("#insert")!.click();
+  await vi.waitFor(() => expect(document.querySelector(".modal-actions")).not.toBeNull());
+  Array.from(document.querySelectorAll<HTMLButtonElement>(".modal-actions button")).find(button => button.textContent === "Edit reminder on this line")!.click();
+  await vi.waitFor(() => expect(document.querySelector(".reminder-form")).not.toBeNull());
+  document.querySelector<HTMLInputElement>('.reminder-form [name="time"]')!.value = "10:00";
+  document.querySelector<HTMLFormElement>(".reminder-form")!.requestSubmit();
+  await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("save_note", {contents:source.replace("09:00", "10:00"),force:false}));
+  expect(document.querySelector(".modal-overlay")).toBeNull();
+});
+
+test("reminder list opens the associated note and places the cursor at its marker", async () => {
+  const snap = { ...base, entries: [{ id: "Top.md", name: "Top.md", kind: "File", depth: 0 }], currentFile: "Top.md" };
+  await launch(snap);
+  const source = "日本語 😀 Call @remind(2027-10-02 09:00; tz=UTC; id=stable)";
+  const position = source.indexOf("@remind");
+  const original = invoke.getMockImplementation()!;
+  invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+    if (command === "reminder_status") return {platform:{message:"Running",limited_until:"2027-10-01T00:00:00Z"},errors:[],items:[{key:"key",id:"stable",file:"Other.md",title:"Call",schedule:"Once"}]};
+    if (command === "open_reminder_note") return {id:"Other.md",contents:source,snapshot:{...snap,currentFile:"Other.md",entries:[...snap.entries,{id:"Other.md",name:"Other.md",kind:"File",depth:0}]}};
+    if (command === "reminder_definition") return {id:"stable",offset:new TextEncoder().encode(source.slice(0,position)).length};
+    return original(command,args);
+  });
+  document.querySelector<HTMLButtonElement>("#settings")!.click();
+  document.querySelector<HTMLButtonElement>("#reminder-settings")!.click();
+  await vi.waitFor(() => expect(document.querySelector(".reminder-card")).not.toBeNull());
+  Array.from(document.querySelectorAll<HTMLButtonElement>(".reminder-card button")).find(button => button.textContent === "Open note")!.click();
+  await vi.waitFor(() => expect(activeId()).toBe("Other.md"));
+  const { EditorView } = await import("@codemirror/view");
+  const view = EditorView.findFromDOM(document.querySelector(".cm-editor")!)!;
+  await vi.waitFor(() => expect(view.state.selection.main.head).toBe(position));
+  expect(view.state.doc.toString()).toBe(source);
+  const health = document.querySelector<HTMLButtonElement>("#reminder-health")!;
+  expect(health.hidden).toBe(false);
+  expect(health.tagName).toBe("BUTTON");
+  expect(health.textContent).toContain("replenish notifications");
+  health.click();
+  await vi.waitFor(() => expect(document.querySelector(".reminder-card")).not.toBeNull());
 });

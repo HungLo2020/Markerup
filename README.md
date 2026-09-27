@@ -24,6 +24,7 @@ The target is one Rust codebase for Linux, Android, and iOS. Linux is the first 
 - Standard relative Markdown navigation including parent paths, URL-encoded names, and heading fragments.
 - Back/forward note navigation.
 - Workspace-wide filename/content search.
+- Markdown reminders in every workspace, with an Insert dialog, recurring schedules, and native Linux/iOS notification adapters. See [reminders](docs/reminders.md) for delivery requirements and the iOS queue limit.
 - Find-next inside the current note.
 - Relative Markdown images are resolved inside the workspace and displayed in preview.
 - Mermaid fenced diagrams are rendered natively to SVG with Rust and displayed in preview.
@@ -56,7 +57,7 @@ cargo run
 
 ## Storage invariant
 
-Markerup application state is disposable. Notes and organization live only in the selected filesystem tree. A non-favorite workspace is not persisted. Favorites store only enough application state to reopen the selected workspace and current note.
+Markerup application state is disposable. Notes and organization live only in the selected filesystem tree. Favorites store only enough application state to reopen the selected workspace and current note. Reminder indexing separately retains previously opened workspace identities, reminder schedules, and local workspace paths so desktop reminders can run after the editor closes; it does not reopen those workspaces in the editor. See [reminder storage](docs/reminders.md#index-and-storage).
 
 Recovery drafts are an exception: pending unsaved editor text is kept in the app's local webview storage. Saved-note history is kept in `.markerup/backups/<relative note path>/<timestamp>.md`; deleted entries are kept in `.markerup-trash`. Restore a deleted item by moving it out of `.markerup-trash`; restore a previous version by copying a matching backup over the note. Back up the entire workspace, including hidden files, if you want these recovery copies included in your normal backup. Some iOS Files providers may not enumerate hidden backup files for pruning; keep an eye on the size of provider-backed workspaces. Existing side-by-side backups from older Markerup versions are left in place.
 
