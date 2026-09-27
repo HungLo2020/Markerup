@@ -61,7 +61,7 @@ read only = no
                 [
                     smbd, "--foreground", "--no-process-group",
                     "--configfile", str(config), "--log-basename", str(root),
-                    "--debug-stdout",
+                    "--debug-stdout", "--debuglevel=3",
                 ],
                 stdout=output,
                 stderr=subprocess.STDOUT,
