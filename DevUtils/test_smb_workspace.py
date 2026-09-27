@@ -61,6 +61,7 @@ read only = no
                 [
                     smbd, "--foreground", "--no-process-group",
                     "--configfile", str(config), "--log-basename", str(root),
+                    "--debug-stdout",
                 ],
                 stdout=output,
                 stderr=subprocess.STDOUT,
@@ -70,7 +71,9 @@ read only = no
                 deadline = time.monotonic() + 15
                 while True:
                     if server.poll() is not None:
-                        raise RuntimeError("temporary Samba server exited before startup")
+                        raise RuntimeError(
+                            f"temporary Samba server exited before startup ({server.returncode})"
+                        )
                     try:
                         with socket.create_connection(("127.0.0.1", port), timeout=0.2):
                             break
@@ -100,8 +103,10 @@ read only = no
                 output.flush()
                 output.seek(0)
                 print(output.read())
-                log = root / "smbd.log"
-                if log.exists():
+                for log in sorted(set(root.glob("*.log")) | set(root.glob("log.*"))):
+                    if log.name == "server-output.log":
+                        continue
+                    print(f"--- {log.name} ---")
                     print(log.read_text(errors="replace"))
                 raise
             finally:
