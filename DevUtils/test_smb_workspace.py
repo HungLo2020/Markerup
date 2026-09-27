@@ -63,6 +63,9 @@ read only = no
                     "--configfile", str(config), "--log-basename", str(root),
                     "--debug-stdout", "--debuglevel=3",
                 ],
+                # Foreground smbd exits on stdin EOF. GitHub's shell can have
+                # a closed input pipe; own an open pipe for the server lifetime.
+                stdin=subprocess.PIPE,
                 stdout=output,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -120,6 +123,7 @@ read only = no
                 except subprocess.TimeoutExpired:
                     os.killpg(server.pid, signal.SIGKILL)
                     server.wait()
+                server.stdin.close()
 
 
 if __name__ == "__main__":
