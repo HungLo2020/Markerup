@@ -48,6 +48,13 @@ the five newest saves, the newest save from each of the last five UTC days, and
 the newest save from each of the last five UTC months. Deleting a note or folder moves it into the workspace's hidden
 `.markerup-trash` directory. Include hidden files when backing up the share.
 
+Existing backup and trash directories are reused only after verifying the
+server reports a directory. A file occupying any required directory path is
+an error: the existing file and the original note are left untouched. Creating
+a note or folder through the UI remains exclusive and reports name collisions.
+Permission, missing-path, and transport errors are not treated as successful
+directory creation.
+
 Workspace scans are bounded to 50,000 visible entries and 64 directory levels,
 honor cancellation between directory operations, and return an explicit error
 when either safety bound is exceeded. This prevents an unavailable, cyclic, or
@@ -61,8 +68,23 @@ ordinary mounted-folder workflow unchanged.
 
 ## Validation
 
-Local validation covers path safety and required connection fields. The Rust
-code is checked for `aarch64-apple-ios` and `aarch64-apple-ios-sim` in addition
+Local validation covers path safety, required connection fields, and SMB error
+classification. Linux CI also runs a real Samba integration test using a
+temporary, loopback-only share with no saved credentials or user data. Run it
+locally as an ordinary user with Samba installed:
+
+```sh
+python3 DevUtils/test_smb_workspace.py
+```
+
+Set `SMBD` to an alternative `smbd` executable if necessary. The test server,
+share, backups, and trash are removed afterward. This checks repeated saves
+after reconnecting, exact backup contents, nested note paths, exclusive note
+and folder creation, concurrent directory creation, repeated moves to trash,
+and file collisions at each backup directory level and at the trash root
+without overwriting note data.
+
+The Rust code is checked for `aarch64-apple-ios` and `aarch64-apple-ios-sim` in addition
 to the host target. The ignored `real_smb_round_trip` test exercises connect,
 enumerate, read, write, create-directory, rename, and delete against a real
 server without printing credentials:
@@ -76,6 +98,7 @@ export MARKERUP_SMB_REMOTE_PATH=Notes
 cargo test real_smb_round_trip -- --ignored
 ```
 
-Use a disposable test directory/share account. The physical-iPhone diagnostic
-screen should be used to verify the same direct connection and operations on
+The manual test creates a unique directory and retains its notes, backups, and
+trash for inspection; use a disposable test directory/share account. The
+physical-iPhone diagnostic screen should be used to verify the same direct connection and operations on
 the device; it must not be used to display or capture the password.

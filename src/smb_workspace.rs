@@ -131,21 +131,7 @@ impl SmbWorkspace {
             tokio::time::timeout(SMB_OPERATION_TIMEOUT, future()).await
         }) {
             Ok(Ok(value)) => Ok(value),
-            Ok(Err(error)) => {
-                let kind = match error.kind() {
-                    smb2::ErrorKind::NotFound => io::ErrorKind::NotFound,
-                    smb2::ErrorKind::AccessDenied => io::ErrorKind::PermissionDenied,
-                    smb2::ErrorKind::TimedOut => io::ErrorKind::TimedOut,
-                    smb2::ErrorKind::ConnectionLost
-                    | smb2::ErrorKind::SessionExpired
-                    | smb2::ErrorKind::Io => io::ErrorKind::ConnectionAborted,
-                    _ => io::ErrorKind::Other,
-                };
-                Err(io::Error::new(
-                    kind,
-                    format!("SMB {operation} failed: {error}"),
-                ))
-            }
+            Ok(Err(error)) => Err(smb_io_error(operation, error)),
             Err(_) => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
@@ -197,18 +183,45 @@ impl SmbWorkspace {
             if component.is_empty() {
                 continue;
             }
-            match self.create_directory(&parent, component) {
-                Ok(_) => (),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
-                Err(error) => return Err(error),
-            }
             parent = if parent.is_empty() {
                 component.to_string()
             } else {
                 format!("{parent}/{component}")
             };
+            let path = self.remote_path(&parent)?;
+            self.mutate(|client, tree| self.ensure_directory(client, tree, &path))
+                .map_err(mark_ambiguous_mutation)?;
         }
         Ok(())
+    }
+
+    /// Internal recovery directories may already exist (including when another
+    /// client creates one concurrently). Only accept a collision after checking
+    /// the server's metadata; a same-name file must never bypass backup safety.
+    /// User-requested folder creation stays exclusive in `create_directory`.
+    fn ensure_directory(
+        &self,
+        client: &mut SmbClient,
+        tree: &mut Tree,
+        path: &str,
+    ) -> io::Result<()> {
+        match self.run_smb("directory creation", || client.create_directory(tree, path)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let info = self.run_smb("existing directory verification", || {
+                    client.stat(tree, path)
+                })?;
+                if info.is_directory {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        format!("SMB recovery directory '{path}' is occupied by a file"),
+                    ))
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn prune_note_backups(&self, directory: &str) {
@@ -773,11 +786,7 @@ impl Workspace for SmbWorkspace {
         let destination =
             self.remote_path(&format!(".markerup-trash/{}-{name}", recovery_suffix()?))?;
         self.mutate(|client, tree| {
-            match self.run_smb("trash directory", || client.create_directory(tree, &trash)) {
-                Ok(()) => (),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (),
-                Err(error) => return Err(error),
-            }
+            self.ensure_directory(client, tree, &trash)?;
             self.run_smb("move to trash", || {
                 client.rename(tree, &source, &destination)
             })
@@ -838,6 +847,22 @@ impl Workspace for SmbWorkspace {
     fn asset_bytes(&self, id: &str) -> io::Result<Vec<u8>> {
         self.read_remote(&self.remote_path(id)?)
     }
+}
+
+fn smb_io_error(operation: &str, error: smb2::Error) -> io::Error {
+    let kind = match error.kind() {
+        smb2::ErrorKind::NotFound => io::ErrorKind::NotFound,
+        smb2::ErrorKind::AlreadyExists => io::ErrorKind::AlreadyExists,
+        smb2::ErrorKind::IsADirectory => io::ErrorKind::IsADirectory,
+        smb2::ErrorKind::NotADirectory => io::ErrorKind::NotADirectory,
+        smb2::ErrorKind::AccessDenied => io::ErrorKind::PermissionDenied,
+        smb2::ErrorKind::TimedOut => io::ErrorKind::TimedOut,
+        smb2::ErrorKind::ConnectionLost | smb2::ErrorKind::SessionExpired | smb2::ErrorKind::Io => {
+            io::ErrorKind::ConnectionAborted
+        }
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, format!("SMB {operation} failed: {error}"))
 }
 
 fn is_transient_smb_error(error: &io::Error) -> bool {
@@ -958,56 +983,179 @@ mod tests {
         assert!(ensure_scan_capacity(super::MAX_SMB_SCAN_ENTRIES).is_err());
     }
 
-    /// Opt-in Linux validation against a real SMB2/3 server. Credentials are
-    /// read only from the process environment and are never printed. Run with
-    /// `cargo test real_smb_round_trip -- --ignored --nocapture` after setting
-    /// the MARKERUP_SMB_* variables documented in docs/smb-workspaces.md.
+    #[test]
+    fn protocol_errors_keep_their_filesystem_meaning() {
+        use smb2::types::{Command, status::NtStatus};
+        use std::io::ErrorKind;
+        for (status, expected) in [
+            (NtStatus::OBJECT_NAME_COLLISION, ErrorKind::AlreadyExists),
+            (NtStatus::NOT_A_DIRECTORY, ErrorKind::NotADirectory),
+            (NtStatus::FILE_IS_A_DIRECTORY, ErrorKind::IsADirectory),
+            (NtStatus::ACCESS_DENIED, ErrorKind::PermissionDenied),
+            (NtStatus::OBJECT_NAME_NOT_FOUND, ErrorKind::NotFound),
+        ] {
+            let error = super::smb_io_error(
+                "directory creation",
+                smb2::Error::Protocol {
+                    status,
+                    command: Command::Create,
+                },
+            );
+            assert_eq!(error.kind(), expected);
+            assert!(!is_transient_smb_error(&error));
+            let error = super::mark_ambiguous_mutation(error);
+            assert_eq!(error.kind(), expected);
+            assert!(error.to_string().contains("directory creation"));
+        }
+        for source in [smb2::Error::Timeout, smb2::Error::Disconnected] {
+            let error = super::smb_io_error("write", source);
+            assert!(is_transient_smb_error(&error));
+            assert_eq!(
+                super::mark_ambiguous_mutation(error).kind(),
+                ErrorKind::Interrupted
+            );
+        }
+    }
+
+    /// Run against an isolated Samba share with DevUtils/test_smb_workspace.py.
+    /// A manually configured server must use a disposable share: test data,
+    /// backups, and trash are deliberately retained for inspection.
     #[test]
     #[ignore = "requires an explicitly configured real SMB server"]
     fn real_smb_round_trip() {
-        let config = SmbConnectionConfig {
+        use std::io::ErrorKind;
+        let mut config = SmbConnectionConfig {
             server: std::env::var("MARKERUP_SMB_SERVER").expect("MARKERUP_SMB_SERVER is required"),
             share: std::env::var("MARKERUP_SMB_SHARE").expect("MARKERUP_SMB_SHARE is required"),
             username: std::env::var("MARKERUP_SMB_USERNAME").unwrap_or_default(),
             password: std::env::var("MARKERUP_SMB_PASSWORD").unwrap_or_default(),
             remote_path: std::env::var("MARKERUP_SMB_REMOTE_PATH").unwrap_or_default(),
         };
-        let workspace = SmbWorkspace::connect(config).expect("SMB connection failed");
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock before epoch")
-            .as_nanos();
-        let directory = format!("markerup-smb-test-{suffix}");
-        let note = format!("{directory}/round-trip.md");
-        let renamed = format!("{directory}/renamed.md");
-
-        workspace
-            .create_directory("", &directory)
-            .expect("create directory failed");
-        let result = {
+        let root = SmbWorkspace::connect(config.clone()).expect("SMB connection failed");
+        let directory = format!("markerup-smb-test-{}", super::unix_time_nanos().unwrap());
+        root.create_directory("", &directory).unwrap();
+        config.remote_path = root.remote_path(&directory).unwrap();
+        // A nonempty remote root catches accidental mixing of IDs and server paths.
+        let workspace = SmbWorkspace::connect(config.clone()).unwrap();
+        let peer = SmbWorkspace::connect(config.clone()).unwrap();
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                start.wait();
+                workspace.ensure_directory_path("race/shared/nested")
+            });
+            let second = scope.spawn(|| {
+                start.wait();
+                peer.ensure_directory_path("race/shared/nested")
+            });
+            first.join().unwrap().unwrap();
+            second.join().unwrap().unwrap();
+        });
+        drop(peer);
+        workspace.create_directory("", "games").unwrap();
+        assert_eq!(
+            workspace.create_directory("", "games").unwrap_err().kind(),
+            ErrorKind::AlreadyExists
+        );
+        let note = workspace.create_note("games", "round-trip.md").unwrap();
+        let initial = workspace.read(&note).unwrap();
+        assert_eq!(
             workspace
-                .write(&note, "# SMB round trip\n")
-                .expect("write failed");
-            assert_eq!(
-                workspace.read(&note).expect("read failed"),
-                "# SMB round trip\n"
-            );
-            assert!(
+                .create_note("games", "round-trip.md")
+                .unwrap_err()
+                .kind(),
+            ErrorKind::AlreadyExists
+        );
+        assert_eq!(workspace.read(&note).unwrap(), initial);
+        workspace.write(&note, "# First save\n").unwrap();
+        // Reconnect to model reopening a workspace whose backups already exist.
+        drop(workspace);
+        let workspace = SmbWorkspace::connect(config).unwrap();
+        workspace.write(&note, "# Second save\n").unwrap();
+        assert_eq!(workspace.read(&note).unwrap(), "# Second save\n");
+        let backup_id = crate::workspace::backup_directory_id(&note).unwrap();
+        let backups = workspace
+            .list_directory(&workspace.remote_path(&backup_id).unwrap())
+            .unwrap()
+            .into_iter()
+            .filter(|entry| !entry.is_directory)
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 2);
+        let mut contents: Vec<_> = backups
+            .iter()
+            .map(|entry| {
                 workspace
-                    .markdown_files()
-                    .expect("enumeration failed")
-                    .contains(&note)
-            );
-            assert_eq!(
+                    .read(&format!("{backup_id}/{}", entry.name))
+                    .unwrap()
+            })
+            .collect();
+        contents.sort();
+        let mut expected = vec![initial, "# First save\n".to_string()];
+        expected.sort();
+        assert_eq!(contents, expected);
+        let second = workspace.create_note("games", "second.md").unwrap();
+        workspace.write(&second, "Second note\n").unwrap();
+        assert!(workspace.markdown_files().unwrap().contains(&note));
+        let renamed = workspace.rename(&note, "renamed.md").unwrap();
+        workspace.delete(&renamed).unwrap();
+        workspace.delete(&second).unwrap();
+        assert_eq!(
+            workspace.read(&renamed).unwrap_err().kind(),
+            ErrorKind::NotFound
+        );
+        let trash = workspace
+            .list_directory(&workspace.remote_path(".markerup-trash").unwrap())
+            .unwrap()
+            .into_iter()
+            .filter(|entry| !entry.is_directory)
+            .collect::<Vec<_>>();
+        assert_eq!(trash.len(), 2);
+        let mut trashed: Vec<_> = trash
+            .iter()
+            .map(|entry| {
                 workspace
-                    .rename(&note, "renamed.md")
-                    .expect("rename failed"),
-                renamed
-            );
-            workspace.delete(&renamed).expect("delete failed");
-            Ok::<(), ()>(())
-        };
-        let _ = workspace.delete(&directory);
-        result.expect("SMB round trip failed");
+                    .read(&format!(".markerup-trash/{}", entry.name))
+                    .unwrap()
+            })
+            .collect();
+        trashed.sort();
+        assert_eq!(trashed, vec!["# Second save\n", "Second note\n"]);
+
+        // Test file collisions at every backup level and at the trash root.
+        for blocker in [
+            ".markerup",
+            ".markerup/backups",
+            ".markerup/backups/games",
+            ".markerup/backups/games/note.md",
+            ".markerup-trash",
+        ] {
+            let case = format!("conflict-{}", super::unix_time_nanos().unwrap());
+            workspace.create_directory("", &case).unwrap();
+            let mut config = workspace.config.clone();
+            config.remote_path = workspace.remote_path(&case).unwrap();
+            let isolated = SmbWorkspace::connect(config).unwrap();
+            isolated.create_directory("", "games").unwrap();
+            let note = isolated.create_note("games", "note.md").unwrap();
+            let before = isolated.read(&note).unwrap();
+            if let Some((parent, _)) = blocker.rsplit_once('/') {
+                isolated.ensure_directory_path(parent).unwrap();
+            }
+            let path = isolated.remote_path(blocker).unwrap();
+            isolated
+                .mutate(|client, tree| {
+                    isolated.run_smb("test fixture", || {
+                        client.write_file(tree, &path, b"keep this file")
+                    })
+                })
+                .unwrap();
+            let error = if blocker == ".markerup-trash" {
+                isolated.delete(&note).unwrap_err()
+            } else {
+                isolated.write(&note, "must not overwrite").unwrap_err()
+            };
+            assert_eq!(error.kind(), ErrorKind::NotADirectory, "{blocker}: {error}");
+            assert_eq!(isolated.read(&note).unwrap(), before);
+            assert_eq!(isolated.read(blocker).unwrap(), "keep this file");
+        }
     }
 }
