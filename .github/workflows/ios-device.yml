@@ -125,6 +125,7 @@ jobs:
           wait-for-processing: 'false'
       - uses: actions/upload-artifact@v4
         with:
+          retention-days: 3
           name: markerup-ios-signed-device
           path: ${{ steps.ipa.outputs.path }}
           if-no-files-found: error
