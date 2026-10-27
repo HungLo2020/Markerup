@@ -81,4 +81,4 @@ jobs:
           xcrun simctl install '${{ steps.simulator.outputs.id }}' "$app_path"
           xcrun simctl launch '${{ steps.simulator.outputs.id }}' com.matt.markerup
       - uses: actions/upload-artifact@v4
-        with: { name: markerup-ios-release-simulator, path: gen/apple/build/, if-no-files-found: error }
+        with: { name: markerup-ios-release-simulator, path: gen/apple/build/, if-no-files-found: error , retention-days: 3 }
